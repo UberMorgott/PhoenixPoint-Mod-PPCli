@@ -1133,7 +1133,7 @@ no listener existed. Two fixes, both kept:
 
 `ConvertFrom-Json` unrolls a one-element JSON array into a scalar.
 Any result that must stay an array needs `-NoEnumerate`.
-This bug shipped and was fixed in commit `841fb90`.
+This bug shipped once and was fixed.
 
 ## Related docs
 
