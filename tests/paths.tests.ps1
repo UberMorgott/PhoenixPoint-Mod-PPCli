@@ -101,6 +101,35 @@ Assert-Value 'deploy refuses an install other than the pinned one, and names -Fo
 Assert-Value 'the refused deploy wrote nothing into it' `
     ([bool](Test-Path (Join-Path $installB 'Mods\PPBridge\meta.json'))) 'False'
 
+# THE FALSE POSITIVE THIS REPLACED: the preflight used to ask whether 'com.morgott.PPBridge' appeared
+# ANYWHERE in Options.jopt. A mod that is present but switched OFF still leaves its id in the file, so
+# the check passed and the run went on to launch a game where the mod loads and says nothing - the one
+# failure the preflight exists to catch. $joptOff is exactly that file: the id is in it, and it is not
+# in MOD_ACTIVATED.
+$joptShape = @'
+{"Version":1,"Contents":{"Objects":[
+ {"ObjectID":1,"TopLevel":true,"ObjectValue":{"CollectionValues":[
+   {"Key":"IsModsOpenedFirstTime","Value":{"ObjectID":9}},
+   {"Key":"MOD_ACTIVATED","Value":{"ObjectID":17}}]}},
+ {"ObjectID":9,"TopLevel":false,"ObjectValue":{"BoxedValue":true}},
+ {"ObjectID":17,"TopLevel":false,"ObjectValue":{
+   "ArrayDimensions":{"CollectionValues":[__N__]},"CollectionValues":[__LIST__]}},
+ {"ObjectID":18,"TopLevel":false,"ObjectValue":{"BoxedValue":"last mod seen: com.morgott.PPBridge"}}]}}
+'@
+$joptOn  = Join-Path $scratch 'Options-on.jopt'
+$joptOff = Join-Path $scratch 'Options-off.jopt'
+Set-Content -Path $joptOn -Encoding utf8NoBOM -Value ($joptShape -replace '__N__', '2' -replace '__LIST__', '"phoenixrising.tftv","com.morgott.PPBridge"')
+Set-Content -Path $joptOff -Encoding utf8NoBOM -Value ($joptShape -replace '__N__', '1' -replace '__LIST__', '"phoenixrising.tftv"')
+
+Assert-Value 'an id inside MOD_ACTIVATED reads as activated' `
+    (Test-ModActivated $joptOn 'com.morgott.PPBridge') 'True'
+Assert-Value 'an id that is only MENTIONED in the file is not activated' `
+    ([bool](Test-ModActivated $joptOff 'com.morgott.PPBridge')) 'False'
+Assert-Value 'another mod in the array is not this one' `
+    ([bool](Test-ModActivated $joptOn 'com.morgott.NotInstalled')) 'False'
+Assert-Value 'no profile file at all is not activated' `
+    ([bool](Test-ModActivated (Join-Path $scratch 'no-such.jopt') 'com.morgott.PPBridge')) 'False'
+
 Assert-Value 'exactly one profile directory is the answer' `
     (Find-PPProfileId $profilesOne) '11111111111111111'
 Assert-Refusal 'no profile refuses and names -ProfileId' '-ProfileId' `

@@ -54,6 +54,13 @@
       "args": { "timeoutMs": 1, "everyFrames": 1,
                 "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "LesserThan",
                           "args": [ "${shots}", 101, 0.01 ] } } },
+    { "//INTEGRAL": "The bounds alone are not enough: shots:1.5 sits inside 1..100, so the volley used to fire TWICE and then die at assert-volley-not-long, several minutes and one spawned enemy later. A shot is an activation and there is no half of one, so a fractional request is refused HERE, by name, before anything is touched. Mathf.Round and Mathf.Approximately are each declared once, so neither is ambiguous.",
+      "id": "shots-rounded", "verb": "call", "save": "SHOTSR",
+      "args": { "op": "invoke", "type": "UnityEngine.Mathf", "member": "Round", "args": [ "${shots}" ] } },
+    { "id": "assert-shots-integral", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "UnityEngine.Mathf", "member": "Approximately",
+                          "args": [ "${shots}", "${SHOTSR.value}" ] } } },
 
     { "//ORIGINALS": "Read BEFORE anything is changed. `finally` puts each of them back.",
       "id": "spread-was", "verb": "var", "save": "SPREAD0", "args": { "name": "weapon_spread" } },
@@ -350,11 +357,15 @@
     { "id": "impacts", "verb": "observe", "save": "SHOTS",
       "args": { "action": "read", "aim": [ "${AIM.value.x}", "${AIM.value.y}", "${AIM.value.z}" ] } },
 
-    { "//NO SILENT REPAIR": "FATAL, and deliberately so. `recovered` counts projectiles that another mod's throw left stuck in flight and that ShotPatch.Unwedge had to release for the volley to continue (see its comment). The release keeps the MISSION playable, which is worth having - but it also means the game threw in the middle of damage resolution while these numbers were being taken, so the hit and damage figures are measured across a repair. Reporting them anyway would be the same silent-wrong-answer this plan spent its whole life removing, so the run dies here by name and the count is still in the output. If this fires, the answer is not to relax it: it is that something threw, and the log says who.",
+    { "//NO SILENT REPAIR": "FATAL, and deliberately so. `recovered` counts projectiles that a throw inside the game's own OnTrajectoryEnd left stuck in flight and that ShotPatch.Unwedge had to release for the volley to continue (see its comment). WHO threw is not knowable from here: the stack is cut at the Harmony wrapper, so it names the patched method and never the patch. The release keeps the MISSION playable, which is worth having - but it also means the game threw in the middle of damage resolution while these numbers were being taken, so the hit and damage figures are measured across a repair. Reporting them anyway would be the same silent-wrong-answer this plan spent its whole life removing. FAILING was never enough on its own: the plan engine used to resolve `output` whether or not the run had failed, so this assertion fired and the figures were handed back regardless. Plan.cs now WITHHOLDS the whole output block on any failure (see PlanRun.Done), which is why every figure below can be trusted to belong to a run that held together. The predicate reads Shots.Recovered directly rather than the snapshot copy, so the failure DTO carries the COUNT in its `last` field - the number survives even though the output does not.",
       "id": "assert-nothing-wedged", "verb": "wait",
       "args": { "not": true, "timeoutMs": 1, "everyFrames": 1,
-                "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "GreaterThan",
-                          "args": [ "${SHOTS.recovered}", 0, 0.01 ] } } },
+                "call": { "op": "get", "type": "Morgott.PPBridge.Shots", "member": "Recovered" } } },
+
+    { "//NO SILENT TRUNCATION": "The ring holds Shots.Capacity (512) impacts and drops the OLDEST when it overflows, and EVERY statistic - hit rate, damage totals, dispersion - is computed over what the ring still holds. So a non-zero `dropped` means the answer is a measurement of the last 512 projectiles reported under the heading of all of them, which is the same defect as measuring across a repair and is refused the same way. Read directly off Shots.Dropped so the count rides in the failure's `last`. 100 activations x a 6-projectile burst is 600, so this is reachable at the plan's own ceiling - it is a real bound, not a formality.",
+      "id": "assert-nothing-dropped", "verb": "wait",
+      "args": { "not": true, "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "get", "type": "Morgott.PPBridge.Shots", "member": "Dropped" } } },
 
     { "id": "hp-after", "verb": "call", "save": "HPA",
       "args": { "op": "invoke", "type": "Base.Entities.Statuses.BaseStat", "member": "op_Implicit",
@@ -405,6 +416,10 @@
     "shotsFired": "${DONE.value}",
     "projectilesPerShot": "${BURST.value}",
     "projectiles": "${SHOTS.recorded}",
+    "//the retained window": "`projectiles` is everything that landed; `stored` is how many of them the ring still HELD when it was read, and every hit/damage/dispersion figure below is over THOSE. `dropped` is the difference and must be 0 - assert-nothing-dropped refuses the run otherwise, so seeing this output at all already means it is. `returned` is how many impact ROWS the listing carries (Shots.MaxRows caps it at 200): a smaller `returned` than `stored` trims the LISTING only and changes no statistic.",
+    "stored": "${SHOTS.stored}",
+    "dropped": "${SHOTS.dropped}",
+    "returned": "${SHOTS.returned}",
     "targetActorId": "${SHOTS.target}",
     "targetHits": "${SHOTS.targetHits}",
     "targetHitRate": "${SHOTS.targetHitRate}",
@@ -426,7 +441,7 @@
     "chargesAfter": "${CH1.value}",
     "//apMaxWas": "The shooter's own AP ceiling, as read before this plan raised it. `finally` puts it back - reported so the restore can be CHECKED from outside instead of trusted.",
     "apMaxWas": "${APM0.value.x}",
-    "//recovered": "Projectiles another mod's throw left stuck in flight, that the bridge had to release for the volley to continue (ShotPatch.Unwedge). It must read 0. Anything else means the game threw during damage resolution and had to be repaired WHILE these numbers were being taken.",
+    "//recovered": "Projectiles a throw inside OnTrajectoryEnd left stuck in flight, that the bridge had to release for the volley to continue (ShotPatch.Unwedge). It ALWAYS reads 0 here, and that is a consequence rather than a hope: anything else fails assert-nothing-wedged, and a failed plan publishes no output at all. It is reported so the 0 is visible instead of assumed.",
     "recovered": "${SHOTS.recovered}"
   }
 }

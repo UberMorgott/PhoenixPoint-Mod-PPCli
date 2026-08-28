@@ -74,14 +74,22 @@ namespace Morgott.PPBridge
         }
 
         /// <summary>
-        /// Length-independent equality. The token is the only thing standing between a local process
-        /// and a reflection-equivalent endpoint, so it is not compared with ==.
+        /// Equality that does not leak HOW MUCH of the token matched: there is no early exit on the
+        /// first differing character, so a caller cannot recover the token by timing it out one
+        /// character at a time. The token is the only thing standing between a local process and a
+        /// reflection-equivalent endpoint, so it is not compared with ==.
+        ///
+        /// What it is NOT, said plainly: the loop runs max(expected, given) times, so the cost still
+        /// depends on the lengths - both of which the caller already knows, one being its own input
+        /// and the other a fixed 32 hex characters. Indexing BOTH strings modulo their own length is
+        /// what keeps a short guess from ending the loop early.
         /// </summary>
         internal static bool TokenOk(string expected, string given)
         {
-            if (string.IsNullOrEmpty(expected) || given == null) return false;
+            if (string.IsNullOrEmpty(expected) || string.IsNullOrEmpty(given)) return false;
+            int n = expected.Length > given.Length ? expected.Length : given.Length;
             int diff = expected.Length ^ given.Length;
-            for (int i = 0; i < given.Length; i++) diff |= expected[i % expected.Length] ^ given[i];
+            for (int i = 0; i < n; i++) diff |= expected[i % expected.Length] ^ given[i % given.Length];
             return diff == 0;
         }
 

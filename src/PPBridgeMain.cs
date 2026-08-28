@@ -33,11 +33,24 @@ namespace Morgott.PPBridge
     /// </summary>
     public class PPBridgeMain : ModMain
     {
+        /// <summary>
+        /// THE OTHER ENTRANCE, and its boundary is NOT the session token - it is the filesystem.
+        /// A cold launch cannot present a token, because the token does not exist until this mod
+        /// enables and mints one, so the job file is read without one. What bounds it instead:
+        ///   - the path is fixed, <see cref="ModDir"/>\ppcli-jobs.json, and nothing configurable
+        ///     points anywhere else, so writing one needs write access to the mod's own folder -
+        ///     the same access that lets you replace PPBridge.dll outright. There is nothing a job
+        ///     file grants that owning the DLL does not already grant.
+        ///   - it is gated by <see cref="ArmFile"/>, exactly like the pipe.
+        ///   - it is read ONCE, at arm time, and DELETED (Runner.Arm) - so it fires for the launch
+        ///     that placed it and can never fire again on a human's next launch.
+        /// </summary>
         internal const string JobFile = "ppcli-jobs.json";
         /// <summary>
         /// The opt-in marker. A token holder gets reflection-equivalent access to the game process,
         /// so the endpoint does not arm just because the mod is enabled: it arms when this file
-        /// exists beside the DLL, and deleting it disarms without touching the mod list.
+        /// exists beside the DLL. Deleting it DISARMS a running session too - Runner re-reads it
+        /// every few seconds and stops the pipe when it is gone; re-arming needs a relaunch.
         /// </summary>
         internal const string ArmFile = "ppcli-enabled";
         private static ModLogger log;
@@ -92,7 +105,7 @@ namespace Morgott.PPBridge
                 return;
             }
 
-            try { Runner.Arm(ModGO, Path.Combine(ModDir ?? ".", JobFile), Say); }
+            try { Runner.Arm(ModGO, Path.Combine(ModDir ?? ".", JobFile), Path.Combine(ModDir ?? ".", ArmFile), Say); }
             catch (Exception ex) { log?.LogError("PPBridge arm THREW " + ex); }
 
             try
@@ -402,6 +415,11 @@ namespace Morgott.PPBridge
             private const int MaxQueued = 64;           // bounded: a flooding client gets refused, not obeyed
             /// <summary>Cross-frame jobs alive at once. Each one costs a Tick every single frame.</summary>
             private const int MaxPending = 16;
+            /// <summary>How often the arm marker is re-read. Deleting it used to disarm NOTHING until
+            /// the next launch, because it was checked once in OnModEnabled - so a session that had
+            /// been armed stayed reachable for as long as the game ran, whatever the folder said.
+            /// ~5 s at 60 fps: one File.Exists, far below anything a frame budget notices.</summary>
+            private const int ArmCheckFrames = 300;
 
             private static Runner instance;
 
@@ -416,6 +434,7 @@ namespace Morgott.PPBridge
             private readonly ConcurrentQueue<Job> queue = new ConcurrentQueue<Job>();
             private List<Job> fileJobs;                 // held back until a level is up, unlike pipe jobs
             private Action<string> say;
+            private string armPath;
             private int frame, done, depth;
             private float started;
             private bool ready, saidDone;
@@ -437,12 +456,13 @@ namespace Morgott.PPBridge
             /// Always armed now, with or without a job file: the pipe needs a main-thread pump for the
             /// whole session, not just for the length of a batch.
             /// </summary>
-            internal static void Arm(GameObject modGo, string path, Action<string> say)
+            internal static void Arm(GameObject modGo, string path, string armFile, Action<string> say)
             {
                 GameObject go = modGo;
                 if (go == null) { go = new GameObject("ppcli"); DontDestroyOnLoad(go); }
                 Runner r = go.AddComponent<Runner>();
                 r.say = say;
+                r.armPath = armFile;
                 r.started = Time.realtimeSinceStartup;
                 instance = r;
 
@@ -451,13 +471,34 @@ namespace Morgott.PPBridge
                 string error;
                 List<Job> jobs = Protocol.Parse(File.ReadAllText(path), out error);
                 if (error != null) say("PPCLI|PARSE|" + error);
+                // SINGLE USE. The client deletes it too, but only when it survives its own run: a
+                // crashed cold launch used to leave a job file that fired again on whatever launched
+                // the game next - a human starting it by hand included. Reading it is the only thing
+                // it is for, so it does not outlive the read.
+                try { File.Delete(path); }
+                catch (Exception ex) { say("PPCLI: could not delete " + path + " after reading it: " + ex.Message); }
                 r.fileJobs = jobs;
                 say("PPCLI: armed with " + jobs.Count + " job(s) from " + path);
             }
 
             private void Update()
             {
-                if (!ready && ++frame % SettleFrames == 0)
+                // Counted for EVERY frame now, not only while the level is still settling: the arm
+                // check below needs a clock that keeps ticking after `ready` goes true.
+                frame++;
+                // The marker is a live switch, not a launch-time one. Deleting it stops the pipe -
+                // the only entrance still open once the job file has been read - within ArmCheckFrames.
+                // The pump itself keeps running: a plan already parked has a `finally` block to run,
+                // and killing the tick would strand whatever it took. Disarming means no NEW work.
+                if (armPath != null && frame % ArmCheckFrames == 0 && !File.Exists(armPath))
+                {
+                    armPath = null;
+                    say("PPBridge: '" + ArmFile + "' was deleted - the endpoint is DISARMED, no new " +
+                        "request can reach it. Re-create it and relaunch the game to arm it again.");
+                    StopPipe();
+                }
+
+                if (!ready && frame % SettleFrames == 0)
                 {
                     Level lvl = GameUtl.CurrentLevel();
                     bool timedOut = Time.realtimeSinceStartup - started > ReadyTimeoutSeconds;

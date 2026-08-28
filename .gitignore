@@ -7,6 +7,10 @@ obj/
 catalog/defs.ndjson
 catalog/meta.json
 
+# Written by `deploy` with THIS machine's install path. The monorepo ignores it too; it was missing
+# from this generated list, so a stranger who cloned, deployed and committed put their own path in.
+ppcli-install.txt
+
 # Game and client runtime droppings
 Console.log
 *.tmp

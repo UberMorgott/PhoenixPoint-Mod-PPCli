@@ -42,9 +42,10 @@ param(
     # answers `accepted` immediately, so 30 s is already enormous; it is a ceiling on a wedged game,
     # not a budget for a slow one.
     [int]    $PipeTimeoutSeconds = 30,
-    # A stack naming this while the client is waiting means the run is already dead - see
-    # Get-LogFault in waits.ps1 for why the signal is a MOD frame and not the word "Exception".
-    [string] $FaultPattern = 'TFTV',
+    # EMPTY = the default: any exception whose stack names a MOD frame while the client is waiting
+    # means the run is already dead. Pass a regex to narrow it to one mod. See Get-LogFault in
+    # waits.ps1 for why the signal is a MOD frame and not the word "Exception".
+    [string] $FaultPattern = '',
     # Wait out the full budget anyway. For measuring a fault the fast-fail would otherwise cut short.
     [switch] $IgnoreLogFaults,
     # `deploy` only: write into an install other than the one `ppcli-install.txt` pins.
@@ -70,7 +71,8 @@ function Assert-NoLogFault($mark) {
     $mark.next = (Get-Date).AddSeconds(2)
     $fault = Get-LogFault $mark $FaultPattern
     if (-not $fault) { return }
-    throw ("DEAD RUN: the game logged an exception matching '$FaultPattern' while this client was " +
+    throw ("DEAD RUN: the game logged an exception whose stack names " +
+           ($FaultPattern ? "'$FaultPattern'" : 'a mod') + " while this client was " +
            "waiting, so the wait was abandoned instead of run to its full budget. Kill that game " +
            "process and relaunch it; pass -IgnoreLogFaults to wait anyway, or -FaultPattern to " +
            "change what counts. Log: $($mark.path)`n" + $fault)
@@ -97,8 +99,8 @@ function Invoke-Jobs([string] $jobsJson) {
     if (-not $ProfileId) { $ProfileId = Find-PPProfileId }
     $jopt = Join-Path $env:USERPROFILE "AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam\$ProfileId\Options.jopt"
     if (-not (Test-Path $jopt)) { throw "REFUSED: no profile at $jopt - is -ProfileId ($ProfileId) right for $PPRoot?" }
-    if ((Get-Content -Raw $jopt) -notlike '*com.morgott.PPBridge*') {
-        throw ("REFUSED: 'com.morgott.PPBridge' is not activated in $jopt. " +
+    if (-not (Test-ModActivated $jopt 'com.morgott.PPBridge')) {
+        throw ("REFUSED: 'com.morgott.PPBridge' is not in MOD_ACTIVATED in $jopt. " +
                "Launch $PPRoot once, enable PPBridge in the mod manager, quit, then re-run. " +
                'Nothing was launched and no file was written.')
     }
@@ -370,6 +372,19 @@ switch ($Command) {
         # inside the game five seconds later.
         $planObj = ConvertFrom-Json (Get-Content -Raw $Arg1) -NoEnumerate -Depth 64
         if (-not $planObj.steps) { throw "$Arg1 has no 'steps' array" }
+        # THE CLIENT MUST NOT BE THE SHORTER CLOCK. -TimeoutSeconds defaults to 300, and six shipped
+        # plans declare a longer timeoutMs than that (start-campaign 900 s, build-mission and
+        # start-mission 600, load-mission/situation/weapon-test 540) - so the very first thing a
+        # newcomer does, run a shipped plan, used to be cancelled mid-run and reported as a timeout on
+        # a perfectly healthy game. Derived rather than raised to a bigger constant, because a constant
+        # rots the moment a plan changes. An EXPLICIT -TimeoutSeconds still wins: that is the caller
+        # deliberately being the shorter clock.
+        if (-not $PSBoundParameters.ContainsKey('TimeoutSeconds') -and $planObj.timeoutMs) {
+            # +60 s so the plan's own deadline fires first and its `finally` runs - a client cancel
+            # gets the same cleanup, but the plan's own timeout says which step it died on.
+            $want = [int]($planObj.timeoutMs / 1000) + 60
+            if ($want -gt $TimeoutSeconds) { $TimeoutSeconds = $want; Note "client ceiling raised to ${TimeoutSeconds}s for this plan's own $($planObj.timeoutMs) ms deadline" }
+        }
         $body = [ordered]@{ plan = $planObj }
         # Caller vars override the plan file's own defaults - that is what parameterises a stored
         # plan without editing it.

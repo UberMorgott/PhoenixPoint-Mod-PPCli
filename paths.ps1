@@ -91,6 +91,30 @@ function Find-PPInstall([string[]] $Roots) {
 
   -Dir exists so the offline test can point at a fixture; nothing else passes it.
 #>
+<#
+  Is a mod id actually in the profile's MOD_ACTIVATED array?
+
+  The preflight used to ask whether the id appeared ANYWHERE in Options.jopt, which a deactivated mod
+  satisfies just as well as an activated one: the id is still written into the file (the mod list, a
+  leftover key, another array), so the check passed on installs where the mod was switched OFF and the
+  run then died with the mod loaded and silent - the exact failure the preflight exists to prevent.
+
+  The file's shape: Contents.Objects is a flat pool of {ObjectID, ObjectValue} records. The options
+  DICTIONARY holds {Key,Value:{ObjectID}} pairs, and MOD_ACTIVATED's points at the record whose
+  CollectionValues IS the activated list. Read-only, always - re-serialising this file once shrank it
+  32991 -> 18996 bytes.
+#>
+function Test-ModActivated([string] $JoptPath, [string] $ModId) {
+    if (-not (Test-Path $JoptPath)) { return $false }
+    $objects = @((Get-Content -Raw $JoptPath | ConvertFrom-Json -Depth 64).Contents.Objects)
+    # Member enumeration over the pool: records with no CollectionValues, and the string arrays that
+    # ARE CollectionValues, both simply have no .Key and drop out.
+    $ref = $objects.ObjectValue.CollectionValues | Where-Object { $_.Key -eq 'MOD_ACTIVATED' } | Select-Object -First 1
+    if (-not $ref -or -not $ref.Value) { return $false }
+    $arr = $objects | Where-Object { $_.ObjectID -eq $ref.Value.ObjectID } | Select-Object -First 1
+    return (@($arr.ObjectValue.CollectionValues) -contains $ModId)
+}
+
 function Find-PPProfileId([string] $Dir) {
     # $dir would BE $Dir - see the note in Find-PPInstall.
     $profileRoot = $Dir ? $Dir : (Join-Path $env:USERPROFILE 'AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam')

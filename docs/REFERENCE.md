@@ -10,6 +10,12 @@ you arm it — the endpoint is off by default and that is deliberate.
 
 Licensed CC BY-NC 4.0 (`LICENSE`).
 
+**Every `file:line` citation on this page points into Phoenix Point's own DECOMPILED assembly**, not
+into this repository, which neither contains nor ships it. The citations are there so a reader with
+their own decompile can check a claim; without one they are provenance, not a link you can follow.
+Runtime figures quoted below — latencies, timings, hit counts, dispersion — are observations from the
+machine this was developed on. Nothing here reproduces them for you, and none of them is a guarantee.
+
 ## Components
 
 | Part | What | Where |
@@ -22,10 +28,21 @@ Licensed CC BY-NC 4.0 (`LICENSE`).
 ```powershell
 .\ppcli.ps1 deploy                                   # build + copy the DLL into the install
 New-Item -ItemType File "<install>\Mods\PPBridge\ppcli-enabled"   # ARM the endpoint (opt-in)
-#   ... enable PPBridge once in the in-game mod manager, then start the game ...
+#   ... start the game WITH -mods (no -mods, no mods at all), enable PPBridge once in the
+#       in-game mod manager, then leave it running ...
+Start-Process "<install>\PhoenixPointWin64.exe" -ArgumentList '-mods'
 .\ppcli.ps1 connect state                            # the gate: this must answer before anything else
-.\ppcli.ps1 index                                    # ONE TIME: build catalog\defs.ndjson
+.\ppcli.ps1 index                                    # ONE TIME, AFTER the gate: builds catalog\defs.ndjson
 ```
+
+The build needs the reference assemblies the game already ships — `<install>\ModSDK\Assembly-CSharp.dll`,
+`<install>\ModSDK\0Harmony.dll` and `<install>\PhoenixPointWin64_Data\Managed\` — plus a .NET SDK and
+the .NET Framework 4.7.2 targeting pack. `deploy.ps1` passes `/p:PPRoot=` for you; a stripped copy
+with no `ModSDK\` builds against another install via `-RefRoot`.
+
+A game started **by hand** publishes an endpoint exactly like one `run` launched: `PipeServer` writes
+`%LOCALAPPDATA%\ppcli\endpoints\<pid>.json` whenever the mod is enabled and armed, whoever started
+the process, and `connect` reads it from there (`ppcli.ps1:205-229`).
 
 `deploy` prints the exact `New-Item` line with your own path in it. Delete `ppcli-enabled` when you
 are done for the day; the mod can stay enabled, it just goes inert.
@@ -47,10 +64,22 @@ install behaves exactly as before.
 
 Plainly, so you can decide for yourself:
 
-- **Nothing is on the network.** `PPBridge` listens on a Windows **named pipe** and never opens a TCP
-  socket (`src\PipeServer.cs:166`). Nothing about it is reachable from another machine.
-- **Access needs a session token.** 128 random bits, new every launch (`PipeServer.cs:74`), checked
-  before a request is looked at (`:393-400`) with a constant-time compare (`Wire.cs:80-86`).
+- **Nothing is on the network — but the code does not enforce that.** `PPBridge` never opens a TCP
+  socket; the only listener is a Windows **named pipe** (`src\PipeServer.cs:166`), created with
+  `PipeOptions.None`, and it does not inspect or reject remote clients. Windows *can* expose named
+  pipes to remote clients over SMB, so what keeps this local in practice is the default pipe DACL —
+  only this user can write to it — and the session token, which only ever exists in a file under this
+  user's `LocalAppData`. **The token, not the transport, is the trust boundary.**
+- **The PIPE needs a session token.** 128 random bits, new every launch (`PipeServer.cs:74`), checked
+  before a request is looked at (`:393-400`), compared with no early exit on the first differing
+  character (`Wire.cs:80-86`) so the match length does not leak. It is **not** constant-time: the loop
+  runs as many times as the longer of the two strings.
+- **The JOB FILE does not, and cannot.** `run` and `batch` reach a game they cold-launched through
+  `Mods\PPBridge\ppcli-jobs.json`, read as `{id, verb, args}` with **no token** — the token does not
+  exist until the mod loads and mints one. Its boundary is the filesystem instead: the path is fixed,
+  so writing one needs write access to the mod's own folder, which is the same access that lets you
+  replace `PPBridge.dll` outright; it is behind the arm marker exactly like the pipe; and it is read
+  **once**, at arm time, then deleted, so it fires for the launch that placed it and never again.
 - **The token is readable by you.** It is written to
   `%LOCALAPPDATA%\ppcli\endpoints\<pid>.json`, so **any process running as the same Windows user can
   read it** — which is what lets the client find the game with no configuration.
@@ -61,10 +90,14 @@ Plainly, so you can decide for yourself:
   game either way. PPCLI does not widen that boundary; it makes it scriptable.
 
 Because of the last two points the endpoint is **opt-in**: it arms only when a file named
-`ppcli-enabled` sits beside `PPBridge.dll` (`src\PPBridgeMain.cs:47,84-85`), and both entrances — the
-pipe and the job file — are behind that check. `deploy` never creates it. **Enable the mod, and arm
-it, only while you are using it**; delete the marker afterwards and the mod loads, logs its build
-stamp and does nothing else.
+`ppcli-enabled` sits beside `PPBridge.dll` (`src\PPBridgeMain.cs`), and both entrances — the pipe and
+the job file — are behind that check. `deploy` never creates it.
+
+**Deleting the marker disarms a session that is already running.** `Runner.Update` re-reads it every
+300 frames (~5 s at 60 fps); when it is gone the pipe is stopped and no new request can reach the
+mod. The frame pump deliberately keeps running: a plan already parked has a `finally` block to run,
+and killing the tick would strand whatever it took. Re-arming needs a relaunch. **Enable the mod, and
+arm it, only while you are using it.**
 
 The pipe uses Windows' default DACL rather than a hand-built one (see *No DACL on the pipe* below for
 why a hand-built one broke). Another local user can open the pipe but cannot write a request into it;
@@ -87,6 +120,14 @@ nor from an administrator or SYSTEM.
 .\ppcli.ps1 index                                           # ONE TIME: write catalog\defs.ndjson
 ```
 
+**`run` and `batch` are not read-only, and neither side effect is obvious.** They snapshot
+`Options.jopt` before launching and **restore it byte-exact afterwards** — anything changed in the
+game's settings during that session is discarded (the restore exists because a mod that fails to load
+makes the game rewrite `MOD_ACTIVATED` empty, silently disabling every other mod). They also
+**delete any existing log** at `%TEMP%\ppcli-<install>-<pid>.log` before launching, so an empty log
+can never be mistaken for a mod that printed nothing. They refuse if the install is already running,
+and they stop only the PID they started. `connect` does none of this.
+
 ## The def catalog — say "crabman", not `Crabman_Gunner_TacCharacterDef`
 
 `index` pages `find {all:true}` against **your own running** game and writes two files atomically
@@ -103,8 +144,10 @@ untouched with a warning, so exact def names resolve on a fresh clone and casual
 
 Families are derived from the def TYPE (`names.ps1`), never from a hand-maintained list of def names:
 `actor`, `item`, `status`, `research`, `mission-type`, `map-plot` — and `other`, which is what the
-family rules do not claim. `other` rows are DROPPED at index time: on a stock install they were
-19,623 of 23,012 rows (1.6 MB) and no plan var can ever resolve one, leaving a 3,389-row catalog.
+family rules do not claim. `other` rows are DROPPED at index time — no plan var can ever resolve one,
+and they are the bulk of the repository. Your own numbers are in `catalog\meta.json` after `index`:
+the run that produced the catalog in this working tree scanned `defsScanned` 23,015 defs and kept
+`rows` 3,389.
 
 `plan` then normalises the caller's `defName`, `itemName` and `researchId` — and the plan file's own
 `vars` defaults for those three — **locally, before the plan is sent** — the plan JSON itself goes over the wire unchanged. Precedence is deterministic and there
@@ -135,8 +178,21 @@ dotnet .\selfcheck\bin\Release\SelfCheck.dll            # PPBridge's pure half
 | `-PPRoot` | *`ppcli-install.txt`, else discovered through Steam* | install to drive; required when you keep more than one and have not pinned one |
 | `-ProfileId` | *the single profile directory* | Steam profile id; required when you have more than one |
 | `-Force` | off | `deploy` only: write into an install other than the pinned one |
-| `-TimeoutSeconds` | `300` | wall clock per job |
-| `-InitTimeoutSeconds` | `90` | mod init wait |
+| `-TimeoutSeconds` | `300` | the client's own ceiling per job; at it the job is CANCELLED and the answer is `{"status":"timeout","cancelled":true}` |
+| `-InitTimeoutSeconds` | `90` | `run` only: how long to wait for the mod's init line |
+| `-PipeTimeoutSeconds` | `30` | ceiling on ONE pipe frame — a wedged game, not a slow one |
+| `-FaultPattern` | *empty = any **mod** stack frame* | an exception whose stack matches it, logged **while the client is waiting**, ends the wait as `DEAD RUN` instead of running out the budget. A "mod frame" is decided by a namespace allowlist (`Test-ModFrame` / `$PPCLI_EngineRoots`, `waits.ps1`): a stack line whose root namespace is not the engine's. A bare `NullReferenceException` is written by a perfectly healthy session, which is why the signal is the frame and not the word. Pass a regex to narrow it to one mod |
+| `-IgnoreLogFaults` | off | wait out the full budget anyway; for measuring the fault the fast-fail would cut short |
+| `-CatalogDir` | `.\catalog` | where `index` writes and where `plan` resolves names from |
+
+Six shipped plans carry a `timeoutMs` longer than the client's 300 s default — `build-mission`,
+`load-mission`, `situation`, `start-campaign`, `start-mission`, `weapon-test` — so the first thing a
+newcomer does, run a shipped plan, used to be cancelled mid-run and reported as a timeout on a
+perfectly healthy game. `plan` therefore **derives** its ceiling: with no explicit `-TimeoutSeconds`
+it becomes the plan's own `timeoutMs` + 60 s (so the plan's deadline fires first and names the step),
+announced on stderr. Derived rather than raised to a bigger constant, because a constant rots the
+moment a plan changes; an explicit `-TimeoutSeconds` still wins, which is how a caller deliberately
+becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 000 ms.
 
 ## Output contract
 
@@ -167,12 +223,9 @@ dotnet .\selfcheck\bin\Release\SelfCheck.dll            # PPBridge's pure half
 | `plan` | `{plan:{steps,finally,vars,output}, vars}` | one request, one structured result, per-step trace |
 | `status` / `cancel` | `{jobId}` | job-table questions, answered on the pipe thread |
 
-### Roadmap (one line each)
-
-- **P4** — full batch product for cold-start and bake runs.
-- **P5 — DONE, as plans rather than C#.** `mission.load`, `spawn.actor`, `res.set` and `equip` ship as
-  parameterised files in `plans\`, not as new verbs; see **Plan library** below for why and for what
-  each one is proven to do.
+`batch` is implemented and shipped: one cold launch for a JSON array of `{id,verb,args}`. The gameplay
+verbs an earlier spec wanted in C# (`mission.load`, `spawn.actor`, `res.set`, `equip`) ship instead as
+parameterised files in `plans\` — see **Plan library** below.
 
 ## P2 — the `call` reflection runtime
 
@@ -229,7 +282,10 @@ walks properties or getters and **never** serialises fields automatically:
 - a collection → `{h, type, count, collection:true}`; `count` only when the object already knows it
 - anything else → `{h, type, name, instanceId, guid}` — the last three read only from
   `UnityEngine.Object`/`BaseDef`, which is a whitelist, not a walk
-- a whole response over **64 KB** is refused with advice, not truncated into a lie
+- a **reflection** response over **64 KB** is refused with advice, not truncated into a lie. That is
+  the projection budget, and it is not the transport limit: the pipe frame itself is capped at
+  **262 144 bytes (256 KiB)** in each direction, and the client refuses a larger request before
+  connecting
 
 ### Root aliases (`roots`)
 
@@ -247,7 +303,7 @@ has no coordinate argument, and never checks standability (`TacticalDeployZone.c
 This is the P2 acceptance sequence, and it is **no longer hypothetical**.
 
 > **Verified in-game 2026-08-25**, map `SCV_PLT_Ambush_56x56_A`, `levelState: Playing`, against a
-> live `connect` pipe (build `5a40b426`). Requested `(11.5, 0.0, -4.5)`, achieved
+> live `connect` pipe. Requested `(11.5, 0.0, -4.5)`, achieved
 > `(11.5, 0.0, -4.5)` — **delta exactly zero** — `InPlay: true`, and the new `Crabman_1` shows up in
 > the alien faction's own `Actors` enumeration. 23 `call` round-trips, zero failed steps.
 > The sequence below is the transcript, not a design. Two things in the previously-documented
@@ -412,7 +468,7 @@ step conditional.
 
 ##### VERIFIED IN-GAME 2026-08-25 — the A/B, on one map, with a control
 
-Build `1d3933b1`, a tactical save on `SCV_PLT_Ambush_56x56_A`, `levelState: Playing`.
+A tactical save on `SCV_PLT_Ambush_56x56_A`, `levelState: Playing`.
 Def used: **`S_Chiron_FireWorm_TacCharacterDef`**, chosen because it is **NOT resident** on that map —
 `console assets_loaded_roots list_all` lists exactly eight loaded `*ComponentSetDef` roots
 (`Acheron`, `Crabman_Template`, `Crate`, `Fishman`, `IntruderExitZone`, `PlayerExitZone`, `Siren`,
@@ -633,7 +689,14 @@ everything computational is already a `call`.
 - **Branching:** `if` / `unless` on a step, truthy-tested. A skipped step is traced, never a gap.
 - **Repetition:** `repeat` with `times` (capped at 100), an optional `while` guard re-checked before
   each extra pass, and nesting capped at 4. Every pass still burns the global step budget.
-- **Cleanup is MANDATORY and unconditional.** `finally` runs on success, on a failed step, on the
+- **Cleanup is unconditional, and it is a convention rather than a schema rule.** The engine accepts
+  a plan with no `finally` (`Plan.cs:381` reads `p["finally"] as JArray`, and null is a valid answer)
+  — deliberately, because an ad-hoc inline plan that takes nothing has nothing to release. Every plan
+  shipped in `plans\` has one, and a plan that changes global state without one is a defect rather
+  than a style choice; `selfcheck\`'s `EveryShippedPlan` asserts a `finally`, an `output` and a
+  `timeoutMs` on **all thirteen** files in `plans\`, and drives two of them
+  (`spawn-at-coordinate.json`, `aim-and-run.json`) far enough to prove the whole block drains on an
+  early failure. When a `finally` is present it runs on success, on a failed step, on the
   step cap, on the plan timeout and on cancellation — five doors, one exit. It gets its **own** step
   budget and 15 s of grace past the plan's deadline, and a failing step inside it never aborts the
   block (most cleanup is release-what-was-never-taken). That grace is a **bound**: a `finally` that
@@ -650,10 +713,18 @@ everything computational is already a `call`.
 - **Caps that are not advice:** `timeoutMs` 60 s default / 600 s hard, `maxSteps` 200 default / 2000
   hard, 16 steps per frame before the plan yields, 500 trace entries. An unbounded plan on the main
   thread would hang the game, so none of these are optional.
-- **Result:** `{ok, code, error, step, steps, elapsedMs, cleanupRan, cleanupSteps, output, trace}`.
-  The trace is one compact line per step (`id`, `verb`, `ok`, `ms`, `error`) so a failed plan says
-  exactly which step failed and why. Full step results are **not** returned — ask for what you want
-  through `output`, which is what keeps a 21-step plan inside the response budget.
+- **Result:** `{ok, code, error, step, result, steps, elapsedMs, cleanupRan, cleanupSteps, output,
+  outputWithheld, trace}`. The trace is one compact line per step (`id`, `verb`, `ok`, `ms`, `error`)
+  so a failed plan says exactly which step failed and why. Full step results are **not** returned —
+  ask for what you want through `output`, which is what keeps a 21-step plan inside the response
+  budget.
+- **A FAILED plan publishes NO `output`.** The gate is in the engine, not in any plan file
+  (`Plan.cs`, `PlanRun.Done`): `output` used to be resolved whether or not the run had failed, so a
+  plan whose own assertion had just refused the run still handed back every figure it had measured —
+  the weapon bench asserted nothing was wedged, failed that assertion, and returned hit rate, damage
+  and dispersion anyway. Now `output` is `null`, `outputWithheld` says why, and `result` carries the
+  failing step's own DTO — so the value that tripped the assertion (a `wait` reports it as `last`)
+  still reaches the caller while the invalid figures do not.
 - A plan may not run a plan. The engine cannot recurse.
 
 ### `plans\spawn-at-coordinate.json` — the 23 round-trips as ONE request
@@ -747,7 +818,7 @@ no way to re-parameterise it without a rebuild. **`src\` was not touched.**
 | `spawn-at-coordinate.json` | `defName` `faction` `x` `z` `probeY` `snapRadius` `preloadTimeoutMs` | one actor at one exact point, assets preloaded first | **VERIFIED** — placement 2026-08-25 (P2), preload + visibility same day (7 renderers / 637 transforms vs 3 / 541 without) |
 | `spawn-squad.json` | `defName` `faction` `count` `minDistance` `maxDistance` `useCenter` `centerX/Y/Z` `probeY` `snapRadius` `preloadTimeoutMs` | N actors in a distance **band** around the selected actor (or an explicit point), each position validated with `CanStandAt`, achieved distance reported per actor | **VERIFIED** — placement + distance, and visibility after the preload fix; it spawned **invisible** actors until then, see *The preload, and the false "not required"* |
 | `equip-actor.json` | `actor` `itemName` `container` `listMember` | give an in-play actor an item, and prove the container grew | **VERIFIED** |
-| `load-mission.json` | `name` `phase` `waitReady` `phaseTimeoutMs` `readyTimeoutMs` | load a savegame and wait on `HasAnyTurnStarted` | **VERIFIED**, both halves — tactical (`load_game 4` → `phase:"tactical"` in ~20 s) and geoscape (a geoscape save loaded **from a live geoscape** → `phase:"geoscape"`, `Playing`, in 14.9 s, 2026-08-28) |
+| `load-mission.json` | `name` `phase` `waitReady` `phaseTimeoutMs` `readyTimeoutMs` | load a savegame and wait on `HasAnyTurnStarted` | **VERIFIED**, both halves — tactical (`phase:"tactical"` in ~20 s) and geoscape (a geoscape save loaded **from a live geoscape** → `phase:"geoscape"`, `Playing`, in 14.9 s, 2026-08-28) |
 | `situation.json` | all of `spawn-squad` + `snapshot` `restoreFirst` `itemName` `equip` | restore a snapshot, place a composition at a distance with equipment, summarise the result — preloads the actor def **and** the item def (`give` does the same, `TacConsoleGameplay.cs:770`) | **PARTLY** — spawn+equip body verified, restore head not, preload verification pending |
 | `set-resources.json` | `resource` `amount` | apply a resource **delta** through the shipped cheat path, wallet read back before/after | **VERIFIED** 2026-08-28 — Materials **1000 → 1500** on a campaign `start-campaign.json` began from the main menu |
 | `unlock-research.json` | `researchId` | `CompleteResearch` (rewards + cascade), state read back before/after | **VERIFIED** 2026-08-28 — `PX_Alien_Fishman_ResearchDef` went **Hidden → Completed**, same campaign |
@@ -767,7 +838,7 @@ no way to re-parameterise it without a rebuild. **`src\` was not touched.**
 
 ### `spawn-squad.json` — measured, not asserted
 
-> **Verified in-game 2026-08-25**, map `SCV_PLT_Ambush_56x56_A`, build `2e1327b9`, anchor
+> **Verified in-game 2026-08-25**, map `SCV_PLT_Ambush_56x56_A`, anchor
 > `@selected` at `(2.50, 0.05, 2.50)`, band **9.0–11.0 m**, 126 ring candidates.
 > Requested 3, spawned 3, **64 steps in 328 ms**, cleanup ran.
 >
@@ -888,11 +959,16 @@ campaigns back to back, `build-mission` from a live geoscape, and a geoscape sav
 geoscape in 14.9 s. `start-mission` reports `cameFrom:geoscape` when it came that way. Leaving a
 tactical mission was always fine and still is.
 
-### No plan ships UNVERIFIED any more — and what the geoscape cost to reach
+### One unverified step is left — and what the geoscape cost to reach
 
-Three plans carried an UNVERIFIED label until 2026-08-28, all for one reason: nothing could reach a
-live geoscape without a human playing one. `start-campaign.json` removed that, and all three were
-run against the campaign it generated from the main menu.
+Every shipped plan has been run in-game except **`situation.json`'s restore head**: its spawn and
+equip body is `spawn-squad.json`'s and `equip-actor.json`'s, both proven, but the snapshot-restore
+step at the front was never seen to complete (the session's game process died mid-load). Run it with
+`restoreFirst:false` to stay on proven ground. The table above says the same thing per plan.
+
+Three other plans carried an UNVERIFIED label until 2026-08-28, all for one reason: nothing could
+reach a live geoscape without a human playing one. `start-campaign.json` removed that, and all three
+were run against the campaign it generated from the main menu.
 
 - `load-mission.json`'s geoscape half — a geoscape save loaded **from a live geoscape**,
   `phase:"geoscape"`, `Playing`, in 14.9 s.
@@ -966,7 +1042,15 @@ whatever happened to it — all three flight paths end there (`:125`, `:160`/`:1
 - **Simulations are skipped.** The damage predictor runs this identical code every time the UI hovers
   a target — a simulation is a `ProjectileLogic` with no `Projectile` (`:41`).
 - **OFF by default.** Nothing is patched until `observe {"action":"start"}`, and `stop` unpatches.
-  The ring is 512 entries, drops the oldest, and the prefix cannot throw.
+  The prefix cannot throw.
+
+**The ring is bounded, and the answer says by how much.** It holds **512** impacts (`Shots.Capacity`)
+and overwrites the oldest beyond that; `observe read` lists at most **200** rows (`Shots.MaxRows`),
+again dropping the oldest from the listing, because when a run overflows it is the last shots that
+are being asked about. So `impacts` is not "every impact" — read it against the three counters in the
+same answer: `recorded` is everything the prefix saw, `stored` is how many the ring still holds,
+`dropped` is how many it overwrote, and `returned` is how many rows the listing carries. Every hit,
+damage and dispersion figure is computed over `stored`, not over `recorded`.
 
 `observe read` gives the impact rows and `dispersion` (`mean` / `sigma` / `max`) about both the group
 centroid and the aim point, plus **two families of hit and damage figures that must not be confused**:
@@ -1004,7 +1088,7 @@ the caps and the arithmetic with no game running.
 
 ### VERIFIED IN-GAME 2026-08-28 — and the control run that makes it evidence
 
-Build `e9bebd02`, a tactical save on `SCV_PLT_Ambush_56x56_A`, `Playing`.
+A tactical save on `SCV_PLT_Ambush_56x56_A`, `Playing`.
 `PX_AssaultRifle_WeaponDef` on `Soldier_4`, a `Crabman_Gunner` spawned at ~10 m, 5 shots, freshly
 reloaded mission before each run.
 
@@ -1060,49 +1144,56 @@ sum equalled the HP delta exactly — and its one miss was recorded landing in
 
 ### Known limits
 
-- **There is no volley ceiling, and `shots` is accepted from 1 to 100** (the engine's own `repeat`
-  ceiling, `Plan.cs MaxIterations`); a request outside that range is refused up front by name, never
-  truncated into a short volley reported as `ok`. What that does **not** mean is that any length
-  returns figures — see the two entries below for what a long volley really does.
-  - **The strongest CLEAN pass is 3 activations / 18 projectiles**: `recovered:0`,
-    `targetHitRate` 0.667, `damageOnTarget` 222. That is the run to quote. Volleys of 20 activations
-    / 120 projectiles are reached repeatedly, but the ones measured so far carried a non-zero
-    `recovered` and would now fail, so they are **not** a clean proof of anything.
-  - **A long volley against a target that DIES may legitimately end in a named refusal.** Once
-    actors start dying, something throws inside `OnTrajectoryEnd`. The stack is cut at the Harmony
-    wrapper, so the culprit **cannot be named** — do not attribute it to any particular mod or `Die`
-    patch. The plan refuses by name rather than reporting the volley.
-  - **The pacing finding is independent of all that**, and it is a falsification pair rather than one
-    happy run: swapping that single settle predicate moves the *same* run between **4** and **20**
-    activations.
-  - **The "~6-shot ceiling" never existed** — it was the settle predicate. `PX_AssaultRifle` fires
-    six projectiles per activation while `Shots.Landed` counts one, and the old settle released the
-    pass immediately because a Regular shot is *enqueued*, not played (`ShootAbility.cs:173`). The
-    loop tore through the first burst calling it five shots — a live log shows four activations
-    inside 34 ms — and each enqueue is `soloAfterCurrent`, which discarded the ones behind it
-    (`ActionComponent.cs:78-91`). With the burst spent and four activations thrown away, the next
-    `landed` waited forever on an actor that read idle. The ~3 s sleep "fixed" it by letting each
-    burst finish, which is why it looked like pacing.
-  - **The earlier "`HasExecutingAbility(null,false)` never goes false" was measured on an actor
-    already wedged** by those discarded activations. It is now the settle predicate
-    (`TacticalActorBase.cs:695`) and it is what makes long volleys honest.
-  - **Target death was ruled out** while chasing the wrong cause and the finding stands: before a
-    failing activation the target read `InPlay` at full health, and `Health.SetToMax` before every
-    shot changed nothing.
+- **`shots` is accepted from 1 to 100** (the engine's own `repeat` ceiling, `Plan.cs MaxIterations`),
+  as a whole number; a request outside that range, or a fractional one, is refused up front by name
+  rather than truncated into a short volley reported as `ok`. **Accepted is not the same as
+  answerable**, and two bounds bite before 100 does:
+  - **The ring.** 100 activations of a 6-projectile burst is 600 impacts against a 512-entry ring, so
+    a max-length volley fails `assert-nothing-dropped` by construction. Ask for a length whose
+    projectile count fits.
+  - **A target that DIES.** Once actors start dying, something throws inside `OnTrajectoryEnd`. The
+    stack is cut at the Harmony wrapper, so the culprit **cannot be named** — do not attribute it to
+    any particular mod or `Die` patch. The plan refuses by name rather than reporting the volley.
+  - **Pacing needs the right settle predicate**, and that is what bounded volley length before it was
+    understood. `Shots.Landed` answers "this shot reached its impact"; `HasExecutingAbility(null,
+    false)` (`TacticalActorBase.cs:695`, which skips `IdleAbility` at `:699`) answers "the whole
+    activation is over". Both are needed, because a Regular shot is *enqueued*, not played
+    (`ShootAbility.cs:173`), and each enqueue is `soloAfterCurrent`, which discards everything already
+    queued (`ActionComponent.cs:78-91`) — a settle that releases on the enqueue tears through a burst
+    counting activations that were then thrown away, and the next `landed` waits forever on an actor
+    that reads idle. Swapping that one predicate moves the *same* run between **4** and **20**
+    activations, which is the falsification pair rather than one happy result. Target death was ruled
+    out separately: before a failing activation the target read `InPlay` at full health, and
+    `Health.SetToMax` before every shot changed nothing.
 - **`recovered` must read `0`, and a non-zero value invalidates the run.** `OnTrajectoryEnd` removes
   the projectile from `ProjectilesInFlight` and clears `Projectile.IsActive` in its **last two
   statements** (`ProjectileLogic.cs:359-360`), *after* `_damageAccum.ApplyAddedDamage()` (`:355`)
-  runs the whole damage chain — and with it every mod's Harmony patch on `TacticalActor.Die`. One
+  runs the whole damage chain — the game's own code and every Harmony patch sitting on it alike. One
   throw in there and the projectile is never released, so `TacticalMap.HasActiveProjectiles`
   (`TacticalMap.cs:133`) is stuck true for the rest of the mission and the game's own firing
   coroutine waits on it forever (`TacticalLevelController.cs:1759,:1797`). `ShotPatch.Unwedge` runs
   those two statements itself and returns `__exception` **unchanged**, so the throw still reaches the
-  log and whoever wrote the patch still learns about it. Each repair increments `recovered`
-  (it fired twice in one 20-activation run). **A non-zero `recovered` FAILS the plan** — the
-  `assert-no-recovery` step is fatal by design: the release keeps the mission playable, which is
+  log. **The finalizer cannot say what threw** — the stack is cut at the Harmony wrapper — so
+  `recovered` reports that a repair happened and never who caused it; do not read it as naming a mod,
+  and do not advise removing one on the strength of it. Each repair increments the count.
+  **A non-zero `recovered` FAILS the plan** — the
+  `assert-nothing-wedged` step is fatal by design: the release keeps the mission playable, which is
   worth having, but the hit and damage figures were then measured *across* a repair, and reporting
-  them anyway would be exactly the silently-wrong answer this bench exists to refuse. The count is
-  still in the output; the figures are withheld.
+  them anyway would be exactly the silently-wrong answer this bench exists to refuse. **Failing was
+  not enough on its own** — the engine used to resolve `output` regardless, so the assertion fired and
+  the figures came back anyway. A failed plan now publishes no `output` at all, and the predicate
+  reads `Shots.Recovered` directly so the COUNT survives in the failure's `result.last`.
+- **`dropped` must read `0` too, for the same reason.** The impact ring holds `Shots.Capacity` (512)
+  and overwrites the OLDEST beyond that, and every statistic — hit rate, damage totals, dispersion —
+  is computed over what the ring still holds. A non-zero `dropped` therefore means the answer is a
+  measurement of the last 512 projectiles reported under the heading of all of them, so
+  `assert-nothing-dropped` refuses the run the same way. At the plan's own ceiling this is reachable,
+  not theoretical: 100 activations of a 6-projectile burst is 600. On a run that comes back at all,
+  `stored`, `dropped` and `returned` are in the output — `returned` (capped at `Shots.MaxRows`, 200)
+  trims the impact LISTING only and changes no statistic.
+- **`shots` must be a whole number.** `1.5` sits inside 1..100, so the volley used to fire twice and
+  then die minutes later at `assert-volley-not-long` with an enemy already spawned. It is now refused
+  up front by `assert-shots-integral`.
 - **The enemy placement is a random draw from the distance band**, so it can land behind cover and
   the run FAILS at `assert-target`. That is the takeability check working. Re-run, or set `seed`.
 - **The plan does not spawn the shooter.** It equips the one you have selected. Use
@@ -1110,12 +1201,15 @@ sum equalled the HP delta exactly — and its one miss was recorded landing in
 - **Spawned enemies are left in place on purpose** (watching the tracers is half the point), so
   repeated runs litter the map. Reload the save between measurements.
 
-## Measured results (2026-08-25)
+## Measured on the development machine
 
-- **deploy** prints `Deployed PPBridge to <install>\Mods\PPBridge (build=65e87f7f)`.
-- **`run ping`** → `{"ok":true,"build":"65e87f7f","stale":false,"done":1,"log":"...","results":[{"id":"r1","result":{"ok":true,"protocol":"ppcli/0","build":"65e87f7f"}}]}` — **17 s** cold.
+Shapes to expect, not figures a reader reproduces. Build stamps and protocol strings are per-session
+and are deliberately not quoted.
+
+- **deploy** prints `Deployed PPBridge to <install>\Mods\PPBridge (build=<sha1 prefix>)`.
+- **`run ping`** → `{"ok":true,"build":"…","stale":false,"done":1,"log":"…","results":[{"id":"r1","result":{"ok":true,"protocol":"…","build":"…"}}]}` — **17 s** cold.
 - **`run state`** at main menu → `{"ok":true,"phase":"menu","scene":"HomeScreen","level":"HomeScreenLevel(Clone)","levelState":"Playing"}`.
-- **`run console`** with `{"command":"commands","args":[]}` → all **344** native commands with descriptions, captured through a custom `IConsole`.
+- **`run console`** with `{"command":"commands","args":[]}` → **344** native commands with descriptions on that build, captured through a custom `IConsole`.
 - Unknown command → `{"ok":false,"error":"unknown command 'no_such_command_xyz'"}` — structured refusal, not a throw.
 - **Spawn at a chosen coordinate: PROVEN.** `SCV_PLT_Ambush_56x56_A`, requested `(11.5, 0.0, -4.5)`,
   achieved `(11.5, 0.0, -4.5)`, `InPlay: true`, 23 `call` round-trips at ~20-60 ms each. This is the
@@ -1125,19 +1219,28 @@ sum equalled the HP delta exactly — and its one miss was recorded landing in
 
 ### Mod activation — the profile trap
 
-The mod must be in the activated-mods array or the client **refuses to launch** (by design).
+The mod must be in the activated-mods array or `run`/`batch` **refuse to launch** (by design).
 
 File: `...LocalLow\Snapshot Games Inc\Phoenix Point\Steam\<SteamID>\Options.jopt`
 
-Key `MOD_ACTIVATED` points at an object with `"#Type": 11` whose `CollectionValues` lists mod ids.
-The element count is duplicated in `ArrayDimensions.CollectionValues` and **must be kept in sync**.
+`Contents.Objects` is a flat pool of `{ObjectID, ObjectValue}` records. The options dictionary holds
+`{Key, Value:{ObjectID}}` pairs, and `MOD_ACTIVATED`'s points at the record whose `CollectionValues`
+**is** the activated list. `Test-ModActivated` (`paths.ps1`) walks exactly that and asks whether the
+list `-contains` the id.
 
-Recipe:
-1. Back up `Options.jopt`.
-2. `$j = Get-Content Options.jopt -Raw | ConvertFrom-Json`
-3. Append `com.morgott.PPBridge` to the `CollectionValues` array.
-4. Set `ArrayDimensions.CollectionValues` to the new count.
-5. `$j | ConvertTo-Json -Depth 100 | Set-Content Options.jopt`
+That is a change from the preflight's first version, which asked whether the id appeared **anywhere**
+in the file. A deactivated mod satisfies that just as well as an activated one — the id is still
+written into the file — so the check passed on installs where the mod was switched OFF, and the run
+then died with the mod loaded and silent: the exact failure the preflight exists to prevent. The
+refusal now names the array it actually read:
+
+```text
+REFUSED: 'com.morgott.PPBridge' is not in MOD_ACTIVATED in <...>\Options.jopt.
+```
+
+**Tick the mod in the in-game manager; do not rewrite this file.** The check is read-only on purpose —
+re-serialising it once shrank it from 32,991 to 18,996 bytes. If you edit it anyway, note that the
+element count is duplicated in `ArrayDimensions.CollectionValues` and must be kept in sync.
 
 ### Options.jopt restoration
 

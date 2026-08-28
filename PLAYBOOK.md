@@ -3,24 +3,32 @@
 **Front door. Find your intent, copy the line, run it. Do not dig the decompile first.**
 Everything below is run from the PPCLI directory against a **running** game. Depth is in `docs/REFERENCE.md`.
 
-## First run — four rules
+## First run — five rules, in this order
 
 1. **Arm it once.** `.\ppcli.ps1 deploy`, then create the marker the deploy line prints:
    `New-Item -ItemType File "<install>\Mods\PPBridge\ppcli-enabled"`. Without it the mod loads and
-   does nothing. Enable `PPBridge` in the in-game mod manager too. Then
-   `.\ppcli.ps1 index` once, to resolve casual names.
+   does nothing. Then launch the game **with `-mods`** — no `-mods`, no mods at all — and enable
+   `PPBridge` once in the in-game mod manager.
 2. **Wait for the gate.** `.\ppcli.ps1 connect state` must ANSWER first. Querying a still-initialising
    game hangs for minutes and looks exactly like an engine bug.
-3. **Keep two installs if you automate.** One install for automation — cold-launch it, kill it, spawn
+3. **Then `index`, once.** `.\ppcli.ps1 index` pages the LIVE repository into `catalog\`, so it needs
+   the gate to have answered. It is what makes casual names like `"defName":"crabman"` resolve.
+4. **Keep two installs if you automate.** One install for automation — cold-launch it, kill it, spawn
    into it — and the install you actually play. `-PPRoot "<path>"` picks which one a command means;
    with no `-PPRoot` the install is discovered through Steam, which only works when there is exactly
    one — and the one it finds is the one you PLAY. Write the automation copy's path into
-   `ppcli-install.txt` beside `ppcli.ps1` and that becomes the default instead; `deploy` then refuses
+   `ppcli-install.txt` beside `ppcli.ps1` (one line, gitignored) and that
+   becomes the default instead; `deploy` then refuses
    any other install by name, and prints the `-Force` line if you meant it. Reach the install you play
    with `connect` only: never cold-launch or kill it, and think twice before anything that writes to a
    real save.
-4. **`connect` needs a game already running; `run`/`batch` cold-launch one (~17 s).** Redeploy after
-   every mod edit (`.\ppcli.ps1 deploy`) or the game silently runs the old DLL.
+5. **`connect` needs a game already running; `run`/`batch` cold-launch one** (~17 s to a menu answer
+   on the machine this was measured on). A game YOU launched by hand is fine — the mod publishes its
+   endpoint whenever it is enabled and armed, whoever started the process. Redeploy after every mod
+   edit (`.\ppcli.ps1 deploy`) or the game silently runs the old DLL.
+   **`run` and `batch` are not free**: they restore `Options.jopt` byte-exact afterwards, discarding
+   any setting changed during that session, and they delete the run's log before launching.
+   `connect` does neither.
 
 ## Names — say it plainly, the client resolves it
 
@@ -38,7 +46,9 @@ names keep working, casual ones do not.
 
 ## I built a weapon — show me it firing, and give me numbers
 
-Select one of your soldiers in a live mission, then:
+**Needs a tactical mission that is PLAYING, and a shooter.** Either select one of your soldiers in
+the game, or pass an explicit handle as `"shooter"` — see *Getting a handle* below. The plan does
+**not** spawn the shooter; use `spawn-at-coordinate.json` first if the mission has none.
 
 | Intent | Command |
 |---|---|
@@ -58,25 +68,34 @@ figures, which are not the same question**:
 - **any-ACTOR**, everything a projectile touched, bystanders and the shooter included:
   `hitsAnyActor` / `misses` / `hitRateAnyActor` / `damageOnActors` / `damageTotal`.
 
-They diverge in practice — a 10-shot run read `targetHits` 6 against `hitsAnyActor` 9. Quote the
-per-target pair when you mean the weapon.
+They diverge in practice — one measured 10-shot run read `targetHits` 6 against `hitsAnyActor` 9.
+Quote the per-target pair when you mean the weapon.
 
 `shots` counts **activations**, `projectiles` counts impacts: a burst weapon fires several per pull
 of the trigger (`PX_AssaultRifle` answers 6), and `projectilesPerShot` is reported so the two do not
-read as a contradiction. The strongest clean pass is 3 activations / 18 projectiles.
+read as a contradiction.
+
+Impacts live in a ring of **512** and `observe read` lists at most **200** rows, oldest dropped from
+the listing. The output says which is which: `projectiles` is everything that landed, `stored` is what
+the ring still held, `dropped` is what it overwrote, `returned` is how many rows the listing carries.
+Every statistic is over `stored` — so **`dropped` must be `0`, and a non-zero value FAILS the run**.
+`returned` trims the listing only and changes nothing.
 
 **`recovered` must be `0`, and a non-zero value FAILS the run** rather than printing figures.
-It means another mod threw inside a projectile's flight and left it stuck; PPBridge released it and
+Something threw inside the damage chain and left a projectile stuck; PPBridge released it and
 re-threw the exception unchanged, so the mission stays playable and the throw still reaches the log
-— but the numbers would have been measured across a repair, so they are withheld.
+— but the numbers would have been measured across a repair, so they are withheld. The stack is cut
+at the Harmony wrapper: `recovered` says that something threw, never **who**. Do not blame a mod.
 
-**A long volley can end in a refusal, and that is not a ceiling.** `shots` is 1..100 and the whole
-range is accepted, but once actors start dying something throws inside `OnTrajectoryEnd` and the run
-refuses by name. The stack is cut at the Harmony wrapper, so there is no mod to point at.
+**A long volley can end in a refusal.** `shots` is a whole number in 1..100 and the whole range is
+accepted, but accepted is not answerable: 100 activations of a 6-projectile burst is 600 impacts
+against a 512-entry ring, so a max-length volley fails `assert-nothing-dropped` by construction, and
+once actors start dying something throws inside `OnTrajectoryEnd` and the run refuses by name.
 
 Dispersion is about the aim point (`GetWorkingPosition()`), not the enemy's feet; `enemyFeet` is
-reported too. **`spread:0` must cluster far tighter than a stock run**; measured over 5 shots at
-~10 m: stock `mean 0.144 m`, zero-spread `mean 0.0015 m`.
+reported too. **`spread:0` must cluster far tighter than a stock run.** Measured here over 5 shots at
+~10 m: stock `mean 0.144 m`, zero-spread `mean 0.0015 m` — an example of the shape to expect, not a
+figure your run will reproduce.
 
 The plan needs `weaponDef` to be unambiguous. `"PX_AssaultRifle"` is **refused** locally — it matches
 the rifle *and* its ammo clip — which is the point: an ambiguous name would measure the clip.
@@ -85,8 +104,10 @@ the rifle *and* its ammo clip — which is the point: an ambiguous name would me
 |---|---|
 | `assert-target ... predicate was still false` | no line of sight — the enemy landed behind cover. Re-run, or change `distance`. |
 | `landed ... still false after 20000 ms` | a shot did not produce a projectile. Common on a long volley once the target starts dying. Re-run, or ask for fewer shots — there is no volley-length ceiling to work around. |
-| `assert-no-recovery` failed | `recovered` was non-zero: another mod threw inside a projectile's flight. The figures are withheld on purpose; re-run without that mod. |
+| `assert-no-recovery` failed | `recovered` was non-zero: something threw inside a projectile's flight and the bridge had to release it. The figures are withheld on purpose. The stack is cut at the Harmony wrapper, so the source is not identifiable from the result — read the game log. |
 | `assert-shots-at-most-100` / `assert-shots-at-least-1` failed | `shots` is 1..100. It is refused up front, never truncated into a short volley reported as `ok`. |
+| `assert-shots-integral` failed | `shots` must be a whole number — there is no half an activation. Refused before anything is touched. |
+| `assert-nothing-dropped` failed | the volley overflowed the 512-impact ring, so every figure would have covered only the last 512 projectiles. Ask for fewer shots. |
 | `assert-one-weapon` failed | the name matched more than one `WeaponDef`. Name it exactly. |
 
 Read the observer on its own with `.\ppcli.ps1 connect observe '{"action":"status"}'`.
@@ -101,15 +122,24 @@ geoscape note under the table.
 |---|---|
 | launch ANY map as a playable mission | `.\ppcli.ps1 plan .\plans\start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}'` |
 | start a real campaign (geoscape) | `.\ppcli.ps1 plan .\plans\start-campaign.json '{"difficultyIndex":1}'` |
-| build a mission: my map, my roster, my enemies | `.\ppcli.ps1 plan .\plans\build-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","playerCount":2,"playerCharacterDefName":"PX_Assault1_CharacterTemplateDef"}'` |
+| build a mission: my map, my roster, my enemies | `.\ppcli.ps1 plan .\plans\build-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","playerCount":2,"playerCharacterDefName":"PX_Assault1_Base_TacCharacterDef"}'` |
 | the same, with NO player squad at all | `.\ppcli.ps1 plan .\plans\build-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","playerCount":0}'` |
 | fire a named geoscape event on demand | `.\ppcli.ps1 plan .\plans\fire-event.json '{"eventId":"PROG_PU1"}'` |
 
-- `scene` is a MapPlotDef's own scene name — 213 plots ship, and `ALN_PLT_Nest_48x48_A_PlotDef`
-  means `"scene":"ALN_PLT_Nest_48x48_A"`. Find one with
-  `.\ppcli.ps1 connect find '{"query":"PlotDef","pageSize":50}'`, then read `Scene.SceneName` off it.
-- `start-mission` takes ~12 s and reports a per-faction actor census. `start-campaign` takes ~15 s
-  and reports the starting base and squad it generated.
+- These plans ask for 600-900 s and the client follows them: `plan` derives its own ceiling from the
+  plan's `timeoutMs` + 60 s unless you pass `-TimeoutSeconds` yourself.
+- `scene` is a MapPlotDef's own scene name. All 209 `MapPlotDef` rows in the catalog built here are
+  named `<scene>_PlotDef`, so `ALN_PLT_Nest_48x48_A_PlotDef` means `"scene":"ALN_PLT_Nest_48x48_A"`.
+  `find` returns only `{name, guid, type}`; to read the name off the def itself it is three calls:
+
+  ```powershell
+  .\ppcli.ps1 connect find '{"query":"_PlotDef","pageSize":50}'
+  .\ppcli.ps1 connect call '{"op":"invoke","target":"@defs","member":"GetDef","args":["<guid>"]}'
+  .\ppcli.ps1 connect call '{"op":"get","target":"<PLOT>","member":"Scene"}'
+  .\ppcli.ps1 connect call '{"op":"get","target":"<SCENEREF>","member":"SceneName"}'
+  ```
+- Measured here: `start-mission` ~12 s, reporting a per-faction actor census; `start-campaign` ~15 s,
+  reporting the starting base and squad it generated.
 - **A running GEOSCAPE is left for you now.** These plans (and `load-mission`) no longer refuse when
   a campaign is open: they do what the game itself does before tearing a geoscape down
   (`GeoLevelController.cs:1406,:1444`) — set `GeoscapeView.UpdateStateStack=false`, call
@@ -129,6 +159,12 @@ geoscape note under the table.
 
 ## Tactical — the plans
 
+**Every line below needs a tactical mission that is PLAYING** (`connect state` → `"phase":"tactical"`,
+`"levelState":"Playing"`). `spawn-squad` and `situation` additionally need a **selected actor** to
+measure distances from, unless you pass `useCenter:true` with an explicit centre; `equip-actor` needs
+an actor already in play. The geoscape lines at the end of the table need a live geoscape,
+not a mission: `start-campaign.json` gets there from the main menu.
+
 | Intent | Command |
 |---|---|
 | spawn 3 crabmen near my soldiers | `.\ppcli.ps1 plan .\plans\spawn-squad.json '{"defName":"crabman","count":3,"minDistance":9.0,"maxDistance":11.0}'` |
@@ -147,6 +183,31 @@ geoscape note under the table.
 Every plan takes the vars listed in its own file's `vars` block; the ones above are the ones worth
 naming. Distance is a search constraint — the plan reports what it ACHIEVED, per actor.
 
+### Getting a handle — how to name an actor without touching the UI
+
+`@selected` is whatever the human selected in the game, and it is **null during another faction's
+turn**. Four calls get a real actor handle instead:
+
+```powershell
+.\ppcli.ps1 connect call '{"op":"get","target":"@tac","member":"Factions"}'      # -> <FACTIONS>
+.\ppcli.ps1 connect items '{"h":"<FACTIONS>","page":0,"pageSize":10}'           # rows are TacticalFaction
+.\ppcli.ps1 connect call '{"op":"get","target":"<FACTION>","member":"Actors"}'  # -> <ROSTER>
+.\ppcli.ps1 connect items '{"h":"<ROSTER>","page":0,"pageSize":40}'             # rows carry h, type, name
+```
+
+`get <FACTION> TacticalFactionDef` says which side it is (`Phoenix_TacticalFactionDef`,
+`Alien_TacticalFactionDef`, …). Or skip the first two lines and read `@faction.Actors` — the faction
+currently on turn.
+
+**The first rows are ZONES, not soldiers.** `Actors` yields `TacticalActorBase`, so a real page
+opened with `TacticalDeployZone` and `TacticalExitZone` entries before the first
+`TacticalActor`. Take the first row whose `type` is exactly
+`PhoenixPoint.Tactical.Entities.TacticalActor`, and page on while `hasMore` is true.
+
+`Actors` is also a lazy iterator, so it projects with **no `count` and no `collection:true`** —
+`items` still pages it, and a missing `count` does not mean "not a collection".
+Pass a row's `h` wherever a plan takes an actor: `"shooter":"h:3:17"`, `"actor":"h:3:17"`.
+
 ## Ask the game something
 
 | Intent | Command |
@@ -157,11 +218,14 @@ naming. Distance is a search constraint — the plan reports what it ACHIEVED, p
 | enumerate the def repository, one page | `.\ppcli.ps1 connect find '{"all":true,"page":0,"pageSize":200}'` |
 | any of the 344 native console commands | `.\ppcli.ps1 connect console '{"command":"info","args":[]}'` |
 | a console VARIABLE (`console` cannot reach these) | `.\ppcli.ps1 connect var '{"name":"ai_enabled","value":"false"}'` |
-| watch where shots land (start / stop / read) | `.\ppcli.ps1 connect observe '{"action":"start"}'` · `'{"action":"read","aim":[0,0,0]}'` · `'{"action":"stop"}'` |
+| start watching where shots land | `.\ppcli.ps1 connect observe '{"action":"start"}'` |
+| read the impacts so far | `.\ppcli.ps1 connect observe '{"action":"read","aim":[0,0,0]}'` |
+| stop watching (and unpatch) | `.\ppcli.ps1 connect observe '{"action":"stop"}'` |
 | read a live field / call a method | `.\ppcli.ps1 connect call '{"op":"get","target":"@selected","member":"Pos"}'` |
 | what members does this handle have | `.\ppcli.ps1 connect inspect '{"h":"HANDLE"}'` |
 | page a collection handle (`page` is 0-based) | `.\ppcli.ps1 connect items '{"h":"HANDLE","pageSize":20}'` |
-| save / reload a named state | `.\ppcli.ps1 connect snapshot '{"name":"before"}'` · `.\ppcli.ps1 connect restore '{"name":"before"}'` |
+| save a named state | `.\ppcli.ps1 connect snapshot '{"name":"before"}'` |
+| reload it (issue-only — follow with a `wait`) | `.\ppcli.ps1 connect restore '{"name":"before"}'` |
 | wait for a mission to be playable | `.\ppcli.ps1 connect wait '{"ready":true,"timeoutMs":120000}'` |
 | a long plan is still running | `.\ppcli.ps1 connect status '{"jobId":"JOB_ID"}'` |
 
@@ -180,10 +244,20 @@ carried; the save and snapshot names are whatever exists in the install you are 
 - **`REFUSED: '<x>' matches N defs`** — the candidates are on stderr. Name one exactly, or add an alias.
 - **A plan reported FAILED but the work happened** — read the `trace`: `reset-selection` is cosmetic
   and carries `onError: continue`. Never re-run a spawn on a bare `FAILED`.
-- **`"status":"timeout"`** — the CLIENT gave up (300 s) and cancelled the job, so its `finally` ran.
-  Raise `-TimeoutSeconds`, or poll `connect status` with the `jobId`.
+- **A failed plan has NO `output`** — that is deliberate, not a bug. `outputWithheld` says why,
+  `step` names the step, and `result` carries its DTO (a `wait` puts the offending value in
+  `result.last`). Figures from a run the plan itself refused are not a measurement.
+- **The endpoint went quiet mid-session** — check `Mods\PPBridge\ppcli-enabled` still exists. It is
+  re-read every few seconds; deleting it disarms a running game. Re-create it and relaunch.
+- **`"status":"timeout"`** — the CLIENT gave up and cancelled the job, so its `finally` ran. For a
+  `plan` the ceiling is already the plan's own `timeoutMs` + 60 s unless you passed `-TimeoutSeconds`
+  yourself; raise it, or poll `connect status` with the `jobId`.
 - **`stale:true`** — the session is running an older DLL. Every result in that run is a ghost:
   `.\ppcli.ps1 deploy` and start over.
 
 Output contract: **exactly one compact JSON object on stdout**, everything else on stderr, so
 `.\ppcli.ps1 connect state | ConvertFrom-Json` always works.
+
+Every `file:line` on this page points into Phoenix Point's own **decompiled** assembly, which this
+repository does not ship. Timings and figures quoted here were measured on the development machine;
+they are shapes to expect, not guarantees.

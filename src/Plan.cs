@@ -32,7 +32,12 @@ namespace Morgott.PPBridge
     {
         // --- caps. Every one of them is the difference between a plan and a hung game.
         internal const int DefaultWaitMs = 30000;
-        internal const int MaxWaitMs = 600000;
+        /// <summary>The ceiling on ONE `wait` and on a whole plan. It must be at least the longest
+        /// timeoutMs any shipped plan asks for, or the clamp silently halves it: start-campaign.json
+        /// asks 900000 and was being honoured as 600000, so a campaign that legitimately took 11
+        /// minutes came back as a timeout with no hint that the number it was measured against was
+        /// not the number it declared.</summary>
+        internal const int MaxWaitMs = 900000;
         internal const int DefaultPollFrames = 10;
         internal const int DefaultPlanMs = 60000;
         internal const int DefaultMaxSteps = 200;
@@ -603,8 +608,28 @@ namespace Morgott.PPBridge
             private object Done(object lateFailure)
             {
                 if (failure == null) failure = lateFailure;
+                JObject f = failure == null ? null : JObject.FromObject(failure);
+
+                // A FAILED plan PUBLISHES NO OUTPUT, and that rule lives HERE rather than in any plan
+                // file. `output` used to be resolved unconditionally, so a plan whose own assertion had
+                // just refused the run still handed back every figure it had measured - the weapon
+                // bench asserted that nothing was wedged, failed that assertion, and returned hit rate,
+                // damage and dispersion anyway. A caller reading those numbers is reading a measurement
+                // the plan itself said was invalid. The plan engine has no conditional output and
+                // should not grow one: putting the gate in the engine means the NEXT plan author gets
+                // it without knowing it exists, where a per-plan opt-in is one line away from being
+                // forgotten. What replaces the figures is the failing step's own result DTO, which
+                // carries the value that failed (a `wait` reports it as `last`), so the reason and the
+                // number that caused it still reach the caller.
                 JObject outs = null;
-                if (output != null)
+                string withheld = null;
+                if (output != null && f != null)
+                {
+                    withheld = "the plan failed" + ((string)f["step"] == null ? "" : " at step '" + (string)f["step"] + "'") +
+                               ", so its " + output.Count + " output field(s) were NOT resolved: a figure read from a run " +
+                               "the plan itself refused is not a measurement. See `result` for the step that failed.";
+                }
+                else if (output != null)
                 {
                     outs = new JObject();
                     foreach (KeyValuePair<string, JToken> kv in output)
@@ -613,13 +638,15 @@ namespace Morgott.PPBridge
                         catch (Exception ex) { outs[kv.Key] = "unresolved: " + ex.Message; }
                     }
                 }
-                JObject f = failure == null ? null : JObject.FromObject(failure);
                 return new
                 {
                     ok = failure == null,
                     code = f == null ? null : (string)f["code"],
                     error = f == null ? null : (string)f["error"],
                     step = f == null ? null : (string)f["step"],
+                    // The failing step's whole DTO. It is what the withheld output is replaced BY, so
+                    // the number the assertion tripped on is still in the answer.
+                    result = f == null ? null : f["result"],
                     steps = inCleanup ? mainSteps : executed,
                     elapsedMs = (int)(DateTime.UtcNow - started).TotalMilliseconds,
                     // Two fields, because "the block was entered" and "N steps of it ran" are
@@ -628,6 +655,7 @@ namespace Morgott.PPBridge
                     cleanupRan = inCleanup,
                     cleanupSteps = inCleanup ? executed : 0,
                     output = outs,
+                    outputWithheld = withheld,
                     trace = trace.ToArray()
                 };
             }

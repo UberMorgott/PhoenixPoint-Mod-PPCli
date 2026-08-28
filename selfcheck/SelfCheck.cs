@@ -680,6 +680,11 @@ namespace Morgott.PPBridge
             Check("observe-listing-is-capped", full.Contains("\"returned\":" + Shots.MaxRows), full);
             // The stats are computed over EVERYTHING stored, not over the trimmed listing.
             Check("observe-stats-use-the-whole-ring", full.Contains("\"n\":" + Shots.Capacity), full);
+            // ...which is exactly why truncation may not be invisible. Statistics over the retained
+            // window are NOT the statistics that were asked for, so the drop count is a live,
+            // single-read property a plan can assert on, the same shape as Landed and Recovered -
+            // weapon-test.json refuses the whole run on it.
+            Check("observe-drops-are-assertable", Shots.Dropped == 40, "Shots.Dropped=" + Shots.Dropped);
             Run("observe", "{'action':'stop'}");
 
             // --- THE TARGET SPLIT. "an actor stopped it" and "the actor this volley was aimed at
@@ -834,7 +839,23 @@ namespace Morgott.PPBridge
             Ov.Counter = 200;
             string failFinally = Run("plan", "{'plan':{'steps':[{'id':'boom','verb':'no-such-verb'}],'finally':[" + Bump + "],'output':{'f':'${F.value}'}}}");
             Check("plan-fails-on-a-bad-step", failFinally.Contains("\"code\":\"step\"") && failFinally.Contains("\"step\":\"boom\""), failFinally);
-            Check("plan-finally-runs-on-failure", failFinally.Contains("\"f\":201"), failFinally);
+            // The counter, NOT the output block: a failed plan no longer publishes one (below), so
+            // reading `f` out of the answer would now be checking the wrong thing entirely.
+            Check("plan-finally-runs-on-failure", Ov.Counter == 201, "counter=" + Ov.Counter);
+
+            // --- THE FIGURES OF A FAILED RUN ARE NOT FIGURES. `output` used to be resolved whether or
+            // not the plan had failed, so a bench whose own assertion had just refused the run still
+            // handed back every number it had measured. The gate is in the engine and not in any plan
+            // file, so the next plan author gets it without knowing it exists.
+            Check("plan-withholds-output-on-failure",
+                  !failFinally.Contains("\"f\":201") && failFinally.Contains("\"output\":null"), failFinally);
+            Check("plan-says-the-output-was-withheld",
+                  failFinally.Contains("\"outputWithheld\":\"the plan failed at step 'boom'"), failFinally);
+            // ...and what replaces it: the failing step's own DTO, so the value that tripped the
+            // assertion still reaches the caller. This is how the weapon bench reports the count of
+            // wedged or dropped projectiles it refused on.
+            Check("plan-returns-the-failing-step-result", failFinally.Contains("\"result\":{"), failFinally);
+            Check("plan-still-publishes-output-on-success", okFinally.Contains("\"outputWithheld\":null"), okFinally);
 
             Ov.Counter = 300;
             string capped = Run("plan", "{'plan':{'maxSteps':3,'steps':[{'verb':'ping'},{'verb':'ping'},{'verb':'ping'},{'verb':'ping'},{'verb':'ping'}],'finally':[" + Bump + "]}}");
@@ -985,6 +1006,9 @@ namespace Morgott.PPBridge
 
             Protocol.ConsoleRun = (c, a) => { loaded = c + " " + string.Join(" ", a); return new { ok = true, output = new string[0] }; };
 
+            EveryShippedPlan();
+            // ...and these two are DRIVEN as well, which is a stronger claim than parsing: the engine
+            // walks their real shape and their cleanup block still runs after an early failure.
             ShippedPlanChecks("spawn-at-coordinate.json", "mission-ready");
             ShippedPlanChecks("aim-and-run.json", "camera-director");
             AimPlanChecks();
@@ -1002,6 +1026,40 @@ namespace Morgott.PPBridge
         /// its real shape, and that an early failure still runs the cleanup block instead of leaving
         /// it stranded. A syntax error in the shipped plan would otherwise only surface in-game.
         /// </summary>
+        /// <summary>
+        /// EVERY file in plans\, not the two that get driven. `finally` is a CONVENTION - the engine
+        /// accepts finally:null on purpose, because an inline ad-hoc plan that takes nothing has
+        /// nothing to release - so the only thing that can keep the shipped files honest is a check
+        /// that reads all of them. It parses each one too, which is worth having on its own: a syntax
+        /// error in a plan nobody drives here used to surface only in-game.
+        /// </summary>
+        private static void EveryShippedPlan()
+        {
+            string dir = null;
+            for (DirectoryInfo d = new DirectoryInfo(AppContext.BaseDirectory); d != null && dir == null; d = d.Parent)
+                if (Directory.Exists(Path.Combine(d.FullName, "plans"))) dir = Path.Combine(d.FullName, "plans");
+            Check("plans-dir-found", dir != null, "no plans\\ above " + AppContext.BaseDirectory);
+            if (dir == null) return;
+            string[] files = Directory.GetFiles(dir, "*.json");
+            Check("plans-dir-is-not-empty", files.Length > 0, dir + " holds no plan files");
+            foreach (string f in files)
+            {
+                string name = Path.GetFileName(f);
+                JObject p;
+                try { p = JObject.Parse(File.ReadAllText(f)); }
+                catch (Exception ex) { Check(name + "-parses", false, ex.Message); continue; }
+                Check(name + "-has-a-finally", p["finally"] is JArray fin && fin.Count > 0, "no cleanup block");
+                Check(name + "-declares-its-outputs", p["output"] is JObject o && o.Count > 0, "no output block");
+                // The client derives its own ceiling from this, so a plan without one silently gets
+                // the 300 s default back and long plans are cancelled mid-run again.
+                Check(name + "-declares-a-timeout", p["timeoutMs"] != null, "no timeoutMs");
+                // A declared timeout the engine would silently halve is worse than none: Plan.Clamp
+                // caps it and says nothing, so the plan is measured against a deadline it never asked for.
+                Check(name + "-timeout-is-not-clamped", (int)p["timeoutMs"] <= Plan.MaxWaitMs,
+                      "timeoutMs " + p["timeoutMs"] + " exceeds MaxWaitMs " + Plan.MaxWaitMs);
+            }
+        }
+
         private static JObject ShippedPlan(string name)
         {
             string path = null;

@@ -132,6 +132,36 @@ Assert-Value 'a fault older than the mark is ignored' `
 Assert-Value 'a missing log is silence, not a failure' `
     ([string](Get-LogFault (New-LogMark (Join-Path $scratch 'nope.log')) 'TFTV')) ''
 
+# ---------------------------------------------------------------- the DEFAULT, which names no mod
+# The default used to be the literal 'TFTV' - one machine's own mod list shipped as everyone's
+# default, so a stranger running any other mod set got no fast-fail at all. The signal is a MOD
+# FRAME, and that is decidable without knowing which mod: a stack frame whose root namespace is not
+# the game, the engine or the runtime.
+$other = Join-Path $scratch 'other-mod.log'
+Set-Content -Path $other -Encoding utf8NoBOM -Value @(
+    'NullReferenceException',
+    '  at SomeStrangersMod.Patches.OnLevelStart (PhoenixPoint.Tactical.Levels.TacticalLevelController controller)',
+    '  at Base.Core.TimingScheduler.CallUpdateable ()')
+Assert-Value 'the default catches a mod it was never told about' `
+    ($(if (Get-LogFault @{ path = $other; lines = 0 }) { 'caught' } else { 'missed' })) 'caught'
+# ...and it must still not fire on the exceptions a healthy session writes, which is the whole reason
+# the old default was narrow in the first place.
+Set-Content -Path $other -Encoding utf8NoBOM -Value @(
+    'ArgumentException: Mesh can not have more than 65000 vertices',
+    '  at UnityEngine.Mesh.SetVertices (System.Collections.Generic.List`1[T] inVertices)',
+    'NullReferenceException',
+    '  at PhoenixPoint.Tactical.Entities.TacticalActorBase.OnHealthChange (Base.Entities.Statuses.BaseStat stat)',
+    '  at Base.Core.TimingScheduler.CallUpdateable ()')
+Assert-Value 'the default does not fire on game and engine frames' `
+    ([string](Get-LogFault @{ path = $other; lines = 0 })) ''
+
+Assert-Value 'a game frame is not a mod frame' `
+    ([bool](Test-ModFrame '  at PhoenixPoint.Tactical.Levels.TacticalLevelController.Update ()')) 'False'
+Assert-Value 'a mod frame is a mod frame' `
+    (Test-ModFrame '  at TFTV.TFTVCommonMethods.OnLevelStart (X y)') 'True'
+Assert-Value 'the exception header itself is not a frame' `
+    ([bool](Test-ModFrame 'NullReferenceException')) 'False'
+
 }
 finally { Remove-Scratch }
 

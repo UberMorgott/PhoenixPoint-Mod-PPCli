@@ -54,22 +54,51 @@ function New-LogMark([string] $Path) {
     @{ path = $Path; lines = $n; next = $null }
 }
 
+# Root namespaces that belong to the GAME, its engine or its runtime. Everything else in a stack
+# frame is somebody's mod, which is the whole signal - so this list, not a mod name, is what the
+# default fault detection is built on. A name here that should not be silences a real fault; a name
+# missing from it costs a false fast-fail that -IgnoreLogFaults reopens, so it errs long.
+# ponytail: a flat allowlist, matched on the FIRST identifier of the frame. It cannot tell a mod that
+# declares its types in `PhoenixPoint.*` from the game; -FaultPattern is the answer if that ever bites.
+$script:PPCLI_EngineRoots = @(
+    'PhoenixPoint', 'Base', 'Unity', 'UnityEngine', 'UnityEditor', 'System', 'Mono', 'Microsoft',
+    'Newtonsoft', 'TMPro', 'I2', 'Rewired', 'Steamworks', 'Cinemachine', 'DG', 'UniLinq', 'Doozy',
+    'AK', 'Photon', 'ExitGames', 'SG', 'HarmonyLib', 'Harmony', 'PhoenixPointModLoader', 'PPModLoader',
+    'Assets', 'Epic', 'EOS', 'Sirenix', 'Spine', 'JetBrains'
+)
+
+# Does this stack frame name a MOD? A frame reads `  at <Root>.<Type>.<Method> (...)`; anything whose
+# root identifier is not engine or game code was loaded by the mod loader.
+function Test-ModFrame([string] $Line) {
+    if ($Line -notmatch '^\s*at\s+([A-Za-z_][A-Za-z0-9_]*)\s*[.<]') { return $false }
+    return -not ($script:PPCLI_EngineRoots -contains $Matches[1])
+}
+
 # THE DEAD-RUN SIGNAL, and it is deliberately narrow. A bare `NullReferenceException` is written by
 # a perfectly healthy session - this repo's own logs carry ten of them in one run - and so is
 # "ArgumentException: Mesh can not have more than 65000 vertices". Failing a run on either would be
 # worse than the hang it is meant to catch. What is NOT normal is an exception whose stack names a
-# MOD: that is the "TFTV throws and the load never finishes" case, and it means the run is already
+# MOD: that is the "a mod throws and the load never finishes" case, and it means the run is already
 # dead, so waiting out the rest of the budget buys nothing.
 #
+# -Pattern EMPTY (the default) means "any mod frame at all", decided by Test-ModFrame. It used to
+# default to the literal 'TFTV' - one session's own mod list shipped as everyone's default, so a
+# stranger with a different mod set got no fast-fail whatsoever. A non-empty -Pattern narrows to that
+# regex instead, which is what you want when you already know which mod you are chasing.
+#
 # Returns the exception header plus the frames that named the mod, or $null.
-function Get-LogFault($Mark, [string] $Pattern = 'TFTV', [int] $Frames = 8) {
+function Get-LogFault($Mark, [string] $Pattern = '', [int] $Frames = 8) {
     if (-not $Mark -or -not $Mark.path -or -not (Test-Path $Mark.path)) { return $null }
     $lines = @(Get-Content -Path $Mark.path -ErrorAction SilentlyContinue)
     for ($i = $Mark.lines; $i -lt $lines.Count; $i++) {
         if ($lines[$i] -notmatch '^\s*[\w\.]*Exception(:|\s*$)') { continue }
         $last = [Math]::Min($i + $Frames, $lines.Count - 1)
         $block = $lines[$i..$last]
-        if (($block -join "`n") -match $Pattern) { return ($block -join "`n") }
+        if ($Pattern) {
+            if (($block -join "`n") -match $Pattern) { return ($block -join "`n") }
+            continue
+        }
+        foreach ($line in $block) { if (Test-ModFrame $line) { return ($block -join "`n") } }
     }
     $null
 }

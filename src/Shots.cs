@@ -83,13 +83,22 @@ namespace Morgott.PPBridge
 
         /// <summary>Projectiles that were left stuck in flight by a throw inside the game's own
         /// OnTrajectoryEnd and that ShotPatch.Unwedge released. NOT a statistic: any non-zero value
-        /// means another mod threw during damage resolution, and every figure taken after it was
-        /// measured on a game that had to be repaired mid-volley. Reported, never hidden.</summary>
+        /// means SOMETHING threw during damage resolution, and every figure taken after it was
+        /// measured on a game that had to be repaired mid-volley. WHICH patch threw is not knowable
+        /// from here - the stack is cut at the Harmony wrapper, which names the patched method and
+        /// never the patch - so this counts the repair and attributes nothing. Reported, never hidden.</summary>
         internal static int Recovered;
 
         /// <summary>Impacts since <c>start</c>. A live, POSITIVE, single-read predicate, which is
         /// exactly the shape <c>wait</c> can use.</summary>
         internal static int Recorded { get { return total; } }
+
+        /// <summary>Impacts the ring OVERWROTE - recorded, then pushed out by a later one. NOT a
+        /// statistic either: the hit rate, the damage totals and the dispersion are all computed over
+        /// what the ring still HOLDS, so any non-zero value here means those figures were taken over a
+        /// truncated window and are not the figures the caller asked for. A live, single-read predicate
+        /// so a plan can assert on it, exactly like <see cref="Recovered"/>.</summary>
+        internal static int Dropped { get { return dropped; } }
 
         /// <summary>Impacts since the last <c>mark</c>. This is how a plan paces a volley: mark,
         /// fire, wait for this to go non-zero. It measures the thing itself - the projectile
