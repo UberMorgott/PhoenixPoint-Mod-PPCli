@@ -123,7 +123,8 @@ Every process launch generates a 128-bit random bearer token. The token is writt
 
 ## Limitations
 
-- **UNVERIFIED:** `plans\set-resources.json` and `plans\unlock-research.json`. Both need a live geoscape and neither has been run against one; each carries the reason in its own header. Every other shipped plan is verified in-game, including both halves of `plans\load-mission.json`.
+- Every shipped plan is verified in-game. The three that once needed a live geoscape were the last holdouts, and `plans\start-campaign.json` is what made them testable without a human playing first: `plans\load-mission.json` loads a geoscape save from a live geoscape, `plans\set-resources.json` took Materials from 1000 to 1500, and `plans\unlock-research.json` took a research from Hidden to Completed.
+- `plans\unlock-research.json` takes a `ResearchElement.ResearchID`, matched exactly — not a substring and not the def's display name. It usually equals the def name, but not always, which is why `index` records the id separately. `console research_stats` lists them.
 - A geoscape save the target install cannot open — usually a mod-set mismatch — fails by **stalling**, not by erroring. `restore` is issue-only because the game exposes no load-completion signal, so the plan's waits are the completion protocol, and a save that never comes up simply times out.
 - `plans\build-mission.json` stops in the deployment phase when the player roster is explicit, which is correct: the squad has to be placed. It reports `turnStarted:false` rather than waiting for a turn that no unattended run will ever start.
 - `plans\start-mission.json` exposes `loadmap`'s plot and parcel tag filter: pass `tags` as an array and its elements arrive as separate console arguments — `'{"scene":"ALN_PLT_Nest_48x48_A","tags":["plot_a","parcel_b"]}'`. It defaults to empty, which changes nothing.

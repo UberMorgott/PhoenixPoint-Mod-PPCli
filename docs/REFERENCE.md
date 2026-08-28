@@ -749,8 +749,8 @@ no way to re-parameterise it without a rebuild. **`src\` was not touched.**
 | `equip-actor.json` | `actor` `itemName` `container` `listMember` | give an in-play actor an item, and prove the container grew | **VERIFIED** |
 | `load-mission.json` | `name` `phase` `waitReady` `phaseTimeoutMs` `readyTimeoutMs` | load a savegame and wait on `HasAnyTurnStarted` | **VERIFIED**, both halves — tactical (`load_game 4` → `phase:"tactical"` in ~20 s) and geoscape (a geoscape save loaded **from a live geoscape** → `phase:"geoscape"`, `Playing`, in 14.9 s, 2026-08-28) |
 | `situation.json` | all of `spawn-squad` + `snapshot` `restoreFirst` `itemName` `equip` | restore a snapshot, place a composition at a distance with equipment, summarise the result — preloads the actor def **and** the item def (`give` does the same, `TacConsoleGameplay.cs:770`) | **PARTLY** — spawn+equip body verified, restore head not, preload verification pending |
-| `set-resources.json` | `resource` `amount` | apply a resource **delta** through the shipped cheat path, wallet read back before/after | **UNVERIFIED** — never run against a live geoscape, see below |
-| `unlock-research.json` | `researchId` | `CompleteResearch` (rewards + cascade), state read back before/after | **UNVERIFIED** — never run against a live geoscape, see below |
+| `set-resources.json` | `resource` `amount` | apply a resource **delta** through the shipped cheat path, wallet read back before/after | **VERIFIED** 2026-08-28 — Materials **1000 → 1500** on a campaign `start-campaign.json` began from the main menu |
+| `unlock-research.json` | `researchId` | `CompleteResearch` (rewards + cascade), state read back before/after | **VERIFIED** 2026-08-28 — `PX_Alien_Fishman_ResearchDef` went **Hidden → Completed**, same campaign |
 | `aim-and-run.json` | `x` `y` `z` `aimOffsetY` `command` `cmdArgs` | freeze input, aim the cursor, run a cursor-scoped command, restore | verified 2026-08-25 (P3) |
 | `weapon-test.json` | `shooter` `weaponDef` `enemyDef` `distance` `tolerance` `shots` `attackType` `setSpread` `spread` `seed` `targetHp` | equip a weapon, put an enemy at a distance, fire N shots, report every impact point + dispersion | **VERIFIED** 2026-08-28 — see *The weapon bench* below |
 
@@ -888,15 +888,21 @@ campaigns back to back, `build-mission` from a live geoscape, and a geoscape sav
 geoscape in 14.9 s. `start-mission` reports `cameFrom:geoscape` when it came that way. Leaving a
 tactical mission was always fine and still is.
 
-### Why two plans still ship UNVERIFIED
+### No plan ships UNVERIFIED any more — and what the geoscape cost to reach
 
-`set-resources.json` and `unlock-research.json` both need a live geoscape and neither has been run
-against one. They are written against `file:line`-cited source, each carries the reason it is
-unverified in its own `//` header, and the label stays until someone actually runs them.
-(`load-mission.json`'s geoscape half was in this list until 2026-08-28; leaving a live geoscape is
-now a solved problem — see *Leaving a live geoscape* — and both its halves are verified.)
+Three plans carried an UNVERIFIED label until 2026-08-28, all for one reason: nothing could reach a
+live geoscape without a human playing one. `start-campaign.json` removed that, and all three were
+run against the campaign it generated from the main menu.
 
-What the earlier failed attempts established, and it generalises:
+- `load-mission.json`'s geoscape half — a geoscape save loaded **from a live geoscape**,
+  `phase:"geoscape"`, `Playing`, in 14.9 s.
+- `set-resources.json` — Materials **1000 → 1500**.
+- `unlock-research.json` — `PX_Alien_Fishman_ResearchDef` **Hidden → Completed**. Its old default
+  `PX_Alien_Autopsy_ResearchDef` does not exist in this build's repository at all; `ResearchDef.Id`
+  usually equals the def name but not always, which is exactly why `index` stores the id separately.
+
+The failed attempts that came before are still worth keeping, because what they established
+generalises:
 
 - **`load_game` on a save the build cannot open fails by STALLING, not by erroring.** There is no
   completion signal to say otherwise (`SerializationCommands.cs:44`) — which is exactly why `restore`
