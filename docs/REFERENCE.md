@@ -164,8 +164,9 @@ exact def name works before anyone has ever run `index`.
 .\ppcli.ps1 plan .\plans\spawn-squad.json '{"defName":"crabman","count":3}'   # -> Crabman_Gunner_TacCharacterDef
 ```
 
-Offline checks, no game needed — each also takes `-Falsify`, which corrupts every expectation and
-demands that all of them fail, the only proof the assertions are wired to anything:
+Offline checks, no game needed. Each of the six PowerShell suites also takes `-Falsify`, which
+corrupts every expectation and demands that all of them fail — the only proof the assertions are
+wired to anything. The C# half has no such switch:
 
 ```powershell
 pwsh -NoProfile -File .\tests\resolve-names.tests.ps1   # name resolution
@@ -178,8 +179,9 @@ dotnet build .\selfcheck\SelfCheck.csproj -c Release /p:PPRoot="<install>"
 dotnet .\selfcheck\bin\Release\SelfCheck.dll            # PPBridge's pure half
 ```
 
-Five suites, and all five ship here — an earlier version of this list named three of them and left
-`index`, `plans` and `waits` documented nowhere at all.
+Six PowerShell suites, and all six ship here — an earlier version of this list named three of them
+and left `index`, `plans` and `waits` documented nowhere at all, and `client-pipetest` printed PASS
+whether or not its assertions held.
 
 ## Parameters
 
