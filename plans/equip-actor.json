@@ -1,5 +1,5 @@
 {
-  "//": "Give an actor that is ALREADY IN PLAY a chosen item. For an actor you are about to spawn, prefer setting TacActorInstanceData.EquipmentItems before the spawn (ppcli-gameplay-api-map.md s2b) - this plan is the post-spawn path.",
+  "//": "Give an actor that is ALREADY IN PLAY a chosen item. For an actor you are about to spawn, prefer setting TacActorInstanceData.EquipmentItems before the spawn - this plan is the post-spawn path.",
   "//run": ".\\ppcli.ps1 plan .\\plans\\equip-actor.json '{\"actor\":\"@selected\",\"itemName\":\"PX_AssaultRifle_WeaponDef\"}'",
   "//actor": "any `call` target: a root alias (@selected), a handle (\"h:30:128\") - whatever the CLI already has.",
   "//container": "hands = Equipments/Equipments (default). Backpack = container Inventory, listMember Items. AddItem does NO capacity or slot-compatibility check (InventoryComponent.cs:95-104) - the item lands, the equip screen's rules do not apply.",

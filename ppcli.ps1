@@ -97,8 +97,8 @@ function Invoke-Jobs([string] $jobsJson) {
     if (Test-Path $logPath) { Remove-Item $logPath -Force }
 
     # Byte-exact restore. A mod that fails to load makes the game rewrite MOD_ACTIVATED EMPTY,
-    # silently disabling every other mod too (headless-harness.md:67-69) - which then looks like the
-    # harness breaking for an unrelated reason.
+    # silently disabling every other mod too - which then looks like the harness breaking for an
+    # unrelated reason.
     $joptBefore = [IO.File]::ReadAllBytes($jopt)
 
     Set-Content -Path $jobsPath -Value $jobsJson -Encoding utf8NoBOM

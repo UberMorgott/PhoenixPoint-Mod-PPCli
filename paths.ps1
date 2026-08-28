@@ -1,7 +1,7 @@
 <#
   Where Phoenix Point and its profile actually are on THIS machine.
 
-  Dot-sourced by ppcli.ps1, deploy.ps1 and spider-demo.ps1 - it defines functions and runs nothing.
+  Dot-sourced by ppcli.ps1 and deploy.ps1 - it defines functions and runs nothing.
   Nothing here is ever a default baked into a parameter: an install path or a Steam id that is right
   on one machine is a first-run failure on every other one.
 #>
