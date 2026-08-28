@@ -1126,7 +1126,9 @@ sum equalled the HP delta exactly — and its one miss was recorded landing in
   shapes — magazines for `CompatibleAmmunition[0]`, `SetChargesToMax` otherwise. `equip-actor.json`
   adds an item and never loads one, which is why a weapon from it cannot fire.
 - **A shot is not a projectile.** `PX_AssaultRifle` fires **six** projectiles per pull of the trigger
-  — `Weapon.GetNumberOfShots(Regular,1)` read `6` live, and one activation runs all six through one
+  — and the count is a PRODUCT, `GetNumberOfShots(attackType) * ProjectilesPerShot` (`Weapon.cs:202,640`).
+  For `PX_AssaultRifle_WeaponDef` that is `AutoFireShotCount` 6 × `ProjectilesPerShot` 1; reading
+  either field alone gets the right answer here only because the other is 1. One activation runs all six through one
   loop (`TacticalLevelController.cs:1817`). So `shots` counts **activations** and `projectiles`
   counts impacts; the bench reports both, plus `projectilesPerShot`, because without that number the
   two read as a contradiction.
