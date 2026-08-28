@@ -72,7 +72,8 @@ They diverge in practice — one measured 10-shot run read `targetHits` 6 agains
 Quote the per-target pair when you mean the weapon.
 
 `shots` counts **activations**, `projectiles` counts impacts: a burst weapon fires several per pull
-of the trigger (`PX_AssaultRifle` answers 6), and `projectilesPerShot` is reported so the two do not
+of the trigger — a product, `GetNumberOfShots(attackType) * ProjectilesPerShot`, which for
+`PX_AssaultRifle` is 6 × 1 — and `projectilesPerShot` is reported so the two do not
 read as a contradiction.
 
 Impacts live in a ring of **512** and `observe read` lists at most **200** rows, oldest dropped from
