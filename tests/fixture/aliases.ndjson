@@ -1,0 +1,6 @@
+# Fixture only. "crabman" is deliberately ambiguous in defs.ndjson, so an alias hit here proves the
+# alias really does outrank the substring search instead of racing it.
+{"a":["crabman","arthron"],"f":"actor","n":"Crabman_Gunner_TacCharacterDef"}
+{"a":["autopsy"],"f":"research","n":"PX_Alien_Autopsy_ResearchDef"}
+{"a":["ghost"],"f":"actor","n":"Not_In_The_Catalog_TacCharacterDef"}
+{"a":["Swarmer_TacCharacterDef"],"f":"actor","n":"Crabman_Berserker_TacCharacterDef"}

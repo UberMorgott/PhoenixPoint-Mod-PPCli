@@ -1,0 +1,10 @@
+{"f":"actor","n":"Crabman_Gunner_TacCharacterDef","t":"TacCharacterDef"}
+{"f":"actor","n":"Crabman_Berserker_TacCharacterDef","t":"TacCharacterDef"}
+{"f":"actor","n":"Swarmer_TacCharacterDef","t":"TacCharacterDef"}
+{"f":"item","n":"PX_AssaultRifle_WeaponDef","t":"WeaponDef"}
+{"f":"item","n":"PX_AssaultRifle_AmmoClip_ItemDef","t":"ItemDef"}
+{"f":"research","n":"PX_Alien_Autopsy_ResearchDef","t":"ResearchDef","id":"PX_Alien_Autopsy"}
+{"f":"research","n":"PX_PandoraKey_ResearchDef","t":"ResearchDef","id":"PX_PandoraKey"}
+{"f":"research","n":"CopyOfPX_PandoraKey_ResearchDef","t":"ResearchDef","id":"PX_PandoraKey_ResearchDef"}
+{"f":"research","n":"Twin_ResearchDef","t":"ResearchDef","id":"Twin_A"}
+{"f":"research","n":"Twin_ResearchDef","t":"ResearchDef","id":"Twin_B"}

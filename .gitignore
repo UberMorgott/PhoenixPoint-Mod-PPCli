@@ -1,0 +1,12 @@
+# Build output
+bin/
+obj/
+
+# Generated against YOUR install by `ppcli.ps1 index`: it carries that install's mods and pins that
+# install's game build, so it is never published. aliases.ndjson is curated by hand and is committed.
+catalog/defs.ndjson
+catalog/meta.json
+
+# Game and client runtime droppings
+Console.log
+*.tmp

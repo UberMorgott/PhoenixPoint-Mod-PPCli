@@ -1,0 +1,15 @@
+{
+  "ID": "com.morgott.PPBridge",
+  "AssemblyName": "PPBridge.dll",
+  "Version": "0.1.0.0",
+  "Author": [
+    { "Key": "English", "Value": "Morgott" }
+  ],
+  "Name": [
+    { "Key": "English", "Value": "PPBridge" }
+  ],
+  "Description": [
+    { "Key": "English", "Value": "Dev-only control channel for the PPCLI tool. Not a player feature: it is a developer tool published on GitHub, never on the Steam Workshop. The endpoint is opt-in and stays off until a file named ppcli-enabled sits beside this DLL." }
+  ],
+  "Dependencies": []
+}

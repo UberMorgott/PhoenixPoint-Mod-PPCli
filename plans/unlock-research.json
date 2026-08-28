@@ -1,0 +1,54 @@
+{
+  "//": "UNVERIFIED - written against source, never run. The game process this session was given died during the geoscape-load attempt (see README 'Plan library'), and every step below needs a geoscape level.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\unlock-research.json '{\"researchId\":\"PX_Alien_Fishman_ResearchDef\"}'",
+  "//id-was-wrong": "The old default PX_Alien_Autopsy_ResearchDef does not exist in this build's def repository at all (catalog\\defs.ndjson, 377 ResearchDefs, generated 2026-08-28 against game 1.0.2.0). ResearchDef.Id USUALLY equals the def name but not always - ANU_AerialWarfare_ResearchDef carries Id ANU_Aerial_Warfare_ResearchDef - which is why the catalog stores the Id separately and the client sends that.",
+  "//needs": "a GEOSCAPE save loaded - .\\ppcli.ps1 plan .\\plans\\load-mission.json '{\"name\":\"<save>\",\"phase\":\"geoscape\",\"waitReady\":false}' first.",
+  "//why-complete": "CompleteResearch (Research.cs:576, the research_complete command's own path at :1040) is the REWARDING path - it runs the unlock cascade. Writing researchElement.State directly (the `research` command, Research.cs:938-947) only flips a flag: no rewards, no cascade. Use this plan to complete, never a raw State write as a substitute.",
+  "//points": "The console's add_research_pts adds progress instead of finishing; Research.AddProgressToResearch (:820) is its call. This plan finishes.",
+  "//id": "researchId is the ResearchElement.ResearchID that GetResearchById (:763) matches EXACTLY - not a substring, and not the def's display name. `console research_stats` lists them.",
+
+  "timeoutMs": 30000,
+
+  "vars": {
+    "researchId": "PX_Alien_Fishman_ResearchDef",
+    "phaseTimeoutMs": 30000
+  },
+
+  "steps": [
+    { "id": "geoscape", "verb": "wait", "args": { "phase": "geoscape", "timeoutMs": "${phaseTimeoutMs}" } },
+
+    { "id": "research", "verb": "call", "save": "RES",
+      "args": { "op": "get", "target": "@faction", "member": "Research" } },
+    { "//": "Returns null for an unknown id rather than throwing, so the next step's ${EL.value.h} is what names the miss.",
+      "id": "element", "verb": "call", "save": "EL",
+      "args": { "op": "invoke", "target": "${RES.value.h}", "member": "GetResearchById", "args": [ "${researchId}" ] } },
+
+    { "id": "before", "verb": "call", "save": "BEFORE",
+      "args": { "op": "get", "target": "${EL.value.h}", "member": "State" } },
+
+    { "id": "complete", "verb": "call",
+      "args": { "op": "invoke", "target": "${RES.value.h}", "member": "CompleteResearch",
+                "args": [ { "$h": "${EL.value.h}" } ] } },
+
+    { "id": "after", "verb": "call", "save": "AFTER",
+      "args": { "op": "get", "target": "${EL.value.h}", "member": "State" } },
+
+    { "//": "PROOF by readback, not by a non-error return. An enum projects as {\"$enum\",\"type\"} and binds straight back, so the comparison needs no hardcoded integer. Written as a one-shot wait so a state that did not move is a named failure.",
+      "id": "assert-completed", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "System.Object", "member": "Equals",
+                          "args": [ { "$enum": "Completed", "type": "PhoenixPoint.Geoscape.Entities.Research.ResearchState" },
+                                    "${AFTER.value}" ] } } }
+  ],
+
+  "finally": [
+    { "id": "release-element", "verb": "release", "args": { "h": "${EL.value.h}" } },
+    { "id": "release-research", "verb": "release", "args": { "h": "${RES.value.h}" } }
+  ],
+
+  "output": {
+    "researchId": "${researchId}",
+    "before": "${BEFORE.value}",
+    "after": "${AFTER.value}"
+  }
+}

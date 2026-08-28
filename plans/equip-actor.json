@@ -1,0 +1,65 @@
+{
+  "//": "Give an actor that is ALREADY IN PLAY a chosen item. For an actor you are about to spawn, prefer setting TacActorInstanceData.EquipmentItems before the spawn (ppcli-gameplay-api-map.md s2b) - this plan is the post-spawn path.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\equip-actor.json '{\"actor\":\"@selected\",\"itemName\":\"PX_AssaultRifle_WeaponDef\"}'",
+  "//actor": "any `call` target: a root alias (@selected), a handle (\"h:30:128\") - whatever the CLI already has.",
+  "//container": "hands = Equipments/Equipments (default). Backpack = container Inventory, listMember Items. AddItem does NO capacity or slot-compatibility check (InventoryComponent.cs:95-104) - the item lands, the equip screen's rules do not apply.",
+  "//itemName": "find is a substring match and defs[0] is a HARD reference, so name the def exactly: \"PX_AssaultRifle\" resolves to the ammo clip first.",
+
+  "timeoutMs": 30000,
+
+  "vars": {
+    "actor": "@selected",
+    "itemName": "PX_AssaultRifle_WeaponDef",
+    "container": "Equipments",
+    "listMember": "Equipments"
+  },
+
+  "steps": [
+    { "id": "find-item", "verb": "find", "save": "ITEM",
+      "args": { "query": "${itemName}", "type": "PhoenixPoint.Common.Entities.Items.ItemDef" } },
+
+    { "id": "container", "verb": "call", "save": "BOX",
+      "args": { "op": "get", "target": "${actor}", "member": "${container}" } },
+    { "//": "Re-read the list on BOTH sides: EquipmentComponent.Equipments is `Items.OfType<Equipment>().ToList()` (EquipmentComponent.cs:28), a FRESH list per call. Holding one handle across the add measures the same stale snapshot twice and reports no change.",
+      "id": "list-before", "verb": "call", "save": "LISTB",
+      "args": { "op": "get", "target": "${BOX.value.h}", "member": "${listMember}" } },
+    { "id": "count-before", "verb": "call", "save": "BEFORE",
+      "args": { "op": "get", "target": "${LISTB.value.h}", "member": "Count" } },
+
+    { "//": "Repo.Instantiate + list add + OnAddedToEquipmentComponent (EquipmentComponent.cs:93-106). The asset preload every console command does first is skipped: it costs the visual roots, not the item.",
+      "id": "add", "verb": "call", "save": "NEW",
+      "args": { "op": "invoke", "target": "${BOX.value.h}", "member": "AddItem",
+                "args": [ { "$def": "${ITEM.defs[0].guid}" }, null ] } },
+
+    { "id": "list-after", "verb": "call", "save": "LISTA",
+      "args": { "op": "get", "target": "${BOX.value.h}", "member": "${listMember}" } },
+    { "id": "count-after", "verb": "call", "save": "AFTER",
+      "args": { "op": "get", "target": "${LISTA.value.h}", "member": "Count" } },
+    { "//": "PROOF, not a non-error return: the container really grew. Written as a one-shot wait so a container that did not grow is a named failure instead of a cheerful ok:true.",
+      "id": "assert-added", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "GreaterThan",
+                          "args": [ "${AFTER.value}", "${BEFORE.value}", 0.01 ] } } },
+
+    { "//": "And that what landed is the def that was asked for - read back off the instance, not off the request.",
+      "id": "item-def", "verb": "call", "save": "BACK",
+      "args": { "op": "get", "target": "${NEW.value.h}", "member": "ItemDef" } },
+    { "id": "read-list", "verb": "items", "save": "CONTENTS", "args": { "h": "${LISTA.value.h}", "pageSize": 20 } }
+  ],
+
+  "finally": [
+    { "id": "release-box", "verb": "release", "args": { "h": "${BOX.value.h}" } },
+    { "id": "release-list-before", "verb": "release", "args": { "h": "${LISTB.value.h}" } },
+    { "id": "release-list-after", "verb": "release", "args": { "h": "${LISTA.value.h}" } }
+  ],
+
+  "output": {
+    "actor": "${actor}",
+    "requested": "${ITEM.defs[0].name}",
+    "added": "${BACK.value.name}",
+    "item": "${NEW.value.h}",
+    "countBefore": "${BEFORE.value}",
+    "countAfter": "${AFTER.value}",
+    "contents": "${CONTENTS.items}"
+  }
+}

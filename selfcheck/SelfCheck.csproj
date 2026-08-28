@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Offline gate for PPBridge's pure half. Compiles src\Protocol.cs itself - there is no second
+       copy of the logic and nothing is mocked except the two delegates the game half installs. -->
+  <PropertyGroup>
+    <AssemblyName>SelfCheck</AssemblyName>
+    <RootNamespace>Morgott.PPBridge</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <!-- net8.0, NOT the mod's net472: the game's Newtonsoft.Json.dll fails .NET Framework's
+         strong-name verification (Unity re-signs it), which throws FileLoadException before Main
+         runs. .NET Core does not verify strong names, so the check runs against the game's OWN
+         serializer with no NuGet package added anywhere. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- CA1416: WaitForPipeDrain is Windows-only. So is Phoenix Point. -->
+    <NoWarn>CA1416</NoWarn>
+    <!-- No default: see PPBridge.csproj. Only the game's Newtonsoft.Json.dll is needed here. -->
+    <GameManaged>$(PPRoot)\PhoenixPointWin64_Data\Managed</GameManaged>
+  </PropertyGroup>
+
+  <Target Name="CheckPPRoot" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(GameManaged)\Newtonsoft.Json.dll')"
+           Text="Phoenix Point not found at '$(PPRoot)'. Build with /p:PPRoot=&quot;&lt;your Phoenix Point install&gt;&quot; - the folder holding PhoenixPointWin64.exe." />
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="..\src\Protocol.cs" Link="Protocol.cs" />
+    <Compile Include="..\src\Wire.cs" Link="Wire.cs" />
+    <!-- The REAL server, not a stand-in. It compiles here only because it no longer touches
+         PipeSecurity/WindowsIdentity (the game's Mono cannot supply a SID) - which also means the
+         four CS0649 "never assigned" warnings are gone, because this is where Job.Done,
+         Job.Deadline and Job.Cancelled are actually assigned. -->
+    <Compile Include="..\src\PipeServer.cs" Link="PipeServer.cs" />
+    <!-- The P2 reflection runtime, compiled as-is. It names no Unity or game type - the four game
+         facts it needs arrive as Protocol delegates - so the binder, the overload scorer, the handle
+         table and the DTO caps are all exercisable here with no game running. -->
+    <Compile Include="..\src\Reflect.cs" Link="Reflect.cs" />
+    <!-- The P3 engine: wait, snapshot/restore and the plan runner. Like Reflect.cs it names no
+         Unity or game type - the one thing it cannot express as another verb (starting a save and
+         knowing when it stopped) arrives as a Protocol delegate - so the step loop, the caps, the
+         finally block and cancellation are all provable here with no game. -->
+    <Compile Include="..\src\Plan.cs" Link="Plan.cs" />
+    <!-- The observer's PURE half: the ring, the caps and the dispersion arithmetic. The Harmony
+         patch that feeds it lives in src\ShotPatch.cs, which is the only file here that names a
+         game type - and is deliberately NOT compiled into this check. -->
+    <Compile Include="..\src\Shots.cs" Link="Shots.cs" />
+    <Compile Include="SelfCheck.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The same Newtonsoft the game ships, so the check runs against the exact serializer the mod
+         will use. Private=true here only because this exe has no game to resolve it from. -->
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(GameManaged)\Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

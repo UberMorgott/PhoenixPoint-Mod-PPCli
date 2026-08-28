@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>PPBridge</AssemblyName>
+    <RootNamespace>Morgott.PPBridge</RootNamespace>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Version>0.1.0.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <Product>PPBridge</Product>
+    <Authors>Morgott</Authors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>portable</DebugType>
+    <Deterministic>true</Deterministic>
+    <!-- PPModLoader.LoadMod loads "<FolderName>\<FolderName>.dll", so the output folder name
+         MUST equal the assembly name. This folder is what gets copied into Mods\. -->
+    <OutputPath>bin\$(Configuration)\PPBridge\</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Where the REFERENCE assemblies come from - always a full install with a ModSDK. The deploy
+         TARGET is a separate question and lives in deploy.ps1 (-PPRoot). There is deliberately no
+         default: one machine's install path is every other machine's silent build failure.
+         dotnet build /p:PPRoot="<path to Phoenix Point>" -->
+    <ModSDK>$(PPRoot)\ModSDK</ModSDK>
+    <UnityManaged>$(PPRoot)\PhoenixPointWin64_Data\Managed</UnityManaged>
+  </PropertyGroup>
+
+  <!-- Without this the missing reference surfaces as dozens of CS0246 "type not found" errors and
+       nothing anywhere names the actual cause. -->
+  <Target Name="CheckPPRoot" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(ModSDK)\Assembly-CSharp.dll')"
+           Text="Phoenix Point ModSDK not found at '$(ModSDK)'. Build with /p:PPRoot=&quot;&lt;your Phoenix Point install&gt;&quot; - the folder holding PhoenixPointWin64.exe and ModSDK\. (deploy.ps1 passes this for you.)" />
+  </Target>
+
+  <ItemGroup>
+    <Compile Include="src\**\*.cs" />
+    <None Include="meta.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Modding API comes from ModSDK, never from Managed\. -->
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ModSDK)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- ONE patch, and only while `observe` is running: ProjectileLogic.OnTrajectoryEnd is the only
+         place a terrain miss's coordinates exist (src\ShotPatch.cs). Private=false - the loader has
+         already loaded this exact assembly. -->
+    <Reference Include="0Harmony">
+      <HintPath>$(ModSDK)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- MonoBehaviour/GameObject/Time and SceneManager all live in CoreModule. -->
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(UnityManaged)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- CastHit.Collider is a UnityEngine.Collider, and colliders live in their own module. -->
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(UnityManaged)\UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- The game already ships Newtonsoft, so the wire format costs no new dependency and no
+         hand-written parser. Private=false: it is already in the install. -->
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>$(UnityManaged)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

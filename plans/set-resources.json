@@ -1,0 +1,53 @@
+{
+  "//": "UNVERIFIED - written against source, never run. The game process this session was given died during the geoscape-load attempt (see README 'Plan library'), and every step below needs a geoscape level. Nothing here is guessed: every call carries its file:line.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\set-resources.json '{\"resource\":\"Materials\",\"amount\":500}'",
+  "//needs": "a GEOSCAPE save loaded - .\\ppcli.ps1 plan .\\plans\\load-mission.json '{\"name\":\"<save>\",\"phase\":\"geoscape\",\"waitReady\":false}' first.",
+  "//delta": "amount is a DELTA, not an absolute. Wallet.Apply (Wallet.cs:140) is the shipped cheat path (UIGeoResourceGiverCheat.cs:25) and takes a diff; a negative amount takes resources away. There is no absolute setter, and faking one would need arithmetic the plan engine deliberately does not have.",
+  "//resource": "ResourceType (ResourceType.cs): None Supplies Materials Tech AICore1 AICore2 AICore3 Research Production Mutagen LivingCrystals Orichalcum ProteanMutane.",
+
+  "timeoutMs": 30000,
+
+  "vars": {
+    "resource": "Materials",
+    "amount": 500,
+    "phaseTimeoutMs": 30000
+  },
+
+  "steps": [
+    { "id": "geoscape", "verb": "wait", "args": { "phase": "geoscape", "timeoutMs": "${phaseTimeoutMs}" } },
+
+    { "//": "@faction is geo.ViewerFaction on the geoscape (PPBridgeMain.cs:208); Wallet is GeoFaction.cs:141.",
+      "id": "wallet", "verb": "call", "save": "WALLET",
+      "args": { "op": "get", "target": "@faction", "member": "Wallet" } },
+
+    { "//": "READ BACK THE WHOLE WALLET AS A STRING. Wallet.ToString (Wallet.cs:161-172) prints every non-zero resource, so before/after is one guaranteed-projectable string rather than a ResourceUnit struct whose projection shape is a guess.",
+      "id": "before", "verb": "call", "save": "BEFORE",
+      "args": { "op": "invoke", "target": "${WALLET.value.h}", "member": "ToString", "args": [] } },
+
+    { "id": "unit", "verb": "call", "save": "UNIT",
+      "args": { "op": "new", "type": "PhoenixPoint.Common.Core.ResourceUnit",
+                "args": [ { "$enum": "${resource}", "type": "PhoenixPoint.Common.Core.ResourceType" }, "${amount}" ] } },
+
+    { "//": "Apply returns bool (Wallet.cs:122), and a refused apply is a quiet false. The one-shot wait turns that into a named failure instead of a cheerful ok:true - the same assertion idiom the spawn plans use.",
+      "id": "apply", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "target": "${WALLET.value.h}", "member": "Apply",
+                          "args": [ { "$h": "${UNIT.value.h}" },
+                                    { "$enum": "Cheat", "type": "PhoenixPoint.Common.Core.OperationReason" } ] } } },
+
+    { "id": "after", "verb": "call", "save": "AFTER",
+      "args": { "op": "invoke", "target": "${WALLET.value.h}", "member": "ToString", "args": [] } }
+  ],
+
+  "finally": [
+    { "id": "release-unit", "verb": "release", "args": { "h": "${UNIT.value.h}" } },
+    { "id": "release-wallet", "verb": "release", "args": { "h": "${WALLET.value.h}" } }
+  ],
+
+  "output": {
+    "resource": "${resource}",
+    "delta": "${amount}",
+    "before": "${BEFORE.value}",
+    "after": "${AFTER.value}"
+  }
+}

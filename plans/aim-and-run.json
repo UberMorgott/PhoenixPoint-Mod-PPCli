@@ -1,0 +1,70 @@
+{
+  "//": "Aim the cursor at a world point, then run a cursor-scoped console command. The most reused idiom in the tool - and 7 round-trips without a plan.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\aim-and-run.json '{\"x\":-0.5,\"y\":0.0,\"z\":14.5,\"aimOffsetY\":0.05,\"command\":\"info\",\"cmdArgs\":[]}'",
+  "//point": "x/y/z is the WORLD point. Floor cell: snap it with @map.SnapXYZ first and use aimOffsetY 0.05 - exact, three for three. Actor: pass its Pos and aimOffsetY 1.0.",
+  "//aim": "Aim height is per-actor and patchy: y+0.6 missed at every horizontal offset on a Crabman where +0.4 and +0.8 both hit. SelectAtCursor takes only the NEAREST hit (TacticalView.cs:724). Probe with a cheap real command, never with `info` - info dumps all raycast hits and reports success where the cursor commands fail.",
+  "//ai": "During a live AI turn the target walks away between round-trips. Set ai_enabled false first: connect var '{\"name\":\"ai_enabled\",\"value\":\"false\"}'.",
+
+  "timeoutMs": 30000,
+
+  "vars": {
+    "x": 0.0,
+    "y": 0.0,
+    "z": 0.0,
+    "aimOffsetY": 0.05,
+    "command": "info",
+    "cmdArgs": []
+  },
+
+  "steps": [
+    { "//": "The camera behaviour that owns the cursor field (CameraManager.cs:52).",
+      "id": "camera-director", "verb": "call", "save": "DIR",
+      "args": { "op": "get", "target": "@view", "member": "CameraDirector" } },
+    { "id": "camera-manager", "verb": "call", "save": "MGR",
+      "args": { "op": "get", "target": "${DIR.value.h}", "member": "Manager" } },
+    { "id": "camera-behavior", "verb": "call", "save": "BEH",
+      "args": { "op": "get", "target": "${MGR.value.h}", "member": "CurrentBehavior" } },
+
+    { "//": "FREEZE FIRST, and it is not optional: without it UpdateCursorPos (PlanarScrollCamera.cs:947,984) hands the field back to the real mouse and the identical sequence answers differently on consecutive calls. InputDisabled makes it return at :949-952. The `finally` below is what guarantees this is undone even if the plan dies here.",
+      "id": "freeze-input", "verb": "call",
+      "args": { "op": "set", "target": "${BEH.value.h}", "member": "InputDisabled", "value": true } },
+
+    { "//": "The aim point, computed with Unity's own operator - the plan engine has no arithmetic and does not need any.",
+      "id": "aim-point", "verb": "call", "save": "AIM",
+      "args": { "op": "invoke", "type": "UnityEngine.Vector3", "member": "op_Addition",
+                "args": [ { "$v3": [ "${x}", "${y}", "${z}" ] }, { "$v3": [ 0, "${aimOffsetY}", 0 ] } ] } },
+    { "id": "camera", "verb": "call", "save": "CAM",
+      "args": { "op": "get", "target": "@view", "member": "Camera" } },
+    { "id": "world-to-screen", "verb": "call", "save": "SCREEN",
+      "args": { "op": "invoke", "target": "${CAM.value.h}", "member": "WorldToScreenPoint",
+                "args": [ { "$v3": [ "${AIM.value.x}", "${AIM.value.y}", "${AIM.value.z}" ] } ] } },
+    { "//": "_cursorScreenPos is private (PlanarScrollCamera.cs:157); the binder reaches it because get/set walks the declared hierarchy.",
+      "id": "aim-cursor", "verb": "call",
+      "args": { "op": "set", "target": "${BEH.value.h}", "member": "_cursorScreenPos",
+                "value": { "$v2": [ "${SCREEN.value.x}", "${SCREEN.value.y}" ] } } },
+    { "//": "Read it back through the PUBLIC path, so the output proves where the cursor actually is rather than where it was written.",
+      "id": "confirm-aim", "verb": "call", "save": "AIMED",
+      "args": { "op": "get", "target": "@view", "member": "CursorScreenPos" } },
+
+    { "//": "The command itself. Note `vars` returns ok:false alongside valid output; onError stays fail for everything else.",
+      "id": "run-command", "verb": "console", "save": "OUT",
+      "args": { "command": "${command}", "args": "${cmdArgs}" } }
+  ],
+
+  "finally": [
+    { "//": "MANDATORY. A plan that disabled input and never restored it leaves the game unusable to a human, so this runs on success, on failure, on the deadline and on cancel.",
+      "id": "restore-input", "verb": "call",
+      "args": { "op": "set", "target": "${BEH.value.h}", "member": "InputDisabled", "value": false } },
+    { "id": "release-director", "verb": "release", "args": { "h": "${DIR.value.h}" } },
+    { "id": "release-manager", "verb": "release", "args": { "h": "${MGR.value.h}" } },
+    { "id": "release-camera", "verb": "release", "args": { "h": "${CAM.value.h}" } },
+    { "id": "release-behavior", "verb": "release", "args": { "h": "${BEH.value.h}" } }
+  ],
+
+  "output": {
+    "command": "${command}",
+    "aimedAt": "${AIM.value}",
+    "cursor": "${AIMED.value}",
+    "result": "${OUT}"
+  }
+}

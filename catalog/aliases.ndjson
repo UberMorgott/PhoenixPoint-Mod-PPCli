@@ -1,0 +1,21 @@
+# Curated casual name -> exact def name. Hand-written and committed; defs.ndjson is generated.
+# Shape: {"a":[<casual names>],"f":<family>,"n":<exact def name>}
+# EVERY "n" here is grounded in a real, seen-in-this-repo def name (a verified plan default, a
+# verified in-game run, or a research doc). A guessed def name is worse than no alias: it turns a
+# refusal an agent can act on into a plausible wrong spawn. Add only names you have seen.
+{"a":["crabman","crabmen","arthron","crab"],"f":"actor","n":"Crabman_Gunner_TacCharacterDef"}
+{"a":["chiron","fireworm","fire worm"],"f":"actor","n":"S_Chiron_FireWorm_TacCharacterDef"}
+{"a":["swarmer","swarmers"],"f":"actor","n":"Swarmer_TacCharacterDef"}
+{"a":["soldier","rookie","assault","phoenix soldier"],"f":"actor","n":"PX_AssaultStarting_TacCharacterDef"}
+{"a":["queen","gatekeeper"],"f":"actor","n":"Queen_Gatekeeper_TacCharacterDef"}
+{"a":["acheron"],"f":"actor","n":"Acheron_TacCharacterDef"}
+{"a":["assault rifle","rifle","ar"],"f":"item","n":"PX_AssaultRifle_WeaponDef"}
+{"a":["assault rifle ammo","rifle ammo","ammo"],"f":"item","n":"PX_AssaultRifle_AmmoClip_ItemDef"}
+{"a":["sniper","sniper rifle"],"f":"item","n":"PX_SniperRifle_WeaponDef"}
+{"a":["shotgun"],"f":"item","n":"PX_ShotgunRifle_WeaponDef"}
+{"a":["pistol"],"f":"item","n":"PX_Pistol_WeaponDef"}
+{"a":["laser pdw","pdw"],"f":"item","n":"PX_LaserPDW_WeaponDef"}
+{"a":["fishman research","alien fishman"],"f":"research","n":"PX_Alien_Fishman_ResearchDef"}
+{"a":["crabman research","alien crabman"],"f":"research","n":"PX_AlienCrabman_ResearchDef"}
+{"a":["chiron research","alien chiron"],"f":"research","n":"PX_Alien_Chiron_ResearchDef"}
+{"a":["hel cannon"],"f":"research","n":"PX_HelCannon_ResearchDef"}
