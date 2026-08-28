@@ -4,7 +4,7 @@
   "//geoscape": "a geoscape save is the same plan with two arguments: '{\"name\":\"GEOSCAPE_SAVE\",\"phase\":\"geoscape\",\"waitReady\":false}'. HasAnyTurnStarted is a tactical property and there is nothing on the geoscape for it to mean.",
 
   "//superseded": "LAUNCHING AN ARBITRARY MAP FROM SCRATCH IS NOW REACHABLE, and not through this plan: start-mission.json does it from the main menu in ~12 s (`loadmap`), and build-mission.json does it with a roster you choose. The old note here said it was impossible because it looked only at the GEOSCAPE commands - `create_mission` targets the cursor site (GeoSite.cs:1200-1203) and `launch_mission` needs a selected GeoVehicle (:1143-1171). The menu-side lever, PhoenixGame.FinishLevel, was the one nothing had tried. This plan remains the way to reach a SPECIFIC SAVED situation.",
-  "//geoscape-status": "THE GEOSCAPE HALF IS STILL UNVERIFIED, and worse than unverified: run against a LIVE geoscape, `restore` wedges the game (measured 2026-08-28 - phase menu, level null, GeoscapeView still updating and NREing every frame; see start-mission.json's `refuse-if-geoscape`). It also passed its own phase predicate without loading anything, exactly as //trap warns. The tactical half is the proven one.",
+  "//geoscape-status": "VERIFIED 2026-08-28, and both halves now are. A geoscape save loaded FROM A LIVE GEOSCAPE reached phase geoscape / Playing in 14.9 s: '{\"name\":\"ppcli_geo_only\",\"phase\":\"geoscape\",\"waitReady\":false}'. It used to wedge the process, and the fix is the `geo-to-loading` step below - not anything about `restore` itself. Take the save's NAME seriously: save_game does not overwrite, it makes the name unique (PhoenixSaveManager.EnsureUnique), so a second save under the same name becomes `<name>_1` and a load of `<name>` quietly brings back the OLDER situation. A geoscape save that came back tactical is that, not a defect here.",
 
   "//trap": "`restore` is ISSUE-ONLY (load_game hands back no completion signal, SerializationCommands.cs:44). The waits below are the completion protocol. Running it while ALREADY in the target phase used to pass on the level being LEFT, before the load started; the `left-old-level` step now asserts the transition instead of asking the caller to compare scenes afterwards.",
 
@@ -25,6 +25,17 @@
   },
 
   "steps": [
+    { "//LEAVING A GEOSCAPE": "`restore` tears the current level down the same way FinishLevelAndGoToLobby does, so a load issued while a geoscape is LIVE used to wedge the process. Same two steps, same reason: see start-mission.json's `is-geoscape` for the full teardown chain. Skipped entirely when there is no geoscape to leave.",
+      "id": "phase-now", "verb": "state", "save": "ST0" },
+    { "id": "is-geoscape", "verb": "call", "save": "ISGEO",
+      "args": { "op": "invoke", "type": "System.Object", "member": "Equals", "args": [ "geoscape", "${ST0.phase}" ] } },
+    { "id": "geo-view", "verb": "call", "save": "GEOVIEW", "if": "${ISGEO.value}",
+      "args": { "op": "get", "target": "@geo", "member": "View" } },
+    { "id": "geo-stack-off", "verb": "call", "if": "${ISGEO.value}",
+      "args": { "op": "set", "target": "${GEOVIEW.value.h}", "member": "UpdateStateStack", "value": false } },
+    { "id": "geo-to-loading", "verb": "call", "if": "${ISGEO.value}",
+      "args": { "op": "invoke", "target": "${GEOVIEW.value.h}", "member": "ToLoadingState", "args": [] } },
+
     { "//": "Refuses up front if no save of that name exists - the command's own 'Could not find savegame' is written on a later frame and could never reach this response.",
       "id": "load", "verb": "restore", "args": { "name": "${name}" } },
 

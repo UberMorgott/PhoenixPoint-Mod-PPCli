@@ -11,7 +11,7 @@
   "//spread": "weapon_spread multiplies the cone in Weapon.SpreadInCone (Weapon.cs:481). Left ALONE unless setSpread is true, and restored in `finally`.",
   "//god_mode": "MUST stay false. TacticalActorBase.ApplyDamageInternal returns at :846 BEFORE the report, the event and the HP change, so god_mode silently zeroes the entire measurement. The enemy is kept alive with targetHp instead.",
 
-  "//lost projectile": "MEASURED 2026-08-28, unfixed, and it fails LOUDLY - the plan dies on `landed` and never reports a short volley as ok. Past roughly six shots one activation returns from ExecuteAndWait and no projectile ever reaches OnTrajectoryEnd. What was ruled OUT, each by a run on `ppcli_gate` / SCV_PLT_Ambush_56x56_A at seed 12345: THE TARGET DYING (immediately before the failing activation it read InPlay true and Health 100 of the def's own maximum, and calling Health.SetToMax before EVERY shot changed nothing - the same seed still died on pass 7, so a per-shot top-up was tried and REMOVED rather than kept as a fix that fixes nothing); the ability being disabled, the target no longer being targetable, and the magazine being empty (all three asserted green in the pass before the failure). What it IS: PACING. The identical seed and placement completes 10/10 when roughly 3 s of dead time is added after each activation, and fails at pass 7 without it. `settle` is the weak link and neither obvious replacement works - the ability's IsExecuting is already false while a shot is merely ENQUEUED, and TacticalActorBase.HasExecutingAbility(null,false) never goes false at all (it got 8 landed and then hung). ponytail: the honest ceiling is ~6 shots per volley until a real end-of-action predicate is found; the plan refuses rather than under-reports, which is the property that matters.",
+  "//the volley ceiling, and what it really was": "SOLVED 2026-08-28, and the answer is that there was never a ceiling on shots - there was a ceiling on the first BURST. PX_AssaultRifle fires six projectiles per pull of the trigger (GetNumberOfShots(Regular,1) read 6 live), `Shots.Landed` counts ONE projectile, and the old `settle` released the pass the moment the ability stopped reporting IsExecuting - which is immediately, because a Regular shot is ENQUEUED rather than played (ShootAbility.cs:173). So the loop tore through the first burst's six impacts calling them five separate shots: the game log shows activations at 25000, 25116, 25132, 25144 and 25150 ms - the last four inside 34 ms - and every one of them enqueued soloAfterCurrent, which trims the channel back to the single action already playing and discards the rest (ActionComponent.cs:78-91). With the burst spent and four activations thrown away, the next `landed` waited forever; the actor read idle, ExecutingAbilities held nothing but IdleAbility, Map.HasActiveProjectiles was false and the ability still reported NotDisabled, which is exactly why every check anyone pointed at it came back green. `settle` now waits for TacticalActorBase.HasExecutingAbility(null,false) to go false - read live as false on an idle actor and true through a burst, so the earlier note that it never goes false does not reproduce. WHAT IS MEASURED HERE AND WHAT IS NOT: measured are the burst size, the log timestamps, the idle-actor readings at the hang, and the swap itself - reverting ONLY this predicate takes the same run from 20 activations back to 4, which is the matched pair the conclusion rests on. NOT measured here is the earlier three-second-sleep result; it is consistent with a burst finishing in the gap, and that is an explanation of somebody else's run rather than a second experiment. What this all means for old answers: every multi-shot figure the bench printed before this was taken from ONE trigger pull.",
 
   "//hits": "TWO families, never one. `targetHits`/`targetHitRate`/`damageOnTarget` are keyed on the actor this volley was aimed at, by instance id, and are the weapon's score against the target. `hitsAnyActor`/`hitRateAnyActor`/`damageOnActors`/`damageTotal` count EVERYTHING a projectile touched - a bystander, a dead tree, the shooter's own body - and were the only figures this plan used to print, which is why a stray hit read as the weapon doing more than it does.",
 
@@ -239,12 +239,13 @@
       "args": { "op": "get", "target": "${shooter}", "member": "CharacterStats" } },
     { "id": "ap", "verb": "call", "save": "AP",
       "args": { "op": "get", "target": "${CS.value.h}", "member": "ActionPoints" } },
-    { "//ORIGINAL AP MAX": "Read BEFORE the override, put back in `finally` - the same discipline as ai_enabled and weapon_spread. `Max` is a BaseStat, not a float, so the number comes out of it through op_Implicit exactly as `hp-before` does. Not urgent on its own (a stat is recomputed from its base plus its modifications, which is why a raised Health.Max does not stay raised either) - it is here so the plan leaves nothing of its own behind.",
+    { "//ORIGINAL AP MAX": "Read BEFORE the override, put back in `finally` - the same discipline as ai_enabled and weapon_spread. MEASURED, and the shape this was FIRST written to is wrong: `StatusStat.Max` is not a BaseStat, it is a plain ModifiableValue STRUCT field (StatusStat.cs:20), so it comes back as a projected {BaseValue,ModificationValue} with NO handle - and the BaseStat.op_Implicit that used to read it was handed a null and could restore nothing. The float the game itself uses is ModifiableValue's own implicit operator, which is BaseValue + ModificationValue (ModifiableValue.cs:20,33), and SetMax writes back into that same EndValue (StatusStat.cs:69) - so the sum is exactly the right thing to save and exactly the right thing to hand back. The addition goes through Vector3 for the reason every other sum in this plan does: the plan engine has no arithmetic (the aim-and-run.json idiom).",
       "id": "ap-max-stat", "verb": "call", "save": "APM",
       "args": { "op": "get", "target": "${AP.value.h}", "member": "Max" } },
     { "id": "ap-max-was", "verb": "call", "save": "APM0",
-      "args": { "op": "invoke", "type": "Base.Entities.Statuses.BaseStat", "member": "op_Implicit",
-                "args": [ { "$h": "${APM.value.h}" } ] } },
+      "args": { "op": "invoke", "type": "UnityEngine.Vector3", "member": "op_Addition",
+                "args": [ { "$v3": [ "${APM.value.BaseValue}", 0, 0 ] },
+                          { "$v3": [ "${APM.value.ModificationValue}", 0, 0 ] } ] } },
     { "id": "ap-max", "verb": "call",
       "args": { "op": "invoke", "target": "${AP.value.h}", "member": "SetMax", "args": [ 2147483.0, true ] } },
     { "id": "ap-set", "verb": "call",
@@ -280,6 +281,11 @@
                           "args": [ { "$h": "${ENEMY.value.h}" },
                                     { "$enum": "${attackType}", "type": "PhoenixPoint.Tactical.Entities.Abilities.AttackType" } ] } } },
 
+    { "//BURST": "How many projectiles ONE activation fires (Weapon.GetNumberOfShots, the same call TacticalLevelController.cs:1551 makes to drive its shooting loop). Reported, because `shots` counts ACTIVATIONS and `projectiles` counts impacts, and without this number the two look like a contradiction rather than a burst weapon: PX_AssaultRifle answers 6.",
+      "id": "burst", "verb": "call", "save": "BURST",
+      "args": { "op": "invoke", "target": "${WEAP.value.h}", "member": "GetNumberOfShots",
+                "args": [ { "$enum": "${attackType}", "type": "PhoenixPoint.Tactical.Entities.Abilities.AttackType" }, 1 ] } },
+
     { "id": "hp-before", "verb": "call", "save": "HPB",
       "args": { "op": "invoke", "type": "Base.Entities.Statuses.BaseStat", "member": "op_Implicit",
                 "args": [ { "$h": "${EH.value.h}" } ] } },
@@ -312,10 +318,11 @@
             "id": "landed", "verb": "wait",
             "args": { "timeoutMs": "${shotTimeoutMs}", "everyFrames": 2,
                       "call": { "op": "get", "type": "Morgott.PPBridge.Shots", "member": "Landed" } } },
-          { "//": "...and the tail of the action, so the next enqueue cannot cancel it. Near-instant once the projectile has landed; it is the cheap half of the pair, not the load-bearing one.",
+          { "//SETTLE": "THE WHOLE ACTIVATION, and this is the step the ~6-shot ceiling actually lived in. A shot is not a projectile: PX_AssaultRifle's GetNumberOfShots(Regular,1) is SIX (measured live), and one activation fires all six through one `while (shotsFired < totalShots)` loop (TacticalLevelController.cs:1817). `landed` only says ONE of them has landed, so a volley paced on it alone raced through the first burst - a live log has four consecutive activations 6-16 ms apart - and each of those enqueued soloAfterCurrent, which trims the channel back to the one action already playing (ActionComponent.cs:78-91) and throws the rest away. Six impacts, five 'shots' counted, then nothing left to land and the next `landed` hung forever with the actor sitting idle. So the pass ends when the ACTOR is done acting: HasExecutingAbility (TacticalActorBase.cs:695) reads the game's own ExecutingAbilities and explicitly skips IdleAbility (:699), which is the permanent resident that makes every naive is-it-busy test useless. Verified both ways live - false on an idle actor, true through a burst.",
             "id": "settle", "verb": "wait",
             "args": { "not": true, "timeoutMs": "${settleTimeoutMs}", "everyFrames": 2,
-                      "call": { "op": "get", "target": "${ABIL.value.h}", "member": "IsExecuting" } } },
+                      "call": { "op": "invoke", "target": "${shooter}", "member": "HasExecutingAbility",
+                                "args": [ null, false ] } } },
 
           { "id": "count", "verb": "call",
             "args": { "op": "invoke", "target": "${LOG.value.h}", "member": "Add", "args": [ "shot" ] } },
@@ -343,6 +350,12 @@
     { "id": "impacts", "verb": "observe", "save": "SHOTS",
       "args": { "action": "read", "aim": [ "${AIM.value.x}", "${AIM.value.y}", "${AIM.value.z}" ] } },
 
+    { "//NO SILENT REPAIR": "FATAL, and deliberately so. `recovered` counts projectiles that another mod's throw left stuck in flight and that ShotPatch.Unwedge had to release for the volley to continue (see its comment). The release keeps the MISSION playable, which is worth having - but it also means the game threw in the middle of damage resolution while these numbers were being taken, so the hit and damage figures are measured across a repair. Reporting them anyway would be the same silent-wrong-answer this plan spent its whole life removing, so the run dies here by name and the count is still in the output. If this fires, the answer is not to relax it: it is that something threw, and the log says who.",
+      "id": "assert-nothing-wedged", "verb": "wait",
+      "args": { "not": true, "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "GreaterThan",
+                          "args": [ "${SHOTS.recovered}", 0, 0.01 ] } } },
+
     { "id": "hp-after", "verb": "call", "save": "HPA",
       "args": { "op": "invoke", "type": "Base.Entities.Statuses.BaseStat", "member": "op_Implicit",
                 "args": [ { "$h": "${EH.value.h}" } ] } },
@@ -358,10 +371,9 @@
     { "id": "restore-spread", "verb": "var", "if": "${setSpread}",
       "args": { "name": "weapon_spread", "value": "${SPREAD0.value}" } },
     { "id": "restore-god", "verb": "var", "args": { "name": "god_mode", "value": "${GOD0.value}" } },
-    { "//": "One call undoes both halves of the AP override: SetMax ends in Set(Mathf.Min(Value, Max)) (StatusStat.cs:64-73), so the value comes back down with the ceiling.",
+    { "//": "One call undoes both halves of the AP override: SetMax ends in Set(Mathf.Min(Value, Max)) (StatusStat.cs:64-74), so the value comes back down with the ceiling.",
       "id": "restore-ap-max", "verb": "call",
-      "args": { "op": "invoke", "target": "${AP.value.h}", "member": "SetMax", "args": [ "${APM0.value}", true ] } },
-    { "id": "release-ap-max-stat", "verb": "release", "args": { "h": "${APM.value.h}" } },
+      "args": { "op": "invoke", "target": "${AP.value.h}", "member": "SetMax", "args": [ "${APM0.value.x}", true ] } },
     { "//": "The enemy and the weapon STAY. Watching the tracers is half the point, and deleting the situation the bench just built is a separate decision.",
       "id": "release-log", "verb": "release", "args": { "h": "${LOG.value.h}" } },
     { "id": "release-pool", "verb": "release", "args": { "h": "${POOL.value.h}" } },
@@ -388,8 +400,10 @@
     "spreadVar": "${SPREAD0.value}",
     "spreadForced": "${setSpread}",
     "abilityState": "${KEY.value}",
+    "//shots vs projectiles": "`shotsFired` counts ACTIVATIONS - pulls of the trigger. `projectiles` counts what actually flew, and for a burst weapon it is shotsFired x projectilesPerShot. Every hit and damage figure below is over PROJECTILES.",
     "shotsRequested": "${shots}",
     "shotsFired": "${DONE.value}",
+    "projectilesPerShot": "${BURST.value}",
     "projectiles": "${SHOTS.recorded}",
     "targetActorId": "${SHOTS.target}",
     "targetHits": "${SHOTS.targetHits}",
@@ -409,6 +423,10 @@
     "hpBefore": "${HPB.value}",
     "hpAfter": "${HPA.value}",
     "chargesBefore": "${CH0.value}",
-    "chargesAfter": "${CH1.value}"
+    "chargesAfter": "${CH1.value}",
+    "//apMaxWas": "The shooter's own AP ceiling, as read before this plan raised it. `finally` puts it back - reported so the restore can be CHECKED from outside instead of trusted.",
+    "apMaxWas": "${APM0.value.x}",
+    "//recovered": "Projectiles another mod's throw left stuck in flight, that the bridge had to release for the volley to continue (ShotPatch.Unwedge). It must read 0. Anything else means the game threw during damage resolution and had to be repaired WHILE these numbers were being taken.",
+    "recovered": "${SHOTS.recovered}"
   }
 }

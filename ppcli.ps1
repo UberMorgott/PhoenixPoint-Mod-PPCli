@@ -59,6 +59,7 @@ function Note([string] $m) { [Console]::Error.WriteLine($m) }
 . (Join-Path $PSScriptRoot 'names.ps1')
 . (Join-Path $PSScriptRoot 'paths.ps1')
 . (Join-Path $PSScriptRoot 'waits.ps1')
+. (Join-Path $PSScriptRoot 'index.ps1')
 
 # One place decides whether a wait has already lost. Returns nothing, or throws naming the fault.
 # Throttled to once every 2 s: a poll loop runs four times a second and the log it re-reads is tens
@@ -390,46 +391,11 @@ switch ($Command) {
         $ep = Get-Endpoint
         Note "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol))"
 
-        # 200 rows is `find`'s own page ceiling and projects to roughly 30 KB - well inside the
-        # 64 KB reflection cap and the 256 KB frame limit, both of which refuse rather than truncate.
-        $pageSize = 200
-        $defs  = New-Object Collections.Generic.List[object]
-        $seen  = New-Object Collections.Generic.HashSet[string]
-        $page  = 0
-        $total = $null
-        while ($true) {
-            $reply = Invoke-Verb 'find' ([ordered]@{ all = $true; page = $page; pageSize = $pageSize }) $ep
-            if ($reply.status -ne 'done' -or -not $reply.result.ok) {
-                throw "find all failed on page ${page}: " + ($reply | ConvertTo-Json -Depth 8 -Compress)
-            }
-            $r = $reply.result
-            # SNAPSHOT INTEGRITY. Every page re-enumerates and re-sorts the repository independently,
-            # so a def loading (or a scene transition) between two pages silently shifts every row
-            # after it - skipping some and duplicating others. A moving `total` is that happening,
-            # and a repeated (name,guid,type) is that having already happened. Refuse; a catalog with
-            # holes in it refuses real names later and says nothing about why.
-            if ($null -eq $total) { $total = $r.total }
-            elseif ($r.total -ne $total) {
-                throw ("REFUSED: the def repository changed under the index - page $page reports total " +
-                       "$($r.total), page 0 reported $total. Nothing was written; re-run on a settled game.")
-            }
-            foreach ($d in $r.defs) {
-                if (-not $seen.Add("$($d.name)`0$($d.guid)`0$($d.type)")) {
-                    throw ("REFUSED: page $page repeats def '$($d.name)' ($($d.guid)) - the repository moved " +
-                           'between pages. Nothing was written; re-run on a settled game.')
-                }
-                $defs.Add($d)
-            }
-            Note "page ${page}: $($r.count) of $total"
-            if (-not $r.hasMore) { break }
-            $page++
-            # A server that always says hasMore is a bug, and `while ($true)` would page forever
-            # against it. 500 pages is 100000 defs - an order of magnitude past the real repository.
-            if ($page -ge 500) { throw "REFUSED: the index passed 500 pages and 'hasMore' is still true. Nothing was written." }
-        }
-        if ($defs.Count -ne $total) {
-            throw "REFUSED: collected $($defs.Count) defs but the repository reports $total. Nothing was written."
-        }
+        # Every def, or a refusal. The paging and its three snapshot-integrity refusals live in
+        # index.ps1 so tests\index.tests.ps1 can drive them with no game.
+        $paged = Get-AllDefs $ep
+        $defs  = $paged.defs
+        $pages = $paged.pages
 
         # ResearchDef.Id (ResearchDef.cs:33) is what GetResearchById matches (Research.cs:763-765,
         # ResearchElement.cs:221) and it is NOT the def name, so research rows carry it. The guid is
@@ -495,7 +461,7 @@ switch ($Command) {
             [IO.File]::Move($tmp, $pair.path, $true)
         }
 
-        [ordered]@{ ok = $true; rows = $rows.Count; scanned = $defs.Count; pages = ($page + 1)
+        [ordered]@{ ok = $true; rows = $rows.Count; scanned = $defs.Count; pages = $pages
                     research = $research; catalog = (Join-Path $CatalogDir 'defs.ndjson'); build = $ep.build } |
             ConvertTo-Json -Compress
     }

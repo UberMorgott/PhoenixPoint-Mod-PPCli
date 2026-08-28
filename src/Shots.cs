@@ -81,6 +81,12 @@ namespace Morgott.PPBridge
         /// bench reports for the weapon.</summary>
         internal static int TargetId;
 
+        /// <summary>Projectiles that were left stuck in flight by a throw inside the game's own
+        /// OnTrajectoryEnd and that ShotPatch.Unwedge released. NOT a statistic: any non-zero value
+        /// means another mod threw during damage resolution, and every figure taken after it was
+        /// measured on a game that had to be repaired mid-volley. Reported, never hidden.</summary>
+        internal static int Recovered;
+
         /// <summary>Impacts since <c>start</c>. A live, POSITIVE, single-read predicate, which is
         /// exactly the shape <c>wait</c> can use.</summary>
         internal static int Recorded { get { return total; } }
@@ -120,7 +126,7 @@ namespace Morgott.PPBridge
                 case "stop": return Stop();
                 case "mark": mark = total; return new { ok = true, mark, observing = On };
                 case "read": return Read(a);
-                case "status": return new { ok = true, observing = On, recorded = total, landed = Landed, stored, dropped };
+                case "status": return new { ok = true, observing = On, recorded = total, landed = Landed, stored, dropped, recovered = Recovered };
                 default: return Bad("observe needs {\"action\":\"start|stop|mark|read|status\"}");
             }
         }
@@ -134,7 +140,7 @@ namespace Morgott.PPBridge
             catch (Exception) { }
             Arm = null;
             TargetId = 0;
-            head = stored = dropped = total = mark = 0;
+            head = stored = dropped = total = mark = Recovered = 0;
             Array.Clear(ring, 0, ring.Length);
         }
 
@@ -151,7 +157,7 @@ namespace Morgott.PPBridge
                 return Bad("observe start's \"target\" must be an actor's integer instanceId");
             string error = Arm(true);
             if (error != null) return Bad("could not install the observer: " + error);
-            head = stored = dropped = total = mark = 0;
+            head = stored = dropped = total = mark = Recovered = 0;
             Array.Clear(ring, 0, ring.Length);
             TargetId = t == null || t.Type == JTokenType.Null ? 0 : (int)(long)t;
             On = true;
@@ -164,7 +170,7 @@ namespace Morgott.PPBridge
             // record into a ring nobody will read is harmless while a half-armed patch is not.
             On = false;
             string error = Arm == null ? null : Arm(false);
-            return new { ok = true, observing = false, recorded = total, stored, dropped, unpatchError = error };
+            return new { ok = true, observing = false, recorded = total, stored, dropped, recovered = Recovered, unpatchError = error };
         }
 
         private static object Read(JObject a)
@@ -218,6 +224,10 @@ namespace Morgott.PPBridge
                 recorded = total,
                 stored = items.Count,
                 dropped,
+                // Non-zero means the game had to be unwedged mid-volley - see Shots.Recovered. It
+                // rides in the SAME answer as the numbers it invalidates, so a caller cannot read
+                // the dispersion without also seeing that something threw while it was measured.
+                recovered = Recovered,
                 // THREE different questions, and mixing them is how a bench lies. `hits` is "an actor
                 // stopped it" - ANY actor, the shooter and every bystander included. `targetHits` is
                 // "the actor this volley was aimed at stopped it", and it is the one that measures the

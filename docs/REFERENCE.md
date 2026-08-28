@@ -625,6 +625,9 @@ everything computational is already a `call`.
   the **token** — a number stays a number, an `{"$enum":...}` projection binds straight back as that
   envelope. Embedded, it interpolates as text. An **unset** name fails the step and names itself; it
   is never quietly null.
+- **Array splice.** `"${...NAME}"` as an ELEMENT of an array expands that var's own elements into the
+  surrounding array (`Plan.cs:330-334`); plain `${NAME}` is unchanged, and a spread outside an array,
+  of an unset name, or of a non-array value fails the step loudly rather than guessing.
 - **Caller vars beat the file's own `vars`** — that is what parameterises a stored plan without
   editing it.
 - **Branching:** `if` / `unless` on a step, truthy-tested. A skipped step is traced, never a gap.
@@ -744,7 +747,7 @@ no way to re-parameterise it without a rebuild. **`src\` was not touched.**
 | `spawn-at-coordinate.json` | `defName` `faction` `x` `z` `probeY` `snapRadius` `preloadTimeoutMs` | one actor at one exact point, assets preloaded first | **VERIFIED** — placement 2026-08-25 (P2), preload + visibility same day (7 renderers / 637 transforms vs 3 / 541 without) |
 | `spawn-squad.json` | `defName` `faction` `count` `minDistance` `maxDistance` `useCenter` `centerX/Y/Z` `probeY` `snapRadius` `preloadTimeoutMs` | N actors in a distance **band** around the selected actor (or an explicit point), each position validated with `CanStandAt`, achieved distance reported per actor | **VERIFIED** — placement + distance, and visibility after the preload fix; it spawned **invisible** actors until then, see *The preload, and the false "not required"* |
 | `equip-actor.json` | `actor` `itemName` `container` `listMember` | give an in-play actor an item, and prove the container grew | **VERIFIED** |
-| `load-mission.json` | `name` `phase` `waitReady` `phaseTimeoutMs` `readyTimeoutMs` | load a savegame and wait on `HasAnyTurnStarted` | tactical half verified (`load_game 4` → `phase:"tactical"` in ~20 s); geoscape half **UNVERIFIED, now DIAGNOSED** — see below |
+| `load-mission.json` | `name` `phase` `waitReady` `phaseTimeoutMs` `readyTimeoutMs` | load a savegame and wait on `HasAnyTurnStarted` | **VERIFIED**, both halves — tactical (`load_game 4` → `phase:"tactical"` in ~20 s) and geoscape (a geoscape save loaded **from a live geoscape** → `phase:"geoscape"`, `Playing`, in 14.9 s, 2026-08-28) |
 | `situation.json` | all of `spawn-squad` + `snapshot` `restoreFirst` `itemName` `equip` | restore a snapshot, place a composition at a distance with equipment, summarise the result — preloads the actor def **and** the item def (`give` does the same, `TacConsoleGameplay.cs:770`) | **PARTLY** — spawn+equip body verified, restore head not, preload verification pending |
 | `set-resources.json` | `resource` `amount` | apply a resource **delta** through the shipped cheat path, wallet read back before/after | **UNVERIFIED** — never run against a live geoscape, see below |
 | `unlock-research.json` | `researchId` | `CompleteResearch` (rewards + cascade), state read back before/after | **UNVERIFIED** — never run against a live geoscape, see below |
@@ -846,24 +849,54 @@ game unusable to a human. Every plan here carries a `finally`, a `timeoutMs` and
 
 ### What is NOT reachable, honestly
 
-- **Launching an arbitrary map from scratch.** `create_mission` always targets the site under the
-  geoscape cursor and takes no coordinate, plot, seed or roster (`GeoSite.cs:1200-1203`);
-  `launch_mission` needs a roster-deployment state or a selected `GeoVehicle` at the cursor site
-  (`:1143-1171`). The generation path that *does* choose map + factions + deployment is
-  `GeoMission.Launch(GeoSquad)` with `DebugOverridePlot` and it needs a live
-  `GeoSquad` no plan can assemble. **Loading a save is the reachable answer**; `load-mission.json`
-  does that and says so in the file.
+- **Launching an arbitrary map from scratch — REACHABLE, and this entry used to say otherwise.** The
+  old note looked only at the GEOSCAPE commands: `create_mission` does always target the site under
+  the geoscape cursor and take no coordinate, plot, seed or roster (`GeoSite.cs:1200-1203`), and
+  `launch_mission` does need a roster-deployment state or a selected `GeoVehicle` at the cursor site
+  (`:1143-1171`). The menu-only `loadmap` (`MapPlot.cs:320-366`) needs none of that: it assembles
+  the `TacticalGameParams` itself and `MenuCrt` branches on the params type into `TacticalGameCrt`.
+  `plans\start-mission.json` drives it from the main menu in ~12 s, and `build-mission.json` does
+  the same with a map, mission type, roster and enemy budget you choose. Loading a save
+  (`load-mission.json`) is the other answer, not the only one.
 - **An absolute resource setter.** `Wallet.Apply` is a diff (`Wallet.cs:140`) and the plan engine has
   no arithmetic, so `set-resources.json` applies a **delta** and reports the wallet before and after.
 
-### Why three plans ship UNVERIFIED
+### Leaving a live geoscape — VERIFIED IN-GAME 2026-08-28
 
-The geoscape half of `load-mission.json`, plus `set-resources.json` and `unlock-research.json`, all
-need a live geoscape, and every attempt to reach one on the automation install failed — twice by
-taking the game process down. They are written against `file:line`-cited source, each carries the
-reason it is unverified in its own `//` header, and the label stays until someone actually runs them.
+Every plan that has to get back to the menu — `start-mission`, `start-campaign`, `build-mission`,
+`load-mission` — used to refuse outright when a campaign was open, because doing it wedged the
+process at `{"phase":"menu","level":null}` forever. They no longer refuse.
 
-What the attempts established, and it generalises:
+**The old diagnosis was wrong.** It named `GeoscapeView.Update`, and it is not that: setting
+`UpdateStateStack=false` on its own, a different `MenuEnterReason` and deactivating the whole level
+GameObject were each tried live and each still wedged. The crash is **synchronous**, inside
+`Level.SetCurrentCrt` → `GeoLevelController.OnLevelEnd` → `GeoVehicle.OnExitPlay` →
+`GeoMap.UnRegisterVehicles` → `UIStateVehicleSelected.OnVehichleChanged` → `ResetViewState`, where
+`UIStateInitial` **re-selects the vehicle** on the way in and the aircraft info panel is rebuilt in
+the middle of the teardown. Under TFTV `AircraftReworkMaintenance.GetMaintenanceFactor` NREs there;
+the throw kills `SetCurrentCrt`, the geoscape scene is never unloaded, and a second `MenuCrt` starts
+on top of the first.
+
+**The fix is what the game itself does before it tears a geoscape down** to launch a mission
+(`GeoLevelController.cs:1406,:1444`): set `GeoscapeView.UpdateStateStack = false`, then call
+`GeoscapeView.ToLoadingState()` — so no vehicle is selected when the vehicles exit play — and only
+then `FinishLevelAndGoToLobby`. `ToLoadingState` is the load-bearing one: `ResetViewState` is the
+trap, because `UIStateInitial.EnterState` switches straight back to `UIStateVehicleSelected`.
+
+Verified in ONE process: geoscape → menu (`IsPlaying` true) → a playing tactical mission, two
+campaigns back to back, `build-mission` from a live geoscape, and a geoscape save loaded from a live
+geoscape in 14.9 s. `start-mission` reports `cameFrom:geoscape` when it came that way. Leaving a
+tactical mission was always fine and still is.
+
+### Why two plans still ship UNVERIFIED
+
+`set-resources.json` and `unlock-research.json` both need a live geoscape and neither has been run
+against one. They are written against `file:line`-cited source, each carries the reason it is
+unverified in its own `//` header, and the label stays until someone actually runs them.
+(`load-mission.json`'s geoscape half was in this list until 2026-08-28; leaving a live geoscape is
+now a solved problem — see *Leaving a live geoscape* — and both its halves are verified.)
+
+What the earlier failed attempts established, and it generalises:
 
 - **`load_game` on a save the build cannot open fails by STALLING, not by erroring.** There is no
   completion signal to say otherwise (`SerializationCommands.cs:44`) — which is exactly why `restore`
@@ -887,8 +920,9 @@ NullReferenceException ... PhoenixPoint.Common.Game.PhoenixGame+<GeoscapeGameCrt
   `Mods` instead: `PPSavegameMetaData.Mods` is a list of `SaveModEntry {ID, Version}`, readable live
   over the pipe (`@phoenix.SaveManager` → `GetSaves()` → `items` → `Mods`).
 - **The honest fixes** are to activate the mods the save names, or to produce a geoscape save with
-  the install you are driving. Until one of those, treat a geoscape `restore` as a potentially
-  process-killing operation.
+  the install you are driving. A save the install cannot open still stalls silently, so a geoscape
+  `restore` is still a slow, unsignalled operation — but it is no longer a process-killing one: the
+  teardown wedge it used to trigger is fixed (see *Leaving a live geoscape*).
 
 ## The weapon bench — `observe` and `plans\weapon-test.json`
 
@@ -1001,32 +1035,68 @@ sum equalled the HP delta exactly — and its one miss was recorded landing in
 - **Ammo: `TacticalItem.ReloadForFree()`** (`:830-848`) is the game's own fill-to-max and covers both
   shapes — magazines for `CompatibleAmmunition[0]`, `SetChargesToMax` otherwise. `equip-actor.json`
   adds an item and never loads one, which is why a weapon from it cannot fire.
-- **Pacing a volley is not obvious, and two plausible predicates are dead ends.**
+- **A shot is not a projectile.** `PX_AssaultRifle` fires **six** projectiles per pull of the trigger
+  — `Weapon.GetNumberOfShots(Regular,1)` read `6` live, and one activation runs all six through one
+  loop (`TacticalLevelController.cs:1817`). So `shots` counts **activations** and `projectiles`
+  counts impacts; the bench reports both, plus `projectilesPerShot`, because without that number the
+  two read as a contradiction.
+- **Pacing a volley needs two predicates, and three plausible single ones are dead ends.**
   `ActionComponent.HasPlayingActions` (`:164-182`) counts `NotStarted` as well as `Playing` and looks
   perfect — but `IdleAbility` sits on that same channel permanently, so it is never false. The
   ability's own `IsExecuting` is false while a shot is merely **enqueued** (`ShootAbility.cs:173`
   takes `EnqueueAction` for a Regular shot), and each enqueue is `soloAfterCurrent`, which **cancels
-  everything already queued** (`ActionComponent.cs:80-91`) — a volley paced on it fired six
-  activations in under a second and lost most of them. The projectile itself is the honest signal:
-  `Shots.Landed` goes non-zero exactly when the shot being measured reaches its impact.
+  everything already queued** (`ActionComponent.cs:80-91`). `Map.HasActiveProjectiles` is false
+  before a shot has spawned its projectile *and* false between two shots of one burst.
+  What works: `Shots.Landed` for "this shot reached its impact", then
+  `TacticalActorBase.HasExecutingAbility(null, false)` (`:695`, which explicitly skips `IdleAbility`
+  at `:699`) going false for "the whole activation is over". Verified both ways live — false on an
+  idle actor, true through a burst.
 
 ### Known limits
 
-- **~6 shots per volley is the ceiling, and the cause is PACING.** `shots` is accepted from 1 to 100
-  (the engine's own `repeat` ceiling), but past roughly six consecutive shots one activation returns
-  from `ExecuteAndWait` and no projectile ever reaches `OnTrajectoryEnd`. The plan then FAILS at
-  `landed`, by name, rather than reporting a short volley as `ok:true`.
-  - **Established by matched runs**, same seed and placement: 10/10 completes with ~3 s of dead time
-    after each activation, and dies on pass 7 without it.
-  - **Target death is ruled out.** Immediately before the failing activation the target read `InPlay`
-    with full health, and `Health.SetToMax` before *every* shot changed nothing — the same seed still
-    died on pass 7, so that per-shot top-up was removed rather than kept as a fix that fixes nothing.
-    The ability being disabled, the target no longer being targetable, and an empty magazine were all
-    asserted green in the pass before the failure.
-  - **No honest settle predicate exists yet.** The ability's `IsExecuting` is already false while a
-    shot is merely *enqueued* (`ShootAbility.cs:173`), and `TacticalActorBase.HasExecutingAbility(null,
-    false)` never goes false at all — it got 8 landed and then hung. Until one is found, keep
-    `shots` at 5 or fewer.
+- **There is no volley ceiling, and `shots` is accepted from 1 to 100** (the engine's own `repeat`
+  ceiling, `Plan.cs MaxIterations`); a request outside that range is refused up front by name, never
+  truncated into a short volley reported as `ok`. What that does **not** mean is that any length
+  returns figures — see the two entries below for what a long volley really does.
+  - **The strongest CLEAN pass is 3 activations / 18 projectiles**: `recovered:0`,
+    `targetHitRate` 0.667, `damageOnTarget` 222. That is the run to quote. Volleys of 20 activations
+    / 120 projectiles are reached repeatedly, but the ones measured so far carried a non-zero
+    `recovered` and would now fail, so they are **not** a clean proof of anything.
+  - **A long volley against a target that DIES may legitimately end in a named refusal.** Once
+    actors start dying, something throws inside `OnTrajectoryEnd`. The stack is cut at the Harmony
+    wrapper, so the culprit **cannot be named** — do not attribute it to any particular mod or `Die`
+    patch. The plan refuses by name rather than reporting the volley.
+  - **The pacing finding is independent of all that**, and it is a falsification pair rather than one
+    happy run: swapping that single settle predicate moves the *same* run between **4** and **20**
+    activations.
+  - **The "~6-shot ceiling" never existed** — it was the settle predicate. `PX_AssaultRifle` fires
+    six projectiles per activation while `Shots.Landed` counts one, and the old settle released the
+    pass immediately because a Regular shot is *enqueued*, not played (`ShootAbility.cs:173`). The
+    loop tore through the first burst calling it five shots — a live log shows four activations
+    inside 34 ms — and each enqueue is `soloAfterCurrent`, which discarded the ones behind it
+    (`ActionComponent.cs:78-91`). With the burst spent and four activations thrown away, the next
+    `landed` waited forever on an actor that read idle. The ~3 s sleep "fixed" it by letting each
+    burst finish, which is why it looked like pacing.
+  - **The earlier "`HasExecutingAbility(null,false)` never goes false" was measured on an actor
+    already wedged** by those discarded activations. It is now the settle predicate
+    (`TacticalActorBase.cs:695`) and it is what makes long volleys honest.
+  - **Target death was ruled out** while chasing the wrong cause and the finding stands: before a
+    failing activation the target read `InPlay` at full health, and `Health.SetToMax` before every
+    shot changed nothing.
+- **`recovered` must read `0`, and a non-zero value invalidates the run.** `OnTrajectoryEnd` removes
+  the projectile from `ProjectilesInFlight` and clears `Projectile.IsActive` in its **last two
+  statements** (`ProjectileLogic.cs:359-360`), *after* `_damageAccum.ApplyAddedDamage()` (`:355`)
+  runs the whole damage chain — and with it every mod's Harmony patch on `TacticalActor.Die`. One
+  throw in there and the projectile is never released, so `TacticalMap.HasActiveProjectiles`
+  (`TacticalMap.cs:133`) is stuck true for the rest of the mission and the game's own firing
+  coroutine waits on it forever (`TacticalLevelController.cs:1759,:1797`). `ShotPatch.Unwedge` runs
+  those two statements itself and returns `__exception` **unchanged**, so the throw still reaches the
+  log and whoever wrote the patch still learns about it. Each repair increments `recovered`
+  (it fired twice in one 20-activation run). **A non-zero `recovered` FAILS the plan** — the
+  `assert-no-recovery` step is fatal by design: the release keeps the mission playable, which is
+  worth having, but the hit and damage figures were then measured *across* a repair, and reporting
+  them anyway would be exactly the silently-wrong answer this bench exists to refuse. The count is
+  still in the output; the figures are withheld.
 - **The enemy placement is a random draw from the distance band**, so it can land behind cover and
   the run FAILS at `assert-target`. That is the takeability check working. Re-run, or set `seed`.
 - **The plan does not spawn the shooter.** It equips the one you have selected. Use

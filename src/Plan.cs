@@ -327,6 +327,11 @@ namespace Morgott.PPBridge
 
             private static readonly Regex Whole = new Regex(@"^\$\{([A-Za-z0-9_][A-Za-z0-9_.\[\]]*)\}$");
             private static readonly Regex Embedded = new Regex(@"\$\{([A-Za-z0-9_][A-Za-z0-9_.\[\]]*)\}");
+            /// <summary>The ONE extra rule: <c>"${...NAME}"</c> as an element of an ARRAY splices that
+            /// array variable's elements into the surrounding array. Plain <c>${NAME}</c> stays what it
+            /// always was - one value, nested - because a `call` arg legitimately IS an array when the
+            /// method takes one; only the spread form flattens.</summary>
+            private static readonly Regex Spread = new Regex(@"^\$\{\.\.\.([A-Za-z0-9_][A-Za-z0-9_.\[\]]*)\}$");
 
             private readonly JObject vars = new JObject();
             private readonly JArray cleanup;
@@ -641,6 +646,12 @@ namespace Morgott.PPBridge
                 {
                     string s = (string)t;
                     if (s.IndexOf("${", StringComparison.Ordinal) < 0) return t;
+                    // A spread that reached here is not inside an array, and neither regex below
+                    // matches it - it would be handed on as the literal text "${...X}" and the step
+                    // would call the right method with a nonsense argument.
+                    if (Spread.IsMatch(s))
+                        throw new InvalidOperationException(s + " spreads an array and only works as an " +
+                            "element of an array; use ${" + Spread.Match(s).Groups[1].Value + "} for the value itself");
                     Match whole = Whole.Match(s);
                     if (whole.Success) return Lookup(whole.Groups[1].Value).DeepClone();
                     StringBuilder b = new StringBuilder();
@@ -663,7 +674,19 @@ namespace Morgott.PPBridge
                 if (t.Type == JTokenType.Array)
                 {
                     JArray arr = new JArray();
-                    foreach (JToken item in (JArray)t) arr.Add(Resolve(item));
+                    foreach (JToken item in (JArray)t)
+                    {
+                        Match spread = item.Type == JTokenType.String ? Spread.Match((string)item) : null;
+                        if (spread == null || !spread.Success) { arr.Add(Resolve(item)); continue; }
+                        JToken v = Lookup(spread.Groups[1].Value);
+                        JArray items = v as JArray;
+                        // Loud, because a spread of a single string is exactly the case where guessing
+                        // "they meant one element" would quietly build the wrong argument list.
+                        if (items == null)
+                            throw new InvalidOperationException("${..." + spread.Groups[1].Value +
+                                "} spreads an array, but that value is a " + v.Type);
+                        foreach (JToken el in items) arr.Add(el.DeepClone());
+                    }
                     return arr;
                 }
                 return t;

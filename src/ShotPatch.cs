@@ -63,7 +63,8 @@ namespace Morgott.PPBridge
                 if (target == null)
                     return "ProjectileLogic.OnTrajectoryEnd was not found - the game changed under the observer";
                 Harmony h = new Harmony(Id);
-                h.Patch(target, new HarmonyMethod(typeof(ShotPatch), nameof(Observe)));
+                h.Patch(target, new HarmonyMethod(typeof(ShotPatch), nameof(Observe)),
+                        finalizer: new HarmonyMethod(typeof(ShotPatch), nameof(Unwedge)));
                 harmony = h;
                 return null;
             }
@@ -112,6 +113,53 @@ namespace Morgott.PPBridge
             // A patch that can throw inside the game loop is a defect. This one cannot: a measurement
             // tap must never be able to take the shot it is measuring down with it.
             catch (Exception) { }
+        }
+
+        /// <summary>
+        /// A REAL WEDGE, AND NOT THE VOLLEY CEILING - this comment claimed it was, and the claim was
+        /// wrong. OnTrajectoryEnd removes the projectile from <c>TacticalActor.Map.ProjectilesInFlight</c>
+        /// and clears <c>Projectile.IsActive</c> at its very LAST two statements
+        /// (ProjectileLogic.cs:359-360) - AFTER <c>_damageAccum.ApplyAddedDamage()</c> (:355), which
+        /// runs the whole damage chain and with it every mod's Harmony patch on
+        /// <c>TacticalActor.Die</c>. One throw in there and the projectile is never removed and never
+        /// deactivated, so <c>TacticalMap.HasActiveProjectiles</c> (TacticalMap.cs:133) is stuck TRUE
+        /// for the rest of the mission - and the game's own firing coroutine waits on exactly that,
+        /// twice (TacticalLevelController.cs:1759, :1797). That is a genuine way to strand a mission,
+        /// it was observed live (twice in one 20-activation run), and this releases it.
+        ///
+        /// What it is NOT is the ~6-shot ceiling. MEASURED, and it falsifies the first draft of this
+        /// comment: with this finalizer installed the bench still died on pass 6 reporting
+        /// <c>recovered:0</c> - nothing had wedged, and the ceiling was still there. The ceiling was
+        /// the settle predicate treating one projectile of a six-round burst as one shot; see
+        /// weapon-test.json's own note. Two independent faults, one of which happened to be found
+        /// while chasing the other.
+        ///
+        /// So: run the two statements the game could not reach, and let the exception continue. The
+        /// stuck projectile is unwedged whoever threw and whyever - this finalizer names no mod and
+        /// tests for nothing. Swallowing is NOT on the table: <c>__exception</c> is returned unchanged,
+        /// so the throw still reaches the log and whoever wrote the bad patch still learns about it.
+        /// Counted, surfaced as <c>recovered</c>, and FATAL to the bench that saw it: a silent repair
+        /// of somebody else's crash is how a bench starts measuring a broken game.
+        /// </summary>
+        private static Exception Unwedge(ProjectileLogic __instance, Exception __exception)
+        {
+            if (__exception == null || __instance == null) return __exception;
+            try
+            {
+                Projectile p = __instance.Projectile;
+                // IsActive is the game's OWN "still in flight" flag and the one HasActiveProjectiles
+                // reads, so it is also the honest test for "the cleanup did not run".
+                if (p != null && p.IsActive)
+                {
+                    __instance.TacticalActor.Map.ProjectilesInFlight.Remove(p);
+                    p.OnTrajectoryEnd();
+                    Shots.Recovered++;
+                    Debug.LogError("PPBridge: a projectile was left in flight by a throw inside "
+                                   + "OnTrajectoryEnd and has been released; the throw follows.");
+                }
+            }
+            catch (Exception) { }
+            return __exception;
         }
 
         /// <summary>

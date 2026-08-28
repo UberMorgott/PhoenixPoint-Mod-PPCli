@@ -6,7 +6,7 @@
 
   "//lever": "`loadmap` (MapPlot.cs:320-366) assembles the TacticalGameParams itself off SharedData.TacticalLevelDef and hands PhoenixGame.FinishLevel a LoadLevelGameResult (:365). MenuCrt then branches on the params TYPE into TacticalGameCrt (PhoenixGame.cs:514-523). No mod code and no new bridge verb.",
   "//menu-only": "loadmap is MENU-ONLY. Called inside a tactical level, TacticalGameCrt (PhoenixGame.cs:573-583) casts the result to TacticalGameResult and throws InvalidCastException - hence the phase gate below, which is a hard failure and not a warning.",
-  "//tags": "ponytail: loadmap's `params string[] tags` (plot/parcel tag filter) is NOT exposed - the plan engine cannot splice an array var into a console arg list, and args must stay flat (Protocol.cs:190-193). Add the literals to the `load` step if a run needs them.",
+  "//tags": "loadmap's `params string[] tags` (plot/parcel tag filter) IS exposed now: pass `tags` as a JSON array and the elements go through as separate console arguments. The ceiling that made this a corner-cut is gone - the plan engine grew array splicing (Plan.cs, the \"${...NAME}\" form as an ARRAY ELEMENT), so the `load` step below spreads `tags` rather than nesting it as one argument. Empty by default, which splices nothing and leaves the command exactly as it was. Example: '{\"scene\":\"ALN_PLT_Nest_48x48_A\",\"tags\":[\"plot_a\",\"parcel_b\"]}'.",
 
   "timeoutMs": 600000,
   "maxSteps": 300,
@@ -14,6 +14,8 @@
   "vars": {
     "scene": "ALN_PLT_Nest_48x48_A",
     "seed": 12345,
+    "//tags-default": "EMPTY, and it must stay an ARRAY - the spread refuses a non-array loudly rather than passing the literal through. An empty one splices nothing.",
+    "tags": [],
     "menuTimeoutMs": 120000,
     "loadTimeoutMs": 420000
   },
@@ -21,10 +23,16 @@
   "steps": [
     { "//": "THE GATE, computed rather than asked of the caller: FinishLevelAndGoToLobby AT the menu makes MenuCrt take a QuitGameResult it has no branch for and throw (PhoenixGame.cs:492-495), so the lobby call must not fire when there is nothing to leave.",
       "id": "phase", "verb": "state", "save": "ST0" },
-    { "//REFUSAL": "A LIVE GEOSCAPE CANNOT BE LEFT FROM HERE, so this plan refuses rather than wedging the game. Measured 2026-08-28: FinishLevelAndGoToLobby out of a running geoscape (and `load_game`, which takes the same road) tears the level down while GeoscapeView keeps updating - UIStateVehicleSelected.UpdateState then NREs every frame inside StateStack.Update, MenuCrt's HomeScreen never reaches Playing, and the process is stuck at phase:menu with level:null until it is killed. GeoscapeView.ResetViewState first does NOT help; its SwitchToState is applied on a later frame that never comes. Quit the campaign from the in-game pause menu, or restart the process. Tactical is fine and is exercised below.",
-      "id": "refuse-if-geoscape", "verb": "wait",
-      "args": { "timeoutMs": 1, "everyFrames": 1, "not": true,
-                "call": { "op": "invoke", "type": "System.Object", "member": "Equals", "args": [ "geoscape", "${ST0.phase}" ] } } },
+    { "//LEAVING A GEOSCAPE": "A live geoscape USED to wedge the process here, and this is the sequence that stops it. FinishLevelAndGoToLobby on its own tears the level down through Level.SetState -> GeoLevelController.OnLevelEnd -> GeoVehicle.OnExitPlay -> GeoMap.UnRegisterVehicles, which fires UIStateVehicleSelected.OnVehichleChanged on the STILL-LIVE view; that reaches ResetViewState, UIStateInitial re-selects the vehicle on the way in, and the aircraft info panel is rebuilt in the middle of the teardown. If anything in that panel throws - under TFTV it does, in AircraftReworkMaintenance.GetMaintenanceFactor - the exception kills Level.SetCurrentCrt, the geoscape scene is never unloaded, RunGameLevel never reaches UnblockIdleTimeouts, and a second MenuCrt starts on top of the first (\"there is already such a block. Abort.\" in the log). The process then sits at phase:menu, level:null forever. Note what this is NOT: it is not GeoscapeView.Update, and turning that off does not help - setting UpdateStateStack false AND deactivating the whole level GameObject were both tried live and both still wedged, because the crash is in a synchronous teardown callback, not in a frame update. The two steps below are what the GAME itself does before it tears a geoscape down to launch a mission (GeoLevelController.cs:1406 and :1444): stop the state stack, then put the view in its loading state so no vehicle is selected when the vehicles exit play. Live-verified 2026-08-28: geoscape -> menu (IsPlaying true) -> a playing tactical mission, all in ONE process.",
+      "id": "is-geoscape", "verb": "call", "save": "ISGEO",
+      "args": { "op": "invoke", "type": "System.Object", "member": "Equals", "args": [ "geoscape", "${ST0.phase}" ] } },
+    { "id": "geo-view", "verb": "call", "save": "GEOVIEW", "if": "${ISGEO.value}",
+      "args": { "op": "get", "target": "@geo", "member": "View" } },
+    { "id": "geo-stack-off", "verb": "call", "if": "${ISGEO.value}",
+      "args": { "op": "set", "target": "${GEOVIEW.value.h}", "member": "UpdateStateStack", "value": false } },
+    { "//": "The load-bearing one. ToLoadingState is the ONLY one of the three view calls that works - ResetViewState is the trap, because UIStateInitial's own EnterState switches straight back to UIStateVehicleSelected.",
+      "id": "geo-to-loading", "verb": "call", "if": "${ISGEO.value}",
+      "args": { "op": "invoke", "target": "${GEOVIEW.value.h}", "member": "ToLoadingState", "args": [] } },
     { "id": "is-menu", "verb": "call", "save": "ISMENU",
       "args": { "op": "invoke", "type": "System.Object", "member": "Equals", "args": [ "menu", "${ST0.phase}" ] } },
     { "//": "The engine has no `not`; Object.Equals(false, x) is the idiom the other plans use.",
@@ -40,7 +48,7 @@
       "args": { "timeoutMs": "${menuTimeoutMs}", "everyFrames": 10,
                 "call": { "op": "get", "target": "@level", "member": "IsPlaying" } } },
 
-    { "id": "load", "verb": "console", "args": { "command": "loadmap", "args": [ "${scene}", "${seed}" ] } },
+    { "id": "load", "verb": "console", "args": { "command": "loadmap", "args": [ "${scene}", "${seed}", "${...tags}" ] } },
 
     { "//": "Two waits, because they are two different facts. `phase` says the TacticalLevelController exists; `ready` is HasAnyTurnStarted, which is when the mission is actually driveable.",
       "id": "tactical", "verb": "wait", "args": { "phase": "tactical", "timeoutMs": "${loadTimeoutMs}", "everyFrames": 10 } },

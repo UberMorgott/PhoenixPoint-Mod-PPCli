@@ -82,6 +82,34 @@ namespace Morgott.PPBridge
             for (int i = 0; i < 200; i++) big.Add(new string('q', 4000));
             return big;
         }
+
+        /// <summary>
+        /// THE PAIR THAT SEPARATES CHARACTERS FROM BYTES. Both return the same NUMBER OF CHARACTERS -
+        /// 100 x 500 = 50000, under the 65536 cap when counted as chars - but 'я' is two bytes in
+        /// UTF-8, so only one of them is over the cap in BYTES. A cap that measured chars would let
+        /// both through; Reflect.cs:182 measures Encoding.UTF8.GetByteCount, so exactly one must be
+        /// refused. Without the ASCII half the Cyrillic half proves nothing: a payload can always be
+        /// refused for being too long in any unit.
+        ///
+        /// MANY SHORT strings rather than a few long ones, and that is not arbitrary: individual
+        /// strings are clipped before the response is measured, so 4000-char elements never reach the
+        /// byte cap at all - the first draft of this pair used them and the Cyrillic half came back a
+        /// comfortable 20245 chars, passing a check that was testing nothing. 500 is well under the
+        /// clip.
+        /// </summary>
+        public static List<string> WideAscii()
+        {
+            List<string> big = new List<string>();
+            for (int i = 0; i < 100; i++) big.Add(new string('q', 500));
+            return big;
+        }
+
+        public static List<string> WideCyrillic()
+        {
+            List<string> big = new List<string>();
+            for (int i = 0; i < 100; i++) big.Add(new string('я', 500));
+            return big;
+        }
     }
 
     internal static class SelfCheck
@@ -415,6 +443,16 @@ namespace Morgott.PPBridge
             Check("dto-clips-long-strings", clipped.Contains("(clipped)") && clipped.Length < 4000, "" + clipped.Length);
             string fat = R("items", "{'h':'" + Reflect.Track(Ov.Fat()) + "','pageSize':200}");
             Check("dto-response-byte-cap", fat.Contains("\"code\":\"cap\"") && fat.Length < Reflect.MaxResponseBytes, "" + fat.Length);
+
+            // ...and that the cap counts BYTES, not characters. The two payloads carry the SAME 50000
+            // characters; only the Cyrillic one is over 65536 UTF-8 bytes. One passes and one is
+            // refused, so the assertion is about the unit rather than about length - see Ov.WideAscii.
+            string wideOk = R("items", "{'h':'" + Reflect.Track(Ov.WideAscii()) + "','pageSize':100}");
+            string wideBig = R("items", "{'h':'" + Reflect.Track(Ov.WideCyrillic()) + "','pageSize':100}");
+            Check("dto-cap-lets-the-same-length-through-in-ascii", !wideOk.Contains("\"code\":\"cap\"") && wideOk.Contains("\"returned\":100"),
+                  "50000 ASCII chars were refused, so the multi-byte half proves nothing: " + wideOk.Length);
+            Check("dto-cap-counts-utf8-bytes-not-chars", wideBig.Contains("\"code\":\"cap\""),
+                  "50000 two-byte chars (100000 bytes) passed a 65536-BYTE cap: " + wideBig.Length);
 
             // --- discovery verbs.
             Check("types-finds-a-type", R("types", "{'pattern':'Morgott.PPBridge.Ov'}").Contains(OvType),
@@ -911,6 +949,41 @@ namespace Morgott.PPBridge
             Check("var-sets-a-number-as-text", Run("var", "{'name':'weapon_spread','value':0}").Contains("\"ok\":true") && sawValue == "0",
                   "value=" + sawValue);
             Protocol.VarRun = null;
+
+            // --- ARRAY SPREAD into a console arg list. "${...NAME}" AS AN ELEMENT OF AN ARRAY splices
+            // that variable's elements in; plain "${NAME}" still nests one value, because a `call` arg
+            // legitimately IS an array when the method takes one. Everything else refuses by name -
+            // a silently wrong argument list is the failure mode worth buying these five asserts for,
+            // and it is not hypothetical: a plain ${TAGS} in an arg list produces the empty argument
+            // "map1||z", which loadmap would have taken as a real, blank tag.
+            string[] spliced = null;
+            Protocol.ConsoleRun = (c, a) => { spliced = a; return new { ok = true, output = new string[0] }; };
+
+            Run("plan", "{'vars':{'TAGS':['a','b']},'finally':[],'steps':[{'id':'s','verb':'console'," +
+                        "'args':{'command':'loadmap','args':['map1','${...TAGS}','z']}}]}");
+            Check("plan-spread-splices-into-the-arg-list", spliced != null && string.Join("|", spliced) == "map1|a|b|z",
+                  spliced == null ? "the console step never ran" : string.Join("|", spliced));
+
+            spliced = null;
+            Run("plan", "{'vars':{'TAGS':['a','b']},'finally':[],'steps':[{'id':'s','verb':'console'," +
+                        "'args':{'command':'loadmap','args':['map1','${TAGS}']}}]}");
+            Check("plan-plain-var-still-nests", spliced != null && spliced.Length == 2,
+                  spliced == null ? "null" : "a plain ${VAR} flattened, which breaks every array-taking call: " + spliced.Length);
+
+            Check("plan-spread-of-a-non-array-refuses",
+                  Run("plan", "{'vars':{'TAGS':'notalist'},'finally':[],'steps':[{'id':'s','verb':'console'," +
+                              "'args':{'command':'loadmap','args':['${...TAGS}']}}]}").Contains("spreads an array"),
+                  "a scalar was spread instead of refused");
+            Check("plan-spread-outside-an-array-refuses",
+                  Run("plan", "{'vars':{'TAGS':['a']},'finally':[],'steps':[{'id':'s','verb':'console'," +
+                              "'args':{'command':'${...TAGS}','args':[]}}]}").Contains("element of an array"),
+                  "a spread in a scalar position was accepted");
+            Check("plan-spread-of-an-unset-var-refuses",
+                  Run("plan", "{'finally':[],'steps':[{'id':'s','verb':'console','args':{'command':'loadmap'," +
+                              "'args':['${...GONE}']}}]}").Contains("is not set"),
+                  "an unset variable spread to nothing instead of failing");
+
+            Protocol.ConsoleRun = (c, a) => { loaded = c + " " + string.Join(" ", a); return new { ok = true, output = new string[0] }; };
 
             ShippedPlanChecks("spawn-at-coordinate.json", "mission-ready");
             ShippedPlanChecks("aim-and-run.json", "camera-director");

@@ -43,6 +43,7 @@ Select one of your soldiers in a live mission, then:
 | Intent | Command |
 |---|---|
 | test a weapon at 10 m, 5 shots | `.\ppcli.ps1 plan .\plans\weapon-test.json '{"weaponDef":"PX_AssaultRifle_WeaponDef","enemyDef":"crabman","distance":10.0,"shots":5}'` |
+| a longer volley — `shots` is 1..100, but read the two notes below the output first | `.\ppcli.ps1 plan .\plans\weapon-test.json '{"weaponDef":"PX_AssaultRifle_WeaponDef","enemyDef":"crabman","distance":10.0,"shots":20}'` |
 | the same, with dispersion switched OFF (the control) | `.\ppcli.ps1 plan .\plans\weapon-test.json '{"weaponDef":"PX_AssaultRifle_WeaponDef","distance":10.0,"shots":5,"setSpread":true,"spread":0}'` |
 | the same placement every time | add `"seed":13` |
 | fire while it is NOT your turn | add `"shooter":"HANDLE"` — `@selected` is null during another faction's turn |
@@ -60,6 +61,19 @@ figures, which are not the same question**:
 They diverge in practice — a 10-shot run read `targetHits` 6 against `hitsAnyActor` 9. Quote the
 per-target pair when you mean the weapon.
 
+`shots` counts **activations**, `projectiles` counts impacts: a burst weapon fires several per pull
+of the trigger (`PX_AssaultRifle` answers 6), and `projectilesPerShot` is reported so the two do not
+read as a contradiction. The strongest clean pass is 3 activations / 18 projectiles.
+
+**`recovered` must be `0`, and a non-zero value FAILS the run** rather than printing figures.
+It means another mod threw inside a projectile's flight and left it stuck; PPBridge released it and
+re-threw the exception unchanged, so the mission stays playable and the throw still reaches the log
+— but the numbers would have been measured across a repair, so they are withheld.
+
+**A long volley can end in a refusal, and that is not a ceiling.** `shots` is 1..100 and the whole
+range is accepted, but once actors start dying something throws inside `OnTrajectoryEnd` and the run
+refuses by name. The stack is cut at the Harmony wrapper, so there is no mod to point at.
+
 Dispersion is about the aim point (`GetWorkingPosition()`), not the enemy's feet; `enemyFeet` is
 reported too. **`spread:0` must cluster far tighter than a stock run**; measured over 5 shots at
 ~10 m: stock `mean 0.144 m`, zero-spread `mean 0.0015 m`.
@@ -70,7 +84,8 @@ the rifle *and* its ammo clip — which is the point: an ambiguous name would me
 | It said | What happened |
 |---|---|
 | `assert-target ... predicate was still false` | no line of sight — the enemy landed behind cover. Re-run, or change `distance`. |
-| `landed ... still false after 20000 ms` | a shot did not produce a projectile. The ~6-shot ceiling: the cause is pacing, not the target dying. Keep volleys to 5. |
+| `landed ... still false after 20000 ms` | a shot did not produce a projectile. Common on a long volley once the target starts dying. Re-run, or ask for fewer shots — there is no volley-length ceiling to work around. |
+| `assert-no-recovery` failed | `recovered` was non-zero: another mod threw inside a projectile's flight. The figures are withheld on purpose; re-run without that mod. |
 | `assert-shots-at-most-100` / `assert-shots-at-least-1` failed | `shots` is 1..100. It is refused up front, never truncated into a short volley reported as `ok`. |
 | `assert-one-weapon` failed | the name matched more than one `WeaponDef`. Name it exactly. |
 
@@ -79,7 +94,8 @@ Read the observer on its own with `.\ppcli.ps1 connect observe '{"action":"statu
 ## Cold start — from the main menu, with nothing played
 
 Everything below starts at the HomeScreen of a game that has never had a campaign. No save, no
-setup. Verified in-game 2026-08-28.
+setup. Verified in-game 2026-08-28. They also run from a game that is mid-campaign — see the
+geoscape note under the table.
 
 | Intent | Command |
 |---|---|
@@ -94,11 +110,20 @@ setup. Verified in-game 2026-08-28.
   `.\ppcli.ps1 connect find '{"query":"PlotDef","pageSize":50}'`, then read `Scene.SceneName` off it.
 - `start-mission` takes ~12 s and reports a per-faction actor census. `start-campaign` takes ~15 s
   and reports the starting base and squad it generated.
-- **A running GEOSCAPE cannot be left from out here.** All three refuse in 1 ms if one is open,
-  because `FinishLevelAndGoToLobby` (and `load_game`) out of a live geoscape wedges the process —
-  the level goes away, `GeoscapeView` keeps updating and NREs every frame, and the HomeScreen never
-  comes up. Quit the campaign from the in-game pause menu, or restart the game. Leaving a TACTICAL
-  mission is fine and the plans do it for you.
+- **A running GEOSCAPE is left for you now.** These plans (and `load-mission`) no longer refuse when
+  a campaign is open: they do what the game itself does before tearing a geoscape down
+  (`GeoLevelController.cs:1406,:1444`) — set `GeoscapeView.UpdateStateStack=false`, call
+  `GeoscapeView.ToLoadingState()`, then `FinishLevelAndGoToLobby`. `start-mission` reports
+  `cameFrom:geoscape` when it came that way. Verified in ONE process: geoscape → menu → mission, two
+  campaigns back to back, `build-mission` from a geoscape, and a geoscape save loaded from a live
+  geoscape in 14.9 s. Leaving a TACTICAL mission was always fine and still is.
+  The old wedge was never `GeoscapeView.Update` — `UpdateStateStack=false` alone, a different
+  `MenuEnterReason` and deactivating the whole level GameObject each still hung. It is synchronous,
+  in `Level.SetCurrentCrt` → `GeoLevelController.OnLevelEnd` → `GeoVehicle.OnExitPlay` →
+  `GeoMap.UnRegisterVehicles` → `UIStateVehicleSelected.OnVehichleChanged` → `ResetViewState`, where
+  `UIStateInitial` re-selects the vehicle and TFTV's `AircraftReworkMaintenance.GetMaintenanceFactor`
+  NREs rebuilding the aircraft panel mid-teardown. `ToLoadingState` fixes it by leaving no vehicle
+  selected.
 - `build-mission` stops in DEPLOYMENT by design: an explicit player roster has to be placed. It
   reports `turnStarted:false`; pass `waitReady:true` only for a build that needs no placement.
 
