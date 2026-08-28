@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'paths.ps1')
 
 $pinned = Get-PPPinnedInstall $PinFile
-if (-not $PPRoot) { $PPRoot = Find-PPInstall; Write-Host "install: $PPRoot ($($pinned ? 'pinned in ppcli-install.txt' : 'discovered through Steam'))" }
+if (-not $PPRoot) { $PPRoot = Find-PPInstall; Write-Host "install: $PPRoot ($(Format-InstallOrigin $pinned))" }
 # Creating Mods\PPBridge under a path that is not an install is the trap this guard exists for: it
 # succeeds, deploys nothing anyone will load, and reads exactly like a working deploy.
 if (-not (Test-PPInstall $PPRoot)) {

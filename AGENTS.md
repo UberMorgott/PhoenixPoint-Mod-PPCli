@@ -13,15 +13,26 @@ Every invocation writes **exactly one compact JSON object to stdout** and diagno
 
 ## Bootstrap — once per machine
 
-Prerequisites: **PowerShell 7**, a **.NET SDK**, the **.NET Framework 4.7.2 targeting pack**, and a
-Phoenix Point install. The reference assemblies are the ones the game already ships — no separate
-download:
+Prerequisites: **PowerShell 7**, a **.NET SDK**, and a Phoenix Point install. The reference
+assemblies are the ones the game already ships — no separate download. The project targets .NET
+Framework 4.7.2; install that targeting pack **only if the build says it cannot resolve the
+references** (a machine checked here had an empty `.NETFramework` reference-assemblies directory and
+built anyway).
+
+Do not guess the install path — the client discovers it the way Steam records it:
 
 ```powershell
-$PPRoot = 'C:\Program Files (x86)\Steam\steamapps\common\Phoenix Point'   # holds PhoenixPointWin64.exe
+. .\paths.ps1
+$PPRoot = Find-PPInstall     # ppcli-install.txt if present, else registry SteamPath +
+                             # steamapps\libraryfolders.vdf; refuses by name rather than guessing
 Test-Path (Join-Path $PPRoot 'ModSDK\Assembly-CSharp.dll')                        # must be True
 Test-Path (Join-Path $PPRoot 'PhoenixPointWin64_Data\Managed\UnityEngine.CoreModule.dll')   # True
 ```
+
+Discovery only sees installs inside a **Steam library**, so a separate automation copy is invisible
+to it and never makes it ambiguous: it answers with the install its owner PLAYS. Every command
+prints which install it chose and how. Set `$PPRoot` by hand, or pin the automation copy in
+`ppcli-install.txt`, rather than waiting for a refusal that will not come.
 
 If `ModSDK\` is missing (a stripped automation copy), build against another install with
 `.\deploy.ps1 -PPRoot $PPRoot -RefRoot '<a full install>'`.
@@ -53,8 +64,19 @@ finds it there. `REFUSED: no live PPBridge endpoint` means no game is running wi
 **enabled** and **armed**, not that hand-launching is unsupported.
 
 If the profile directory `%USERPROFILE%\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam\`
-holds more than one `<SteamID64>`, add `-ProfileId <SteamID64>` to `run` and `batch`. If Steam
-discovery finds zero or several installs, `-PPRoot` is required on every command.
+holds more than one entry, add `-ProfileId <SteamID64>` to `run` and `batch`. Not all of those
+entries are profiles — one is named `WorkshopTool` and has no `Options.jopt` — so the one you want
+is the 17-digit numeric directory whose `Options.jopt` the install you just ran wrote most recently:
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam" -Directory |
+  Where-Object { Test-Path (Join-Path $_.FullName 'Options.jopt') } |
+  Sort-Object { (Get-Item (Join-Path $_.FullName 'Options.jopt')).LastWriteTime } -Descending |
+  Select-Object -First 1 Name
+```
+
+If Steam discovery finds zero or several installs, `-PPRoot` is required on every command — but do
+not treat that refusal as protection: see the note under *Bootstrap*.
 
 ## Operating discipline
 
@@ -160,20 +182,33 @@ and it is **null during another faction's turn**. To get a handle without touchi
 # 2. which one is which - the def name says it (Phoenix_TacticalFactionDef, Alien_TacticalFactionDef, ...)
 .\ppcli.ps1 connect call '{"op":"get","target":"<FACTION>","member":"TacticalFactionDef"}'
 
-# 3. that faction's actors, and pick one
-.\ppcli.ps1 connect call '{"op":"get","target":"<FACTION>","member":"Actors"}'  # -> <ROSTER>
+# 3. that faction's fighters, and pick one
+.\ppcli.ps1 connect call '{"op":"get","target":"<FACTION>","member":"TacticalActors"}'  # -> <ROSTER>
 .\ppcli.ps1 connect items '{"h":"<ROSTER>","page":0,"pageSize":40}'             # -> h + type + name per row
+
+# 4. is it a SOLDIER? a vehicle carries Vehicle_TagDef; a soldier does not
+.\ppcli.ps1 connect call '{"op":"get","target":"<ACTOR>","member":"GameTags"}'  # -> <TAGS>
+.\ppcli.ps1 connect items '{"h":"<TAGS>","page":0,"pageSize":20}'
 ```
 
-Or skip step 1 and read `@faction.Actors` directly, which is the faction currently on turn.
+Or skip step 1 and read `@faction.TacticalActors` directly, which is the faction currently on turn.
 
-**`Actors` yields `TacticalActorBase`, so the first rows are ZONES, not soldiers** — a live page
-opened with `TacticalDeployZone "Deploy_Player_1x1_Elite_Grunt_Drone"` and
-`TacticalExitZone "PlayerExitZone"` before reaching
-`TacticalActor "NJ_Armadillo_1"`. Take the first row whose `type` is exactly
-`PhoenixPoint.Tactical.Entities.TacticalActor`; page with `page`/`pageSize` while `hasMore` is true.
+**`TacticalActors`, not `Actors`.** `Actors` yields `TacticalActorBase`, so a live page opened with
+`TacticalDeployZone "Deploy_Player_1x1_Elite_Grunt_Drone"` and `TacticalExitZone "PlayerExitZone"`
+before reaching the first fighter. `TacticalActors` (`TacticalFaction.cs:70`) is the same
+enumeration already filtered to `TacticalActor`.
 
-`Actors` is also a lazy iterator: it projects as a plain handle with **no `count` and no
+**The first `TacticalActor` is usually NOT a soldier.** On a real `start-mission` roster it was
+`NJ_Armadillo_1`, an armoured car, with `Soldier_2`..`Soldier_5` behind it — and that vehicle is
+also what the game leaves SELECTED, so `@selected` is it. Handing it a rifle fails
+`weapon-test.json` at `assert-enabled` with `NoSuitableEquipment`. Use the game's own test rather
+than a name prefix (`CharacterTemplateExtension.cs:36` reads
+`GameTags.Contains(SharedGameTags.VehicleTag)`): a vehicle's `GameTags` carry `Vehicle_TagDef`
+(read live: `Metallic_SubstanceTypeTagDef, Armadillo_ClassTagDef, Vehicle_TagDef, …`), a soldier's
+do not (`Organic_SubstanceTypeTagDef, Human_TagDef, Technician_ClassTagDef, …`). Do **not** test
+`TacticalActorBase.Vehicle` — it answers with a `VehicleComponent` for a plain soldier too.
+
+`TacticalActors` is a lazy iterator: it projects as a plain handle with **no `count` and no
 `collection:true`**, and `items` still pages it correctly. A missing `count` does not mean "not a
 collection". Pass the chosen row's `h` wherever a plan takes an actor — `"shooter":"h:3:17"`,
 `"actor":"h:3:17"`.
@@ -208,7 +243,7 @@ a plan run in the wrong phase fails at its first step.
 | `spawn-squad.json` | a tactical mission that is **Playing**, and a **selected actor** to measure from unless `useCenter` is true | `defName` `count` `minDistance` `maxDistance` `useCenter` `centerX/Y/Z` |
 | `equip-actor.json` | an actor already **in play** | `actor` `itemName` `container` `listMember` |
 | `aim-and-run.json` | a tactical mission | `x` `y` `z` `aimOffsetY` `command` `cmdArgs` |
-| `weapon-test.json` | a tactical mission that is **Playing**, and a shooter — selected, or passed as `shooter` | `weaponDef` `enemyDef` `distance` `shots` `setSpread` `spread` `seed` `shooter` |
+| `weapon-test.json` | a tactical mission that is **Playing**, and a shooter that is a **SOLDIER** — selected, or passed as `shooter`. `start-mission` leaves a VEHICLE selected, so pass a handle | `weaponDef` `enemyDef` `distance` `shots` `setSpread` `spread` `seed` `shooter` |
 | `situation.json` | a tactical mission (`restoreFirst:false`), or a snapshot to restore | all of `spawn-squad` plus `snapshot` `restoreFirst` `itemName` |
 
 **Plan timeout vs client timeout.** A plan carries its own `timeoutMs`; the client independently
@@ -222,6 +257,12 @@ Caller vars override the file's own `vars`. Caps that are not advice: `maxSteps`
 hard, `repeat times` 100, 500 trace entries. The result is
 `{ok, code, error, step, steps, elapsedMs, cleanupRan, cleanupSteps, output, trace}` — full step
 results are never returned, so ask for what you want through the plan's `output`.
+
+**Read a failed assertion's `result.predicate` before anything else.** A failing `wait` reports
+`last` (the value that was not true) *and* `predicate` — the call as evaluated, with every `${…}`
+already substituted. Plan assertions routinely carry their own diagnosis in those arguments:
+`predicate.args` of `["NotDisabled","NoSuitableEquipment"]` says the shooter is a vehicle, where
+`last:false` says nothing at all.
 
 ## The weapon bench
 

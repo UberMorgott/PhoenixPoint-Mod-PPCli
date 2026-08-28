@@ -71,23 +71,34 @@ Impacts are held in a ring of 512 and `observe read` lists at most 200 rows, dro
 
 A **failed plan publishes no `output` at all** — `outputWithheld` says why, and `result` carries the failing step's own DTO, so the value that tripped an assertion still reaches the caller while the invalid figures do not.
 
-All commands above are PowerShell 7 commands run from the repository root. Add `-PPRoot $PPRoot` when Steam discovery cannot select exactly one install or when you keep multiple installs. A live handle such as `h:3:17` is only an example shape; use a handle returned by the current game session.
+All commands above are PowerShell 7 commands run from the repository root. A live handle such as `h:3:17` is only an example shape; use a handle returned by the current game session.
+
+**Which install a command means, said plainly.** Discovery reads Steam's own registry key and `libraryfolders.vdf`, so it only ever sees installs *Steam* knows about — and it refuses by name only when that count is zero or more than one. A separate copy you keep for automation is not a Steam library entry, so discovery does not see it, does not become ambiguous, and quietly answers with the install you **play**. Every command therefore prints the install it chose and how it chose it, and the fix is not a refusal you can wait for: name the copy with `-PPRoot`, or pin it once in `ppcli-install.txt`.
 
 ## Install and first run
 
-1. Install PowerShell 7, a .NET SDK, and the .NET Framework 4.7.2 targeting pack. The reference assemblies are the ones Phoenix Point already ships — there is nothing else to download — so the game root used for references must contain `PhoenixPointWin64.exe`, `ModSDK\Assembly-CSharp.dll`, `ModSDK\0Harmony.dll`, and `PhoenixPointWin64_Data\Managed\UnityEngine.CoreModule.dll`. Check before building:
+1. Install PowerShell 7 and a .NET SDK. The reference assemblies are the ones Phoenix Point already ships — there is nothing else to download — so the game root used for references must contain `PhoenixPointWin64.exe`, `ModSDK\Assembly-CSharp.dll`, `ModSDK\0Harmony.dll`, and `PhoenixPointWin64_Data\Managed\UnityEngine.CoreModule.dll`.
+
+   The project targets .NET Framework 4.7.2, which normally wants the matching targeting pack. Install it **if the build cannot resolve the reference assemblies** and says so — on one machine checked here the `.NETFramework` reference-assemblies directory was empty and the build still succeeded in 1.4 s, so it is not an unconditional prerequisite. That is one data point, not a guarantee that you will never need it.
+
+2. Clone this repository and open PowerShell 7 in its root. Then find the install — the client already knows how, so ask it rather than guessing a path:
 
    ```powershell
-   Test-Path 'C:\Program Files (x86)\Steam\steamapps\common\Phoenix Point\ModSDK\Assembly-CSharp.dll'
+   . .\paths.ps1
+   $PPRoot = Find-PPInstall      # ppcli-install.txt if you have one, else Steam's registry
+                                 # key + steamapps\libraryfolders.vdf
+   $PPRoot
    ```
 
-2. Clone this repository, open PowerShell 7 in its root, and set the install explicitly:
+   That is the same discovery every command uses. It answers with one install, or refuses by name and tells you to pass `-PPRoot`. If you know the path already, or you keep the game outside a Steam library, set it by hand instead:
 
    ```powershell
-   $PPRoot = 'C:\Program Files (x86)\Steam\steamapps\common\Phoenix Point'
+   $PPRoot = 'X:\<your Steam library>\steamapps\common\Phoenix Point'
    ```
 
    The value is the directory containing `PhoenixPointWin64.exe`, not `Mods` or `ModSDK`.
+
+   **Discovery finds the install you PLAY.** It sees Steam libraries and nothing else, so on a machine with one Steam install and a separate automation copy it is not ambiguous — it simply answers with the Steam one. Every command prints the install it chose and how, so read that line before a `deploy` writes anything.
 
 3. Verify the reference path with the same property used by the project, then deploy:
 
@@ -118,7 +129,18 @@ All commands above are PowerShell 7 commands run from the repository root. Add `
    %USERPROFILE%\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam\<SteamID64>\Options.jopt
    ```
 
-   The `MOD_ACTIVATED` object's `CollectionValues` array must contain the exact value `com.morgott.PPBridge`. Use the in-game manager; do not rewrite `Options.jopt` by hand. If that `Steam\` directory holds more than one `<SteamID64>` profile, `run` and `batch` refuse until you name the one this install writes with `-ProfileId <SteamID64>`. If activation is skipped, `run` refuses before launch rather than launching into a silent failure.
+   The `MOD_ACTIVATED` object's `CollectionValues` array must contain the exact value `com.morgott.PPBridge`. Use the in-game manager; do not rewrite `Options.jopt` by hand. If activation is skipped, `run` refuses before launch rather than launching into a silent failure.
+
+   If that `Steam\` directory holds more than one profile, `run` and `batch` refuse until you name the one this install writes with `-ProfileId <SteamID64>`. Yours is the 17-digit numeric directory holding an `Options.jopt` that the game you just closed had written — the tools leave directories there too (one is literally named `WorkshopTool` and has no `Options.jopt` at all):
+
+   ```powershell
+   Get-ChildItem "$env:USERPROFILE\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam" -Directory |
+     Where-Object { Test-Path (Join-Path $_.FullName 'Options.jopt') } |
+     Sort-Object { (Get-Item (Join-Path $_.FullName 'Options.jopt')).LastWriteTime } -Descending |
+     Select-Object Name, FullName
+   ```
+
+   The top row is the profile that install just wrote. `connect` never asks for this; only `run` and `batch` do.
 
 6. Start the game again with `-mods` and leave it running until the main menu is visibly settled:
 
@@ -127,6 +149,8 @@ All commands above are PowerShell 7 commands run from the repository root. Add `
    ```
 
    A game you started by hand publishes an endpoint exactly like one `run` launched: the mod writes `%LOCALAPPDATA%\ppcli\endpoints\<pid>.json` whenever it is enabled and armed, and `connect` finds it there. `REFUSED: no live PPBridge endpoint` means no such game is running — the mod is not enabled, or the `ppcli-enabled` marker is missing — not that hand-launching is unsupported.
+
+   Nothing deletes that file when the game dies, and it is not meant to: the **client** sweeps it, checking each file's `pid` against the live process list and deleting the ones whose process is gone (`swept stale endpoint …` on stderr). So a leftover `<pid>.json` after a crash is expected and needs no cleanup from you.
 
 7. Make the first live query and parse stdout directly:
 
@@ -143,7 +167,7 @@ All commands above are PowerShell 7 commands run from the repository root. Add `
    .\ppcli.ps1 index -PPRoot $PPRoot
    ```
 
-   `index` pages the live repository, so it needs a settled game; running it before the gate answers is the hang described above.
+   `index` pages the live repository, so it needs a settled game; running it before the gate answers is the hang described above. It streams one `page N: ...` progress line per page to **stderr** — a hundred-odd lines on a modded install — while the single JSON object stays on stdout, as it does for every command. Read it with `| ConvertFrom-Json`, not by eye, and check `$LASTEXITCODE`: every verb sets one.
 
 ### Before you use `run` or `batch`
 
@@ -195,7 +219,9 @@ Arm and enable PPBridge only while using it; delete the marker afterwards.
 - A geoscape save the target install cannot open — usually a mod-set mismatch — fails by **stalling**, not by erroring. `restore` is issue-only because the game exposes no load-completion signal, so the plan's waits are the completion protocol, and a save that never comes up simply times out.
 - `plans\build-mission.json` stops in the deployment phase when the player roster is explicit, which is correct: the squad has to be placed. It reports `turnStarted:false` rather than waiting for a turn that no unattended run will ever start.
 - `plans\start-mission.json` exposes `loadmap`'s plot and parcel tag filter: pass `tags` as an array and its elements arrive as separate console arguments — `'{"scene":"ALN_PLT_Nest_48x48_A","tags":["plot_a","parcel_b"]}'`. It defaults to empty, which changes nothing.
-- `plans\weapon-test.json` needs a playing tactical mission and a selected shooter. It deliberately leaves the spawned enemy and equipped weapon in place. Random placement can fail the line-of-sight assertion; use `seed` to reproduce a placement.
+- `plans\weapon-test.json` needs a playing tactical mission and a shooter that is a **soldier**. `start-mission` leaves a vehicle selected, so the default `"shooter":"@selected"` fails at `assert-enabled` — the failure names the game's own reason, `NoSuitableEquipment`, in `predicate.args`. Take a soldier's handle out of `@faction.TacticalActors` (a vehicle carries `Vehicle_TagDef` in its `GameTags`; see `PLAYBOOK.md`) and pass it as `shooter`. The plan deliberately leaves the spawned enemy and equipped weapon in place.
+- The enemy's placement is drawn at random inside the distance band, so a run can fail at `assert-target` (no line of sight), at `landed` (a shot that produced no projectile), or at `assert-nothing-wedged`. **`seed` is a reproducibility knob, not a remedy** — it makes a placement repeat, including a bad one. What actually helps is a re-run, a different `distance`, fewer `shots`, or a **fresh mission**: rehearsal runs that kept failing across four different seeds succeeded immediately on a newly started one.
+- When an assertion fails, the failing step's DTO carries `predicate` — the assertion with its variables already substituted — alongside `last`. That is usually where the reason is: `predicate.args` of `["NotDisabled","NoSuitableEquipment"]` says what `last:false` cannot.
 - A long volley against a target that dies can end in a named refusal rather than in figures. Once actors start dying, something throws inside `ProjectileLogic.OnTrajectoryEnd`; the stack is cut at the Harmony wrapper, so the throwing code cannot be identified and no mod can be named as the cause. `shots` is accepted from 1 to 100, as a whole number, but accepted is not answerable: a run that asks for more shots than the target survives may refuse, and 100 activations of a 6-projectile burst is 600 impacts against a 512-entry ring, so a max-length volley fails the no-truncation assertion by construction.
 - `call` reaches a lot, but not everything: it has only `new`, `get`, `set` and `invoke`, so events cannot be subscribed to; by-ref, `out` and pointer parameters are refused; indexers are reachable only as `invoke get_Item`/`set_Item`; and a tie between two equally-binding overloads is refused, which leaves a member declared identically on several types in one hierarchy unreachable even with an explicit `sig`.
 - Handles belong to one process and epoch. A game restart or scene unload invalidates them.

@@ -41,6 +41,21 @@ function Get-PPPinnedInstall([string] $PinFile) {
     return (Get-Item $path).FullName
 }
 
+<#
+  How the install about to be written to was CHOSEN, said out loud.
+
+  The refusal the docs used to promise - "discovery could not decide, name one" - only ever fires on
+  a machine with two installs that Steam BOTH knows about. An automation copy outside a Steam library
+  is invisible to discovery, so it sees exactly one install and proceeds, and that one is the game its
+  owner plays. No prompt: a stranger with one install is right, and a confirmation there would be
+  ceremony on the documented first run. Naming the target loudly is the honest half.
+#>
+function Format-InstallOrigin([string] $Pinned) {
+    if ($Pinned) { return 'pinned in ppcli-install.txt' }
+    return ('discovered through Steam - this is the install you PLAY. Keep a separate copy for ' +
+            'automation? Put its path in ppcli-install.txt beside ppcli.ps1 and it becomes the default')
+}
+
 function Find-PPInstall([string[]] $Roots) {
     if (-not $Roots) {
         $pinned = Get-PPPinnedInstall

@@ -261,7 +261,15 @@ namespace Morgott.PPBridge
                     polls,
                     negated = negate,
                     last,
-                    lastError
+                    lastError,
+                    // THE PREDICATE ITSELF, already substituted. `last:false` says the assertion
+                    // failed and never says WHY, and an assertion of the shape
+                    // Equals("NotDisabled", "${KEY.value}") has already READ the reason into its own
+                    // arguments one step earlier - weapon-test.json's `assert-enabled` computed
+                    // "WeaponNotOwned" and then threw it away. Echoing the substituted call back
+                    // hands every such assertion its reason for free, in the engine, rather than one
+                    // plan at a time. Null for a {"phase":...} wait, which has no call.
+                    predicate = call
                 };
             }
 

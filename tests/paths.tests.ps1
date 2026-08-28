@@ -93,6 +93,14 @@ Assert-Value 'a pin file names the install to automate' `
 Assert-Refusal 'a pin pointing at something that is not an install refuses, and names how to undo it' 'Remove-Item' `
     { Get-PPPinnedInstall $pinBad }
 
+# The false promise this replaced: the docs said discovery refuses when it cannot pick one install.
+# It only ever sees Steam's own libraries, so an automation copy outside them is invisible and the
+# single install it does find - the one its owner plays - is written to without a word.
+Assert-Value 'an unpinned install is announced as the one you play' `
+    ($(if ((Format-InstallOrigin '') -clike '*you PLAY*') { 'says so' } else { "wrong:$(Format-InstallOrigin '')" })) 'says so'
+Assert-Value 'a pinned install is announced as pinned instead' `
+    (Format-InstallOrigin $installA) 'pinned in ppcli-install.txt'
+
 # The incident this guards: a deploy with no -PPRoot went to the play install because discovery found it.
 $installB = Join-Path $libB 'steamapps\common\Phoenix Point'
 $gateOut = & pwsh -NoProfile -File (Join-Path $root 'deploy.ps1') -PPRoot $installB -PinFile $pinGood 2>&1

@@ -330,7 +330,7 @@ function Resolve-PlanVars($vars, [string[]] $Skip = @()) {
 
 try {
 # Inside the try so a discovery refusal still leaves exactly one JSON object on stdout.
-if (-not $PPRoot) { $PPRoot = Find-PPInstall; Note "install: $PPRoot ($((Get-PPPinnedInstall) ? 'pinned in ppcli-install.txt' : 'discovered through Steam'))" }
+if (-not $PPRoot) { $PPRoot = Find-PPInstall; Note "install: $PPRoot ($(Format-InstallOrigin (Get-PPPinnedInstall)))" }
 $modDir   = Join-Path $PPRoot 'Mods\PPBridge'
 $exe      = Join-Path $PPRoot 'PhoenixPointWin64.exe'
 $jobsPath = Join-Path $modDir 'ppcli-jobs.json'
@@ -481,6 +481,10 @@ switch ($Command) {
             ConvertTo-Json -Compress
     }
 }
+# EVERY verb ends with an exit code, not just the ones that happen to run a native command. `index`
+# used to leave $LASTEXITCODE at whatever the caller's previous command set, so a wrapper's
+# `if ($LASTEXITCODE -ne 0)` read a stale value and called a good index a failure - or worse.
+exit 0
 }
 catch {
     # THE CONTRACT IS ONE JSON OBJECT, ALWAYS - a refusal included. A bare throw here left stdout

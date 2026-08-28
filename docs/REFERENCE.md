@@ -49,8 +49,12 @@ are done for the day; the mod can stay enabled, it just goes inert.
 
 **The install is discovered through Steam** (registry `SteamPath` + `steamapps\libraryfolders.vdf`)
 when `-PPRoot` is not given. With no install found, or more than one, every command refuses by name
-and asks for `-PPRoot "<install folder>"` rather than guessing. `-ProfileId` is discovered the same
-way, from the single directory under
+and asks for `-PPRoot "<install folder>"` rather than guessing — but note what that can and cannot
+see: only installs inside a **Steam library**. A separate copy kept for automation is not one, so
+discovery never becomes ambiguous over it; it finds the single Steam install and that is the game
+you play. The ambiguity refusal is therefore not a safety net for the two-install case, which is why
+every command now prints the install it chose *and* that a discovered one is the one you play.
+`-ProfileId` is discovered the same way, from the single directory under
 `%USERPROFILE%\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam\`.
 
 **If you keep a separate copy of the game for automation, say so once.** Discovery finds the install
@@ -166,10 +170,16 @@ demands that all of them fail, the only proof the assertions are wired to anythi
 ```powershell
 pwsh -NoProfile -File .\tests\resolve-names.tests.ps1   # name resolution
 pwsh -NoProfile -File .\tests\paths.tests.ps1           # install/profile discovery, deploy + arm refusals
+pwsh -NoProfile -File .\tests\index.tests.ps1           # `index` paging and its snapshot-integrity refusals
+pwsh -NoProfile -File .\tests\plans.tests.ps1           # every shipped plan: finally, output, timeoutMs
+pwsh -NoProfile -File .\tests\waits.tests.ps1           # log-fault detection and the mod-frame allowlist
 pwsh -NoProfile -File .\selfcheck\client-pipetest.ps1   # the PowerShell client against a stand-in server
 dotnet build .\selfcheck\SelfCheck.csproj -c Release /p:PPRoot="<install>"
 dotnet .\selfcheck\bin\Release\SelfCheck.dll            # PPBridge's pure half
 ```
+
+Five suites, and all five ship here — an earlier version of this list named three of them and left
+`index`, `plans` and `waits` documented nowhere at all.
 
 ## Parameters
 
@@ -216,7 +226,7 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 | `release` | `{h}` | `{ok, released, held}` |
 | `find` | `{query, type, assembly}` | defs by name substring or exact guid → `{name, guid, type}`, capped at 100 |
 | `find` (enumerate) | `{all:true, page, pageSize, query?, type?}` | the whole repository, ordinally sorted and paged → `+{total, page, pageSize, hasMore}`. **`all` is required and must be a real boolean** — a missing/empty `query` on its own still refuses, so a typo'd variable can never become a repository dump. `pageSize` defaults to 200 (≈30 KB, well inside the 64 KB response cap) and is capped at 200. This is what `ppcli.ps1 index` pages. |
-| `wait` | `{ready\|phase\|call, not, timeoutMs, everyFrames}` | `{ok, waitedMs, polls, value}` or `{code:"timeout", lastError}` |
+| `wait` | `{ready\|phase\|call, not, timeoutMs, everyFrames}` | `{ok, waitedMs, polls, value}` or `{code:"timeout", last, lastError, predicate}` |
 | `observe` | `{action: start\|stop\|mark\|read\|status, aim[3]}` | where every projectile LANDED, plus hit/miss counts and dispersion |
 | `snapshot` | `{name, timeoutMs}` | `{ok, name}` — waits for the save to actually finish |
 | `restore` | `{name}` | `{ok, issued:"load_game", note}` — issue only; load has no completion signal |
@@ -635,6 +645,15 @@ it. Spawn completion is `{"call":{"op":"get","target":"<actor>","member":"InPlay
 that **errors** counts as "not true yet" — `@tac` is null while a mission loads and that is the whole
 reason to wait — but the last error is carried into the timeout result as `lastError`, so a predicate
 that is broken forever still says why instead of just timing out.
+
+**A predicate that is merely FALSE now says why too.** The timeout result carries `predicate`: the
+call as it was actually evaluated, with every `${…}` already substituted. `last:false` is not a
+diagnosis, and a plan's assertions routinely hold the diagnosis in their own arguments —
+`weapon-test.json` computes an `AbilityDisabledState.Key`, asserts
+`Equals("NotDisabled", "${KEY.value}")`, and used to report a bare `false` while the string
+`NoSuitableEquipment` it had just read went nowhere. Verified in-game 2026-08-28 with a vehicle as
+the shooter: `predicate.args` came back `["NotDisabled","NoSuitableEquipment"]`. One field in the
+engine, so it applies to every assertion in every plan rather than to the one that hurt.
 
 ### `snapshot` / `restore` — a wrapper, not new serialization
 

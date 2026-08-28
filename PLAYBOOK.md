@@ -46,9 +46,13 @@ names keep working, casual ones do not.
 
 ## I built a weapon — show me it firing, and give me numbers
 
-**Needs a tactical mission that is PLAYING, and a shooter.** Either select one of your soldiers in
-the game, or pass an explicit handle as `"shooter"` — see *Getting a handle* below. The plan does
-**not** spawn the shooter; use `spawn-at-coordinate.json` first if the mission has none.
+**Needs a tactical mission that is PLAYING, and a shooter that is a SOLDIER.** Either select one of
+your soldiers in the game, or pass an explicit handle as `"shooter"` — see *Getting a handle* below.
+The plan does **not** spawn the shooter; use `spawn-at-coordinate.json` first if the mission has none.
+
+**`start-mission` leaves a VEHICLE selected**, so the default `"shooter":"@selected"` walks straight
+into `assert-enabled` reporting `NoSuitableEquipment` — an armoured car cannot hold an assault rifle.
+Pick a soldier's handle by its `GameTags` (below) and pass it explicitly.
 
 | Intent | Command |
 |---|---|
@@ -110,6 +114,7 @@ the rifle *and* its ammo clip — which is the point: an ambiguous name would me
 | `assert-shots-integral` failed | `shots` must be a whole number — there is no half an activation. Refused before anything is touched. |
 | `assert-nothing-dropped` failed | the volley overflowed the 512-impact ring, so every figure would have covered only the last 512 projectiles. Ask for fewer shots. |
 | `assert-one-weapon` failed | the name matched more than one `WeaponDef`. Name it exactly. |
+| `assert-enabled ... predicate was still false` | the shooter cannot take this shot, and the failure's `predicate.args` names the reason as the game's own `AbilityDisabledState.Key` — e.g. `["NotDisabled","NoSuitableEquipment"]` means the shooter is a VEHICLE, not a soldier. Pick a soldier and pass it as `shooter`. |
 
 Read the observer on its own with `.\ppcli.ps1 connect observe '{"action":"status"}'`.
 
@@ -192,20 +197,37 @@ turn**. Four calls get a real actor handle instead:
 ```powershell
 .\ppcli.ps1 connect call '{"op":"get","target":"@tac","member":"Factions"}'      # -> <FACTIONS>
 .\ppcli.ps1 connect items '{"h":"<FACTIONS>","page":0,"pageSize":10}'           # rows are TacticalFaction
-.\ppcli.ps1 connect call '{"op":"get","target":"<FACTION>","member":"Actors"}'  # -> <ROSTER>
+.\ppcli.ps1 connect call '{"op":"get","target":"<FACTION>","member":"TacticalActors"}'  # -> <ROSTER>
 .\ppcli.ps1 connect items '{"h":"<ROSTER>","page":0,"pageSize":40}'             # rows carry h, type, name
 ```
 
 `get <FACTION> TacticalFactionDef` says which side it is (`Phoenix_TacticalFactionDef`,
-`Alien_TacticalFactionDef`, …). Or skip the first two lines and read `@faction.Actors` — the faction
-currently on turn.
+`Alien_TacticalFactionDef`, …). Or skip the first two lines and read `@faction.TacticalActors` — the
+faction currently on turn.
 
-**The first rows are ZONES, not soldiers.** `Actors` yields `TacticalActorBase`, so a real page
-opened with `TacticalDeployZone` and `TacticalExitZone` entries before the first
-`TacticalActor`. Take the first row whose `type` is exactly
-`PhoenixPoint.Tactical.Entities.TacticalActor`, and page on while `hasMore` is true.
+**`TacticalActors`, not `Actors`.** `Actors` yields `TacticalActorBase`, so a real page opened with
+`TacticalDeployZone` and `TacticalExitZone` entries before the first fighter. `TacticalActors`
+(`TacticalFaction.cs:70`) is the same enumeration already filtered to `TacticalActor`, so the zones
+never appear and there is nothing to skip past.
 
-`Actors` is also a lazy iterator, so it projects with **no `count` and no `collection:true`** —
+**A `TacticalActor` is not necessarily a SOLDIER, and the first one usually is not.** On a real
+`start-mission` roster the first row was `NJ_Armadillo_1` — an armoured car — and the four soldiers
+followed it. It is also what the game leaves SELECTED, so `@selected` is that vehicle and a plan that
+hands it a rifle fails. Ask the game's own question rather than reading the name: a vehicle carries
+`Vehicle_TagDef` in its `GameTags` and a soldier does not (`CharacterTemplateExtension.cs:36` is the
+game testing exactly this, `GameTags.Contains(SharedGameTags.VehicleTag)`):
+
+```powershell
+.\ppcli.ps1 connect call '{"op":"get","target":"<ACTOR>","member":"GameTags"}'  # -> <TAGS>
+.\ppcli.ps1 connect items '{"h":"<TAGS>","page":0,"pageSize":20}'              # Vehicle_TagDef present?
+```
+
+Read live on one roster: `NJ_Armadillo_1` → `…, Vehicle_TagDef, Vehicle_ClassTagDef, …`;
+`Soldier_2` → `Organic_SubstanceTypeTagDef, Human_TagDef, Technician_ClassTagDef, …` and **no**
+`Vehicle_TagDef`. Do NOT test `Vehicle` (`TacticalActorBase.cs:222`) — it answers with a
+`VehicleComponent` for a plain soldier too, so it separates nothing.
+
+`TacticalActors` is a lazy iterator, so it projects with **no `count` and no `collection:true`** —
 `items` still pages it, and a missing `count` does not mean "not a collection".
 Pass a row's `h` wherever a plan takes an actor: `"shooter":"h:3:17"`, `"actor":"h:3:17"`.
 
@@ -247,7 +269,9 @@ carried; the save and snapshot names are whatever exists in the install you are 
   and carries `onError: continue`. Never re-run a spawn on a bare `FAILED`.
 - **A failed plan has NO `output`** — that is deliberate, not a bug. `outputWithheld` says why,
   `step` names the step, and `result` carries its DTO (a `wait` puts the offending value in
-  `result.last`). Figures from a run the plan itself refused are not a measurement.
+  `result.last`, and `result.predicate` is the assertion itself with its variables already
+  substituted — for an `Equals("NotDisabled", "${KEY.value}")` shape the reason is right there in
+  `predicate.args`). Figures from a run the plan itself refused are not a measurement.
 - **The endpoint went quiet mid-session** — check `Mods\PPBridge\ppcli-enabled` still exists. It is
   re-read every few seconds; deleting it disarms a running game. Re-create it and relaunch.
 - **`"status":"timeout"`** — the CLIENT gave up and cancelled the job, so its `finally` ran. For a

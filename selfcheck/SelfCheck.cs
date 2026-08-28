@@ -776,6 +776,13 @@ namespace Morgott.PPBridge
                   Run("wait", "{'call':{'op':'get','target':'@nope','member':'Field'},'timeoutMs':1,'everyFrames':1}", 50, -1, 2)
                       .Contains("no root 'nope'"),
                   Run("wait", "{'call':{'op':'get','target':'@nope','member':'Field'},'timeoutMs':1,'everyFrames':1}", 50, -1, 2));
+            // A FALSE assertion says why too: `last:false` on its own sent a real reader hunting for
+            // hours, because the step before it had already computed the reason and the failure threw
+            // it away. The substituted predicate is echoed back, so the reason rides in its arguments.
+            Check("wait-timeout-echoes-the-substituted-predicate",
+                  Run("wait", "{'call':{'op':'invoke','type':'System.Object','member':'Equals','args':['NotDisabled','WeaponNotOwned']},'timeoutMs':1,'everyFrames':1}", 50, -1, 2)
+                      .Contains("WeaponNotOwned"),
+                  Run("wait", "{'call':{'op':'invoke','type':'System.Object','member':'Equals','args':['NotDisabled','WeaponNotOwned']},'timeoutMs':1,'everyFrames':1}", 50, -1, 2));
             // --- `not`. Half the interesting predicates are the wrong way round ("the ability has
             // STOPPED executing") and cannot be written as System.Object.Equals(false, x): that
             // needs the live value as an ARGUMENT, and arguments are substituted once per step.
