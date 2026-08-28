@@ -1,5 +1,3 @@
-<!-- tools\sync-standalone.ps1 publishes this file as the standalone repo's ROOT README.md; every
-     relative link below is therefore written for the ROOT, not for this docs\public\ directory. -->
 # PPCLI
 
 PPCLI is a Windows command-line control channel into a running Phoenix Point for mod developers and their coding agents. It combines the dev-only PPBridge mod (`com.morgott.PPBridge`) with a PowerShell 7 client, and returns exactly one compact JSON object on stdout while sending diagnostics to stderr, so every result can be piped directly into `ConvertFrom-Json`. Decompiled source tells you what the code appears intended to do; PPCLI lets you query, invoke, and measure what the running game actually did.
