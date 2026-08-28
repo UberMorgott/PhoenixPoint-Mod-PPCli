@@ -14,8 +14,11 @@ Everything below is run from the PPCLI directory against a **running** game. Dep
 3. **Keep two installs if you automate.** One install for automation — cold-launch it, kill it, spawn
    into it — and the install you actually play. `-PPRoot "<path>"` picks which one a command means;
    with no `-PPRoot` the install is discovered through Steam, which only works when there is exactly
-   one. Reach the install you play with `connect` only: never cold-launch or kill it, and think twice
-   before anything that writes to a real save.
+   one — and the one it finds is the one you PLAY. Write the automation copy's path into
+   `ppcli-install.txt` beside `ppcli.ps1` and that becomes the default instead; `deploy` then refuses
+   any other install by name, and prints the `-Force` line if you meant it. Reach the install you play
+   with `connect` only: never cold-launch or kill it, and think twice before anything that writes to a
+   real save.
 4. **`connect` needs a game already running; `run`/`batch` cold-launch one (~17 s).** Redeploy after
    every mod edit (`.\ppcli.ps1 deploy`) or the game silently runs the old DLL.
 
@@ -45,10 +48,21 @@ Select one of your soldiers in a live mission, then:
 | fire while it is NOT your turn | add `"shooter":"HANDLE"` — `@selected` is null during another faction's turn |
 | just watch the tracers | run any of the above and look at the game; the enemy and the weapon are left in place |
 
-You get back `hits` / `misses` / `hitRate`, every impact point with what it hit, `damageOnActors`,
-charges used, and `dispersion` — `mean` / `sigma` / `max` of the group, about its own centroid and
-about the aim point. **`spread:0` must cluster far tighter than a stock run**; measured over
-5 shots at ~10 m: stock `mean 0.144 m`, zero-spread `mean 0.0015 m`.
+You get back every impact point with what it hit, charges used, `dispersion` — `mean` / `sigma` /
+`max` of the group, about its own centroid and about the aim point — and **two families of hit
+figures, which are not the same question**:
+
+- **per-TARGET**, the weapon's actual score: `targetHits` / `targetMisses` / `targetHitRate` /
+  `damageOnTarget`, keyed on the aimed-at actor's instance id.
+- **any-ACTOR**, everything a projectile touched, bystanders and the shooter included:
+  `hitsAnyActor` / `misses` / `hitRateAnyActor` / `damageOnActors` / `damageTotal`.
+
+They diverge in practice — a 10-shot run read `targetHits` 6 against `hitsAnyActor` 9. Quote the
+per-target pair when you mean the weapon.
+
+Dispersion is about the aim point (`GetWorkingPosition()`), not the enemy's feet; `enemyFeet` is
+reported too. **`spread:0` must cluster far tighter than a stock run**; measured over 5 shots at
+~10 m: stock `mean 0.144 m`, zero-spread `mean 0.0015 m`.
 
 The plan needs `weaponDef` to be unambiguous. `"PX_AssaultRifle"` is **refused** locally — it matches
 the rifle *and* its ammo clip — which is the point: an ambiguous name would measure the clip.
@@ -56,10 +70,37 @@ the rifle *and* its ammo clip — which is the point: an ambiguous name would me
 | It said | What happened |
 |---|---|
 | `assert-target ... predicate was still false` | no line of sight — the enemy landed behind cover. Re-run, or change `distance`. |
-| `landed ... still false after 20000 ms` | a shot did not produce a projectile. Seen past ~6 consecutive shots; keep volleys to 5. |
+| `landed ... still false after 20000 ms` | a shot did not produce a projectile. The ~6-shot ceiling: the cause is pacing, not the target dying. Keep volleys to 5. |
+| `assert-shots-at-most-100` / `assert-shots-at-least-1` failed | `shots` is 1..100. It is refused up front, never truncated into a short volley reported as `ok`. |
 | `assert-one-weapon` failed | the name matched more than one `WeaponDef`. Name it exactly. |
 
 Read the observer on its own with `.\ppcli.ps1 connect observe '{"action":"status"}'`.
+
+## Cold start — from the main menu, with nothing played
+
+Everything below starts at the HomeScreen of a game that has never had a campaign. No save, no
+setup. Verified in-game 2026-08-28.
+
+| Intent | Command |
+|---|---|
+| launch ANY map as a playable mission | `.\ppcli.ps1 plan .\plans\start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}'` |
+| start a real campaign (geoscape) | `.\ppcli.ps1 plan .\plans\start-campaign.json '{"difficultyIndex":1}'` |
+| build a mission: my map, my roster, my enemies | `.\ppcli.ps1 plan .\plans\build-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","playerCount":2,"playerCharacterDefName":"PX_Assault1_CharacterTemplateDef"}'` |
+| the same, with NO player squad at all | `.\ppcli.ps1 plan .\plans\build-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","playerCount":0}'` |
+| fire a named geoscape event on demand | `.\ppcli.ps1 plan .\plans\fire-event.json '{"eventId":"PROG_PU1"}'` |
+
+- `scene` is a MapPlotDef's own scene name — 213 plots ship, and `ALN_PLT_Nest_48x48_A_PlotDef`
+  means `"scene":"ALN_PLT_Nest_48x48_A"`. Find one with
+  `.\ppcli.ps1 connect find '{"query":"PlotDef","pageSize":50}'`, then read `Scene.SceneName` off it.
+- `start-mission` takes ~12 s and reports a per-faction actor census. `start-campaign` takes ~15 s
+  and reports the starting base and squad it generated.
+- **A running GEOSCAPE cannot be left from out here.** All three refuse in 1 ms if one is open,
+  because `FinishLevelAndGoToLobby` (and `load_game`) out of a live geoscape wedges the process —
+  the level goes away, `GeoscapeView` keeps updating and NREs every frame, and the HomeScreen never
+  comes up. Quit the campaign from the in-game pause menu, or restart the game. Leaving a TACTICAL
+  mission is fine and the plans do it for you.
+- `build-mission` stops in DEPLOYMENT by design: an explicit player roster has to be placed. It
+  reports `turnStarted:false`; pass `waitReady:true` only for a build that needs no placement.
 
 ## Tactical — the plans
 
@@ -75,8 +116,8 @@ Read the observer on its own with `.\ppcli.ps1 connect observe '{"action":"statu
 | restore a snapshot, then place an equipped composition | `.\ppcli.ps1 plan .\plans\situation.json '{"snapshot":"SNAPSHOT_NAME","defName":"crabman","count":3,"itemName":"assault rifle"}'` |
 | the same, on the mission already loaded | `.\ppcli.ps1 plan .\plans\situation.json '{"restoreFirst":false,"defName":"crabman","count":3}'` |
 | run a cursor-scoped console command at a point | `.\ppcli.ps1 plan .\plans\aim-and-run.json '{"x":-0.5,"y":0.0,"z":14.5,"command":"info","cmdArgs":[]}'` |
-| add resources (a DELTA, geoscape) — **UNVERIFIED** | `.\ppcli.ps1 plan .\plans\set-resources.json '{"resource":"Materials","amount":500}'` |
-| complete a research (geoscape) — **UNVERIFIED** | `.\ppcli.ps1 plan .\plans\unlock-research.json '{"researchId":"fishman research"}'` |
+| add resources (a DELTA, geoscape) | `.\ppcli.ps1 plan .\plans\set-resources.json '{"resource":"Materials","amount":500}'` |
+| complete a research (geoscape) | `.\ppcli.ps1 plan .\plans\unlock-research.json '{"researchId":"fishman research"}'` |
 
 Every plan takes the vars listed in its own file's `vars` block; the ones above are the ones worth
 naming. Distance is a search constraint — the plan reports what it ACHIEVED, per actor.

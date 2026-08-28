@@ -11,8 +11,14 @@
   "//spread": "weapon_spread multiplies the cone in Weapon.SpreadInCone (Weapon.cs:481). Left ALONE unless setSpread is true, and restored in `finally`.",
   "//god_mode": "MUST stay false. TacticalActorBase.ApplyDamageInternal returns at :846 BEFORE the report, the event and the HP change, so god_mode silently zeroes the entire measurement. The enemy is kept alive with targetHp instead.",
 
+  "//lost projectile": "MEASURED 2026-08-28, unfixed, and it fails LOUDLY - the plan dies on `landed` and never reports a short volley as ok. Past roughly six shots one activation returns from ExecuteAndWait and no projectile ever reaches OnTrajectoryEnd. What was ruled OUT, each by a run on `ppcli_gate` / SCV_PLT_Ambush_56x56_A at seed 12345: THE TARGET DYING (immediately before the failing activation it read InPlay true and Health 100 of the def's own maximum, and calling Health.SetToMax before EVERY shot changed nothing - the same seed still died on pass 7, so a per-shot top-up was tried and REMOVED rather than kept as a fix that fixes nothing); the ability being disabled, the target no longer being targetable, and the magazine being empty (all three asserted green in the pass before the failure). What it IS: PACING. The identical seed and placement completes 10/10 when roughly 3 s of dead time is added after each activation, and fails at pass 7 without it. `settle` is the weak link and neither obvious replacement works - the ability's IsExecuting is already false while a shot is merely ENQUEUED, and TacticalActorBase.HasExecutingAbility(null,false) never goes false at all (it got 8 landed and then hung). ponytail: the honest ceiling is ~6 shots per volley until a real end-of-action predicate is found; the plan refuses rather than under-reports, which is the property that matters.",
+
+  "//hits": "TWO families, never one. `targetHits`/`targetHitRate`/`damageOnTarget` are keyed on the actor this volley was aimed at, by instance id, and are the weapon's score against the target. `hitsAnyActor`/`hitRateAnyActor`/`damageOnActors`/`damageTotal` count EVERYTHING a projectile touched - a bystander, a dead tree, the shooter's own body - and were the only figures this plan used to print, which is why a stray hit read as the weapon doing more than it does.",
+
+  "//shots": "1..100, asserted BEFORE anything is touched and asserted AGAIN at the end against the activations actually performed. 100 is the engine's own `repeat` ceiling (Plan.cs MaxIterations), so it is the honest limit rather than a number picked here; a request above it is REFUSED by name, never truncated to a short volley reported as ok. maxSteps carries 100 passes x 9 body steps plus the setup.",
+
   "timeoutMs": 540000,
-  "maxSteps": 900,
+  "maxSteps": 1400,
 
   "vars": {
     "shooter": "@selected",
@@ -38,6 +44,16 @@
 
   "steps": [
     { "id": "mission-ready", "verb": "wait", "args": { "ready": true, "timeoutMs": "${readyTimeoutMs}" } },
+
+    { "//SHOTS": "Refused up front, before a single game object is touched. `repeat` runs its body at LEAST once and at MOST `times` (Plan.cs:530-533), so an unvalidated shots:0 would still fire one shot and an unvalidated shots:250 would return a 100-shot answer under a 250-shot heading. Both are measurements the bench did not take.",
+      "id": "assert-shots-at-least-1", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "GreaterThan",
+                          "args": [ "${shots}", 0, 0.01 ] } } },
+    { "id": "assert-shots-at-most-100", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "LesserThan",
+                          "args": [ "${shots}", 101, 0.01 ] } } },
 
     { "//ORIGINALS": "Read BEFORE anything is changed. `finally` puts each of them back.",
       "id": "spread-was", "verb": "var", "save": "SPREAD0", "args": { "name": "weapon_spread" } },
@@ -175,7 +191,7 @@
 
     { "id": "enemy-pos", "verb": "call", "save": "EPOS",
       "args": { "op": "get", "target": "${ENEMY.value.h}", "member": "Pos" } },
-    { "//": "ACHIEVED, not requested. Reported either way and asserted against the band.",
+    { "//": "ACHIEVED, not requested. Reported either way and asserted against the band. EPOS is also reported as `enemyFeet`: it is what the dispersion used to be measured about, so the size of that mistake is visible in the answer instead of only in a commit message.",
       "id": "achieved-distance", "verb": "call", "save": "DIST",
       "args": { "op": "invoke", "type": "UnityEngine.Vector3", "member": "Distance",
                 "args": [ { "$v3": [ "${ANCHOR.value.x}", "${ANCHOR.value.y}", "${ANCHOR.value.z}" ] },
@@ -223,6 +239,12 @@
       "args": { "op": "get", "target": "${shooter}", "member": "CharacterStats" } },
     { "id": "ap", "verb": "call", "save": "AP",
       "args": { "op": "get", "target": "${CS.value.h}", "member": "ActionPoints" } },
+    { "//ORIGINAL AP MAX": "Read BEFORE the override, put back in `finally` - the same discipline as ai_enabled and weapon_spread. `Max` is a BaseStat, not a float, so the number comes out of it through op_Implicit exactly as `hp-before` does. Not urgent on its own (a stat is recomputed from its base plus its modifications, which is why a raised Health.Max does not stay raised either) - it is here so the plan leaves nothing of its own behind.",
+      "id": "ap-max-stat", "verb": "call", "save": "APM",
+      "args": { "op": "get", "target": "${AP.value.h}", "member": "Max" } },
+    { "id": "ap-max-was", "verb": "call", "save": "APM0",
+      "args": { "op": "invoke", "type": "Base.Entities.Statuses.BaseStat", "member": "op_Implicit",
+                "args": [ { "$h": "${APM.value.h}" } ] } },
     { "id": "ap-max", "verb": "call",
       "args": { "op": "invoke", "target": "${AP.value.h}", "member": "SetMax", "args": [ 2147483.0, true ] } },
     { "id": "ap-set", "verb": "call",
@@ -264,12 +286,14 @@
     { "id": "log", "verb": "call", "save": "LOG",
       "args": { "op": "new", "type": "System.Collections.ArrayList", "args": [ 32 ] } },
 
-    { "id": "observe-start", "verb": "observe", "save": "OBS", "args": { "action": "start" } },
+    { "//TARGET ID": "The observer is TOLD which actor is the target, so it can key `targetHits` and `damageOnTarget` on identity. Without it any actor stopping a projectile - a bystander, the shooter's own body - counts as a hit for this weapon, and a NAME cannot separate them because two Crabmen share one.",
+      "id": "observe-start", "verb": "observe", "save": "OBS",
+      "args": { "action": "start", "target": "${ENEMY.value.instanceId}" } },
 
-    { "//VOLLEY": "`times` must be a LITERAL - Repeat reads args before substitution (Plan.cs:507-510), so \"times\":\"${shots}\" would silently mean 1. 20 is the hard ceiling; `shots` is honoured by the while guard.",
+    { "//VOLLEY": "`times` must be a LITERAL - Repeat reads args before substitution (Plan.cs:507-510), so \"times\":\"${shots}\" would silently mean 1. 100 is the engine's own ceiling; `shots` is honoured by the while guard and asserted afterwards, because the guard alone cannot tell a finished volley from a truncated one.",
       "id": "volley", "verb": "repeat",
       "args": {
-        "times": 20,
+        "times": 100,
         "while": "${MORE.value}",
         "steps": [
           { "//": "The bar for THIS shot: Shots.Landed counts impacts since the mark.",
@@ -302,10 +326,20 @@
                       "args": [ "${DONE.value}", "${shots}", 0.01 ] } }
         ] } },
 
+    { "//SHORT VOLLEY": "The loop CANNOT report how many activations it took - `while` stops it early and `times` stops it at the ceiling, and both leave a plan that ends ok:true. So the count is asserted from both sides afterwards: not fewer than asked (a truncated volley) and not more (a guard that failed to stop). A bench that answers for 5 shots when it fired 4 is worse than one that refuses.",
+      "id": "assert-volley-not-short", "verb": "wait",
+      "args": { "not": true, "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "LesserThan",
+                          "args": [ "${DONE.value}", "${shots}", 0.01 ] } } },
+    { "id": "assert-volley-not-long", "verb": "wait",
+      "args": { "not": true, "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "GreaterThan",
+                          "args": [ "${DONE.value}", "${shots}", 0.01 ] } } },
+
     { "id": "observe-stop", "verb": "observe", "args": { "action": "stop" } },
-    { "//": "The aim point for the dispersion figures is where the enemy actually STANDS, read fresh.",
+    { "//AIM POINT": "The point the shot was AIMED at - TacticalAbilityTarget.GetWorkingPosition() (:175), the same value Weapon/ProjectileLogic work from - and NOT the enemy's Pos. Pos is the actor's FEET, so dispersion about it carried the whole torso-to-ground offset as if it were weapon spread and every dispersion figure this bench ever printed was inflated by it.",
       "id": "aim-point", "verb": "call", "save": "AIM",
-      "args": { "op": "get", "target": "${ENEMY.value.h}", "member": "Pos" } },
+      "args": { "op": "invoke", "target": "${TGT.value.h}", "member": "GetWorkingPosition", "args": [] } },
     { "id": "impacts", "verb": "observe", "save": "SHOTS",
       "args": { "action": "read", "aim": [ "${AIM.value.x}", "${AIM.value.y}", "${AIM.value.z}" ] } },
 
@@ -319,11 +353,15 @@
   "finally": [
     { "//": "The observer FIRST: a patch left armed keeps writing into a ring nobody is reading.",
       "id": "stop-observer", "verb": "observe", "args": { "action": "stop" } },
-    { "//": "MANDATORY. A run that dies with the AI off leaves the mission unplayable to a human, and one that dies with weapon_spread at 0 leaves every weapon in the save laser-accurate. god_mode is written back to false rather than to GOD0 because the plan only ever forces it to false.",
-      "id": "restore-ai", "verb": "var", "args": { "name": "ai_enabled", "value": "true" } },
+    { "//": "MANDATORY, and back to what was READ at `ai-was` - not to a literal true. A run that dies with the AI off leaves the mission unplayable to a human; one that hands it back ON to a session that had deliberately turned it off is the same defect facing the other way. Same for god_mode: GOD0, not the false this plan forces.",
+      "id": "restore-ai", "verb": "var", "args": { "name": "ai_enabled", "value": "${AI0.value}" } },
     { "id": "restore-spread", "verb": "var", "if": "${setSpread}",
       "args": { "name": "weapon_spread", "value": "${SPREAD0.value}" } },
     { "id": "restore-god", "verb": "var", "args": { "name": "god_mode", "value": "${GOD0.value}" } },
+    { "//": "One call undoes both halves of the AP override: SetMax ends in Set(Mathf.Min(Value, Max)) (StatusStat.cs:64-73), so the value comes back down with the ceiling.",
+      "id": "restore-ap-max", "verb": "call",
+      "args": { "op": "invoke", "target": "${AP.value.h}", "member": "SetMax", "args": [ "${APM0.value}", true ] } },
+    { "id": "release-ap-max-stat", "verb": "release", "args": { "h": "${APM.value.h}" } },
     { "//": "The enemy and the weapon STAY. Watching the tracers is half the point, and deleting the situation the bench just built is a separate decision.",
       "id": "release-log", "verb": "release", "args": { "h": "${LOG.value.h}" } },
     { "id": "release-pool", "verb": "release", "args": { "h": "${POOL.value.h}" } },
@@ -353,15 +391,20 @@
     "shotsRequested": "${shots}",
     "shotsFired": "${DONE.value}",
     "projectiles": "${SHOTS.recorded}",
-    "hits": "${SHOTS.hits}",
+    "targetActorId": "${SHOTS.target}",
+    "targetHits": "${SHOTS.targetHits}",
+    "targetHitRate": "${SHOTS.targetHitRate}",
+    "damageOnTarget": "${SHOTS.damageOnTarget}",
+    "hitsAnyActor": "${SHOTS.hits}",
     "misses": "${SHOTS.misses}",
-    "hitRate": "${SHOTS.hitRate}",
+    "hitRateAnyActor": "${SHOTS.hitRate}",
     "damageTotal": "${SHOTS.damageTotal}",
     "damageOnActors": "${SHOTS.damageOnActors}",
     "armorTotal": "${SHOTS.armorTotal}",
     "noGeometry": "${SHOTS.noGeometry}",
     "dispersion": "${SHOTS.dispersion}",
     "aim": "${SHOTS.aim}",
+    "enemyFeet": "${EPOS.value}",
     "impacts": "${SHOTS.impacts}",
     "hpBefore": "${HPB.value}",
     "hpAfter": "${HPA.value}",

@@ -3,9 +3,10 @@
   "//run": ".\\ppcli.ps1 plan .\\plans\\load-mission.json '{\"name\":\"SAVE_NAME\"}'",
   "//geoscape": "a geoscape save is the same plan with two arguments: '{\"name\":\"GEOSCAPE_SAVE\",\"phase\":\"geoscape\",\"waitReady\":false}'. HasAnyTurnStarted is a tactical property and there is nothing on the geoscape for it to mean.",
 
-  "//honest": "LAUNCHING AN ARBITRARY MAP FROM SCRATCH IS NOT REACHABLE FROM HERE. `create_mission` always targets the site under the geoscape cursor and takes no coordinate, plot, seed or roster (GeoSite.cs:1200-1203); `launch_mission` needs a roster-deployment state or a selected GeoVehicle at the cursor site (GeoSite.cs:1143-1171). The generation path that DOES choose map + factions + deployment is GeoMission.Launch(GeoSquad) with DebugOverridePlot, and it needs a live GeoSquad this plan has no way to assemble. Loading a save is the reachable answer, and it is the same one ContentTool's MissionGate settled on.",
+  "//superseded": "LAUNCHING AN ARBITRARY MAP FROM SCRATCH IS NOW REACHABLE, and not through this plan: start-mission.json does it from the main menu in ~12 s (`loadmap`), and build-mission.json does it with a roster you choose. The old note here said it was impossible because it looked only at the GEOSCAPE commands - `create_mission` targets the cursor site (GeoSite.cs:1200-1203) and `launch_mission` needs a selected GeoVehicle (:1143-1171). The menu-side lever, PhoenixGame.FinishLevel, was the one nothing had tried. This plan remains the way to reach a SPECIFIC SAVED situation.",
+  "//geoscape-status": "THE GEOSCAPE HALF IS STILL UNVERIFIED, and worse than unverified: run against a LIVE geoscape, `restore` wedges the game (measured 2026-08-28 - phase menu, level null, GeoscapeView still updating and NREing every frame; see start-mission.json's `refuse-if-geoscape`). It also passed its own phase predicate without loading anything, exactly as //trap warns. The tactical half is the proven one.",
 
-  "//trap": "`restore` is ISSUE-ONLY (load_game hands back no completion signal, SerializationCommands.cs:44). The waits below are the completion protocol. If you run this while ALREADY in the target phase, the phase predicate is true on the level you are leaving and can pass before the load even starts - compare the returned scene/turn against what you had, or run it across a phase change.",
+  "//trap": "`restore` is ISSUE-ONLY (load_game hands back no completion signal, SerializationCommands.cs:44). The waits below are the completion protocol. Running it while ALREADY in the target phase used to pass on the level being LEFT, before the load started; the `left-old-level` step now asserts the transition instead of asking the caller to compare scenes afterwards.",
 
   "timeoutMs": 540000,
 
@@ -13,13 +14,23 @@
     "name": "SAVE_NAME",
     "phase": "tactical",
     "waitReady": true,
+    "assertTransition": true,
     "phaseTimeoutMs": 420000,
-    "readyTimeoutMs": 420000
+    "readyTimeoutMs": 420000,
+    "transitionTimeoutMs": 60000,
+
+    "//defaults": "TURN and FDEF are SEEDED, not left unset. Their steps only run in tactical, and an unset variable reaches the output as the literal string 'unresolved: ${...} is not set' (Plan.cs:604-608) - a geoscape load used to report that as its answer. Seeding means a skipped step reads as an honest absence, and a real read overwrites it.",
+    "TURN": { "value": "n/a - geoscape has no tactical turn" },
+    "FDEF": { "value": { "name": "n/a - geoscape has no faction on turn" } }
   },
 
   "steps": [
     { "//": "Refuses up front if no save of that name exists - the command's own 'Could not find savegame' is written on a later frame and could never reach this response.",
       "id": "load", "verb": "restore", "args": { "name": "${name}" } },
+
+    { "//": "THE TRANSITION, asserted rather than documented. Loading while ALREADY in the target phase used to pass on the level being left (see //trap): the phase predicate was true before the load even started. This waits for the phase to STOP being the target one first, so the `phase` wait below can only be satisfied by the level that arrived. Turn it off with assertTransition:false when loading from a different phase and the transition is guaranteed anyway.",
+      "id": "left-old-level", "verb": "wait", "if": "${assertTransition}",
+      "args": { "phase": "${phase}", "not": true, "everyFrames": 1, "timeoutMs": "${transitionTimeoutMs}" } },
 
     { "id": "phase", "verb": "wait", "args": { "phase": "${phase}", "timeoutMs": "${phaseTimeoutMs}" } },
 
@@ -31,12 +42,16 @@
     { "id": "turn", "verb": "call", "save": "TURN", "if": "${waitReady}",
       "args": { "op": "get", "target": "@tac", "member": "TurnNumber" } },
     { "id": "faction-on-turn", "verb": "call", "save": "CUR", "if": "${waitReady}",
-      "args": { "op": "get", "target": "@tac", "member": "CurrentFaction" } }
+      "args": { "op": "get", "target": "@tac", "member": "CurrentFaction" } },
+    { "//": "THE NAME IS ON THE DEF, NOT THE FACTION. TacticalFaction is a plain managed object, so its handle DTO carries `h` and `type` and nothing else - `${CUR.value.name}` was unresolvable even on a fully successful tactical load, which is the other half of the long-standing factionOnTurn defect. Only a UnityEngine.Object projects a `name`, and TacticalFactionDef is one.",
+      "id": "faction-name", "verb": "call", "save": "FDEF", "if": "${waitReady}",
+      "args": { "op": "get", "target": "${CUR.value.h}", "member": "TacticalFactionDef" } }
   ],
 
   "finally": [
-    { "//": "The plan mutates nothing, so cleanup is only the handle it took. It is still MANDATORY: a plan without a finally has no exit for the timeout and cancel doors.",
-      "id": "release-faction", "verb": "release", "args": { "h": "${CUR.value.h}" } }
+    { "//": "The plan mutates nothing, so cleanup is only the handles it took - and it only ever takes them in tactical. Unguarded, these reached for a variable the geoscape path never set and failed the cleanup block on every geoscape load.",
+      "id": "release-faction", "verb": "release", "if": "${waitReady}", "args": { "h": "${CUR.value.h}" } },
+    { "id": "release-faction-def", "verb": "release", "if": "${waitReady}", "args": { "h": "${FDEF.value.h}" } }
   ],
 
   "output": {
@@ -45,6 +60,6 @@
     "scene": "${ST.scene}",
     "levelState": "${ST.levelState}",
     "turn": "${TURN.value}",
-    "factionOnTurn": "${CUR.value.name}"
+    "factionOnTurn": "${FDEF.value.name}"
   }
 }

@@ -526,6 +526,13 @@ namespace Morgott.PPBridge
             if (best.Count == 0)
                 return Bad("overload", "nothing binds" + (member == null ? "" : " for '" + member + "'") + ": " +
                                        string.Join("; ", why.Take(6).ToArray()));
+            // An override and the base declaration it overrides reach here as two candidates with
+            // the SAME signature and the same score, so neither a better argument nor `sig` can
+            // separate them - `Wallet.ToString()` vs `Object.ToString()` is the one that surfaced
+            // it, and it made every ToString/Equals/GetHashCode on an overriding type unreachable.
+            // C# resolves that by the most-derived declaration; so does this.
+            if (best.Count > 1) best = MostDerived(best);
+
             if (best.Count > 1)
                 return new
                 {
@@ -539,6 +546,28 @@ namespace Morgott.PPBridge
             Chosen = best[0];
             bound = bestArgs;
             return null;
+        }
+
+        /// <summary>
+        /// Drops every candidate whose declaring type is a BASE of another candidate's. Only
+        /// hides a method that a more-derived type also declares, so a genuine overload tie
+        /// (two different signatures on one type) still refuses.
+        /// </summary>
+        private static List<MethodBase> MostDerived(List<MethodBase> ms)
+        {
+            List<MethodBase> keep = new List<MethodBase>();
+            foreach (MethodBase m in ms)
+            {
+                bool shadowed = false;
+                foreach (MethodBase o in ms)
+                {
+                    if (o == m || m.DeclaringType == null || o.DeclaringType == null) continue;
+                    if (m.DeclaringType != o.DeclaringType && m.DeclaringType.IsAssignableFrom(o.DeclaringType))
+                    { shadowed = true; break; }
+                }
+                if (!shadowed) keep.Add(m);
+            }
+            return keep.Count == 0 ? ms : keep;
         }
 
         private static bool Matches(MethodBase m, string[] want)

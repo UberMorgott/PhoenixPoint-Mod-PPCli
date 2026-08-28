@@ -48,6 +48,10 @@ namespace Morgott.PPBridge
         public static string T(int a, object b) { return "int,object"; }
         public static string T(object a, int b) { return "object,int"; }
 
+        // An OVERRIDE. It arrives at the scorer alongside Object.ToString() with the same signature
+        // and the same score, which used to make every ToString() on an overriding type ambiguous.
+        public override string ToString() { return "ov-tostring"; }
+
         public static string TakeOv(Ov o) { return o == null ? "null" : "ov"; }
         public static string TakeDef(FakeDef d) { return d.name; }
         public static string TakeSeason(Season s) { return s.ToString(); }
@@ -273,6 +277,12 @@ namespace Morgott.PPBridge
             Check("overload-sig-breaks-the-tie",
                   R("call", "{'op':'invoke','type':'" + OvType + "','member':'T','args':[1,1],'sig':['Int32','Object']}").Contains("\"value\":\"int,object\""),
                   R("call", "{'op':'invoke','type':'" + OvType + "','member':'T','args':[1,1],'sig':['Int32','Object']}"));
+            // An override is NOT a tie: the base declaration it hides loses. Wallet.ToString() vs
+            // Object.ToString() is the live case - set-resources.json could not read its own wallet.
+            string ovh = Handle("{'op':'new','type':'" + OvType + "','args':[]}");
+            Check("override-beats-the-base-declaration",
+                  R("call", "{'op':'invoke','target':'" + ovh + "','member':'ToString','args':[]}").Contains("\"value\":\"ov-tostring\""),
+                  R("call", "{'op':'invoke','target':'" + ovh + "','member':'ToString','args':[]}"));
             Check("overload-sig-that-matches-nothing",
                   R("call", "{'op':'invoke','type':'" + OvType + "','member':'T','args':[1,1],'sig':['Single','Single']}").Contains("\"code\":\"overload\""),
                   "an impossible sig was accepted");
@@ -632,6 +642,37 @@ namespace Morgott.PPBridge
             Check("observe-listing-is-capped", full.Contains("\"returned\":" + Shots.MaxRows), full);
             // The stats are computed over EVERYTHING stored, not over the trimmed listing.
             Check("observe-stats-use-the-whole-ring", full.Contains("\"n\":" + Shots.Capacity), full);
+            Run("observe", "{'action':'stop'}");
+
+            // --- THE TARGET SPLIT. "an actor stopped it" and "the actor this volley was aimed at
+            // stopped it" are different questions, and answering the first under the name of the
+            // second is how a bystander - or the shooter's own body - inflates a weapon's score.
+            Check("observe-start-refuses-a-non-integer-target",
+                  Run("observe", "{'action':'start','target':'Crabman_1'}").Contains("integer instanceId"),
+                  "a name was accepted as a target id");
+            Run("observe", "{'action':'start','target':4242}");
+            Shots.Record(1f, 0f, 0f, "Crabman_1", "Torso", 30f, 5f, 1, 4242, 30f);   // THE target
+            Shots.Record(2f, 0f, 0f, "Crabman_1", "Torso", 12f, 0f, 1, 77, 0f);      // a namesake, not it
+            Shots.Record(3f, 0f, 0f, null, "Wall", 0f, 0f, 0);                       // terrain
+            string keyed = Run("observe", "{'action':'read'}");
+            Check("observe-target-hits-are-not-actor-hits",
+                  keyed.Contains("\"hits\":2") && keyed.Contains("\"targetHits\":1") &&
+                  keyed.Contains("\"targetMisses\":2"), keyed);
+            // The two same-named rows are the point: a NAME cannot tell two Crabmen apart, an
+            // instance id can, and the bench keys on the id.
+            Check("observe-damage-on-target-is-not-damage-on-actors",
+                  keyed.Contains("\"damageOnActors\":42.0") && keyed.Contains("\"damageOnTarget\":30.0"), keyed);
+            Check("observe-target-is-echoed", keyed.Contains("\"target\":4242"), keyed);
+            Run("observe", "{'action':'stop'}");
+
+            // Told nothing, the target family must read NOTHING - never the all-actor totals wearing
+            // a name that promises they are the target's.
+            Run("observe", "{'action':'start'}");
+            Shots.Record(1f, 0f, 0f, "Crabman_1", "Torso", 30f, 5f, 1, 4242, 30f);
+            string untold = Run("observe", "{'action':'read'}");
+            Check("observe-untold-target-scores-nothing",
+                  untold.Contains("\"target\":null") && untold.Contains("\"targetHits\":0") &&
+                  untold.Contains("\"damageOnTarget\":0.0") && untold.Contains("\"hits\":1"), untold);
             Run("observe", "{'action':'stop'}");
 
             // --- the arithmetic, against numbers worked out by hand.

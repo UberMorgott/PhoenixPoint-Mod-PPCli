@@ -80,6 +80,27 @@ Assert-Refusal 'no install anywhere refuses and names -PPRoot' '-PPRoot' `
 Assert-Refusal 'two installs refuse rather than pick one' '2 Phoenix Point installs found' `
     { Find-PPInstall @($libA, $libB) }
 
+# The pin is what stops a bare `deploy` writing into the install Steam happens to know about, which
+# on a machine with a separate automation copy is the game its owner plays.
+$pinGood = Join-Path $scratch 'pin-good.txt'
+$pinBad  = Join-Path $scratch 'pin-bad.txt'
+Set-Content -Path $pinGood -Value $installA -Encoding utf8NoBOM
+Set-Content -Path $pinBad  -Value $libNone  -Encoding utf8NoBOM
+Assert-Value 'no pin file at all leaves discovery exactly as it was' `
+    ([string](Get-PPPinnedInstall (Join-Path $scratch 'pin-absent.txt'))) ''
+Assert-Value 'a pin file names the install to automate' `
+    (Get-PPPinnedInstall $pinGood) ((Get-Item $installA).FullName)
+Assert-Refusal 'a pin pointing at something that is not an install refuses, and names how to undo it' 'Remove-Item' `
+    { Get-PPPinnedInstall $pinBad }
+
+# The incident this guards: a deploy with no -PPRoot went to the play install because discovery found it.
+$installB = Join-Path $libB 'steamapps\common\Phoenix Point'
+$gateOut = & pwsh -NoProfile -File (Join-Path $root 'deploy.ps1') -PPRoot $installB -PinFile $pinGood 2>&1
+Assert-Value 'deploy refuses an install other than the pinned one, and names -Force' `
+    ($(if ("$gateOut" -like '*-Force*') { 'refused' } else { "wrong:$gateOut" })) 'refused'
+Assert-Value 'the refused deploy wrote nothing into it' `
+    ([bool](Test-Path (Join-Path $installB 'Mods\PPBridge\meta.json'))) 'False'
+
 Assert-Value 'exactly one profile directory is the answer' `
     (Find-PPProfileId $profilesOne) '11111111111111111'
 Assert-Refusal 'no profile refuses and names -ProfileId' '-ProfileId' `

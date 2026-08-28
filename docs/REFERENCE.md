@@ -36,6 +36,13 @@ and asks for `-PPRoot "<install folder>"` rather than guessing. `-ProfileId` is 
 way, from the single directory under
 `%USERPROFILE%\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam\`.
 
+**If you keep a separate copy of the game for automation, say so once.** Discovery finds the install
+*Steam* knows about, which is the one you play — so a bare `deploy` writes a mod into it. Put the
+automation copy's path in `ppcli-install.txt` beside `ppcli.ps1` (one line, gitignored) and it becomes
+the default for every command; `deploy` then REFUSES any other install and names the
+`-PPRoot '<path>' -Force` line that proceeds anyway. No such file, no change: a machine with one
+install behaves exactly as before.
+
 ## SECURITY — what this actually opens
 
 Plainly, so you can decide for yourself:
@@ -125,8 +132,9 @@ dotnet .\selfcheck\bin\Release\SelfCheck.dll            # PPBridge's pure half
 
 | Param | Default | Notes |
 |---|---|---|
-| `-PPRoot` | *discovered through Steam* | install to drive; required when you keep more than one |
+| `-PPRoot` | *`ppcli-install.txt`, else discovered through Steam* | install to drive; required when you keep more than one and have not pinned one |
 | `-ProfileId` | *the single profile directory* | Steam profile id; required when you have more than one |
+| `-Force` | off | `deploy` only: write into an install other than the pinned one |
 | `-TimeoutSeconds` | `300` | wall clock per job |
 | `-InitTimeoutSeconds` | `90` | mod init wait |
 
@@ -920,8 +928,25 @@ whatever happened to it — all three flight paths end there (`:125`, `:160`/`:1
 - **OFF by default.** Nothing is patched until `observe {"action":"start"}`, and `stop` unpatches.
   The ring is 512 entries, drops the oldest, and the prefix cannot throw.
 
-`observe read` gives `hits` / `misses` / `hitRate`, `damageOnActors` and `damageTotal`, the impact
-rows, and `dispersion` (`mean` / `sigma` / `max`) about both the group centroid and the aim point.
+`observe read` gives the impact rows and `dispersion` (`mean` / `sigma` / `max`) about both the group
+centroid and the aim point, plus **two families of hit and damage figures that must not be confused**:
+
+| Per-TARGET — the weapon's score | Any-ACTOR — everything a projectile touched |
+|---|---|
+| `targetHits` `targetMisses` `targetHitRate` `damageOnTarget` | `hitsAnyActor` `misses` `hitRateAnyActor` `damageOnActors` `damageTotal` |
+| keyed on the aimed-at actor's instance id | a bystander, a dead tree, the shooter's own body all count |
+
+`observe start` is told the target id; without one the per-target figures read `0` rather than quietly
+falling back. The bench used to report only the any-actor family, so a stray hit read as the weapon
+doing more than it does — a live 10-shot run read `targetHits` **6** against `hitsAnyActor` **9**, and
+`damageOnTarget` **153** against `damageOnActors` **201**.
+
+Dispersion is measured about `TacticalAbilityTarget.GetWorkingPosition()` (`:175`) — the point the
+shot was actually aimed at — and **not** the enemy's `Pos`, which is its FEET. The feet offset was
+being carried as if it were weapon spread: one real run read `mean` **0.9403** about the feet and
+**0.3896** about the working position, a 2.4x inflation. `enemyFeet` is still reported, so the old
+figure stays derivable.
+
 The pure half (`src\Shots.cs`) names no Unity and no game type, so `selfcheck\` exercises the ring,
 the caps and the arithmetic with no game running.
 
@@ -934,8 +959,8 @@ the caps and the arithmetic with no game running.
   coordinates, still counts as a miss, and stays out of the dispersion.
 - **HP before/after is not the damage measurement.** A stat is recomputed from its base plus its
   modifications, so a raised `Health.Max` does not stay raised: a run set `5000`, read `5000` back,
-  and finished at `77` — the def's own max minus 63 damage. `damageOnActors` is the authoritative
-  figure, and in a clean run it reconciled exactly: `23+33+23+24 = 103 = 5000 → 4897`.
+  and finished at `77` — the def's own max minus 63 damage. The accumulated damage figures are the
+  authoritative ones, and in a clean run they reconciled exactly: `23+33+23+24 = 103 = 5000 → 4897`.
 
 ### VERIFIED IN-GAME 2026-08-28 — and the control run that makes it evidence
 
@@ -987,9 +1012,21 @@ sum equalled the HP delta exactly — and its one miss was recorded landing in
 
 ### Known limits
 
-- **Volleys past ~6 consecutive shots have lost a shot** — the plan then FAILS at `landed` rather
-  than reporting a short volley, which is the right direction to fail in. Keep `shots` at 5 or fewer;
-  the cause is not yet identified.
+- **~6 shots per volley is the ceiling, and the cause is PACING.** `shots` is accepted from 1 to 100
+  (the engine's own `repeat` ceiling), but past roughly six consecutive shots one activation returns
+  from `ExecuteAndWait` and no projectile ever reaches `OnTrajectoryEnd`. The plan then FAILS at
+  `landed`, by name, rather than reporting a short volley as `ok:true`.
+  - **Established by matched runs**, same seed and placement: 10/10 completes with ~3 s of dead time
+    after each activation, and dies on pass 7 without it.
+  - **Target death is ruled out.** Immediately before the failing activation the target read `InPlay`
+    with full health, and `Health.SetToMax` before *every* shot changed nothing — the same seed still
+    died on pass 7, so that per-shot top-up was removed rather than kept as a fix that fixes nothing.
+    The ability being disabled, the target no longer being targetable, and an empty magazine were all
+    asserted green in the pass before the failure.
+  - **No honest settle predicate exists yet.** The ability's `IsExecuting` is already false while a
+    shot is merely *enqueued* (`ShootAbility.cs:173`), and `TacticalActorBase.HasExecutingAbility(null,
+    false)` never goes false at all — it got 8 landed and then hung. Until one is found, keep
+    `shots` at 5 or fewer.
 - **The enemy placement is a random draw from the distance band**, so it can land behind cover and
   the run FAILS at `assert-target`. That is the takeability check working. Re-run, or set `seed`.
 - **The plan does not spawn the shooter.** It equips the one you have selected. Use

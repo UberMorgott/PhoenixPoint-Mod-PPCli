@@ -1,0 +1,103 @@
+{
+  "//": "COLD START, tactical. From the main menu of a game that has never played anything, load ANY plot scene as a real playable mission - no campaign, no save, no hand-setup.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\start-mission.json '{\"scene\":\"ALN_PLT_Nest_48x48_A\",\"seed\":12345}'",
+  "//needs": "NOTHING. It works on a game sitting at the HomeScreen; if a level is already open it closes it first (see `to-menu`).",
+  "//scene": "`scene` is a MapPlotDef's own SceneReference.SceneName - e.g. ALN_PLT_Nest_48x48_A for ALN_PLT_Nest_48x48_A_PlotDef. `find` a *_PlotDef and read Scene.SceneName off it for any of the 213 plots. The scene must be in build settings; 876 of them are, and every plot checked so far is one (loadmap throws ConsoleCommandException otherwise, MapPlot.cs:334-337).",
+
+  "//lever": "`loadmap` (MapPlot.cs:320-366) assembles the TacticalGameParams itself off SharedData.TacticalLevelDef and hands PhoenixGame.FinishLevel a LoadLevelGameResult (:365). MenuCrt then branches on the params TYPE into TacticalGameCrt (PhoenixGame.cs:514-523). No mod code and no new bridge verb.",
+  "//menu-only": "loadmap is MENU-ONLY. Called inside a tactical level, TacticalGameCrt (PhoenixGame.cs:573-583) casts the result to TacticalGameResult and throws InvalidCastException - hence the phase gate below, which is a hard failure and not a warning.",
+  "//tags": "ponytail: loadmap's `params string[] tags` (plot/parcel tag filter) is NOT exposed - the plan engine cannot splice an array var into a console arg list, and args must stay flat (Protocol.cs:190-193). Add the literals to the `load` step if a run needs them.",
+
+  "timeoutMs": 600000,
+  "maxSteps": 300,
+
+  "vars": {
+    "scene": "ALN_PLT_Nest_48x48_A",
+    "seed": 12345,
+    "menuTimeoutMs": 120000,
+    "loadTimeoutMs": 420000
+  },
+
+  "steps": [
+    { "//": "THE GATE, computed rather than asked of the caller: FinishLevelAndGoToLobby AT the menu makes MenuCrt take a QuitGameResult it has no branch for and throw (PhoenixGame.cs:492-495), so the lobby call must not fire when there is nothing to leave.",
+      "id": "phase", "verb": "state", "save": "ST0" },
+    { "//REFUSAL": "A LIVE GEOSCAPE CANNOT BE LEFT FROM HERE, so this plan refuses rather than wedging the game. Measured 2026-08-28: FinishLevelAndGoToLobby out of a running geoscape (and `load_game`, which takes the same road) tears the level down while GeoscapeView keeps updating - UIStateVehicleSelected.UpdateState then NREs every frame inside StateStack.Update, MenuCrt's HomeScreen never reaches Playing, and the process is stuck at phase:menu with level:null until it is killed. GeoscapeView.ResetViewState first does NOT help; its SwitchToState is applied on a later frame that never comes. Quit the campaign from the in-game pause menu, or restart the process. Tactical is fine and is exercised below.",
+      "id": "refuse-if-geoscape", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1, "not": true,
+                "call": { "op": "invoke", "type": "System.Object", "member": "Equals", "args": [ "geoscape", "${ST0.phase}" ] } } },
+    { "id": "is-menu", "verb": "call", "save": "ISMENU",
+      "args": { "op": "invoke", "type": "System.Object", "member": "Equals", "args": [ "menu", "${ST0.phase}" ] } },
+    { "//": "The engine has no `not`; Object.Equals(false, x) is the idiom the other plans use.",
+      "id": "in-level", "verb": "call", "save": "INLEVEL",
+      "args": { "op": "invoke", "type": "System.Object", "member": "Equals", "args": [ false, "${ISMENU.value}" ] } },
+    { "//": "PhoenixGame.cs:284. The 0 is MenuEnterReason.None - the binder matches arity exactly, so the default cannot be omitted.",
+      "id": "to-menu", "verb": "call", "if": "${INLEVEL.value}",
+      "args": { "op": "invoke", "target": "@phoenix", "member": "FinishLevelAndGoToLobby", "args": [ 0 ] } },
+    { "//": "TWO waits, and the second one is what the first run of this plan was missing. `phase` flips to menu the moment the TacticalLevelController is gone - the HomeScreen level itself is not up yet, and a loadmap issued in that gap sets _levelResult before MenuCrt starts reading it (PhoenixGame.cs:262-266,481-490): the pulse is swallowed and the game sits at the menu forever. Measured: 123 ms to `phase:menu`, and the load then timed out at 420 s.",
+      "id": "at-menu", "verb": "wait", "args": { "phase": "menu", "timeoutMs": "${menuTimeoutMs}", "everyFrames": 10 } },
+    { "//": "The HomeScreen level is REALLY up. While it loads @level is null and the call errors, and an error satisfies neither polarity (Plan.cs:268-272), so this waits rather than passing. Safe on the already-at-the-menu path too, where it is true on the first poll.",
+      "id": "menu-level-up", "verb": "wait",
+      "args": { "timeoutMs": "${menuTimeoutMs}", "everyFrames": 10,
+                "call": { "op": "get", "target": "@level", "member": "IsPlaying" } } },
+
+    { "id": "load", "verb": "console", "args": { "command": "loadmap", "args": [ "${scene}", "${seed}" ] } },
+
+    { "//": "Two waits, because they are two different facts. `phase` says the TacticalLevelController exists; `ready` is HasAnyTurnStarted, which is when the mission is actually driveable.",
+      "id": "tactical", "verb": "wait", "args": { "phase": "tactical", "timeoutMs": "${loadTimeoutMs}", "everyFrames": 10 } },
+    { "id": "playable", "verb": "wait", "args": { "ready": true, "timeoutMs": "${loadTimeoutMs}", "everyFrames": 10 } },
+
+    { "//": "WHAT THE MISSION ACTUALLY BECAME. A load that 'succeeded' into an empty map is the failure this reports.",
+      "id": "factions", "verb": "call", "save": "FACS",
+      "args": { "op": "get", "target": "@tac", "member": "Factions" } },
+    { "id": "log", "verb": "call", "save": "LOG",
+      "args": { "op": "new", "type": "System.Collections.ArrayList", "args": [ 8 ] } },
+    { "//": "ONE PASS PER FACTION. The engine has no loop variable, so the accumulator's own Count is the index - the same trick spawn-squad.json uses for its `while` guard.",
+      "id": "per-faction", "verb": "repeat",
+      "args": {
+        "times": 12,
+        "while": "${MORE.value}",
+        "steps": [
+          { "id": "index", "verb": "call", "save": "IDX",
+            "args": { "op": "get", "target": "${LOG.value.h}", "member": "Count" } },
+          { "id": "faction", "verb": "items", "save": "FPAGE",
+            "args": { "h": "${FACS.value.h}", "page": "${IDX.value}", "pageSize": 1 } },
+          { "id": "faction-def", "verb": "call", "save": "FDEF",
+            "args": { "op": "get", "target": "${FPAGE.items[0].h}", "member": "TacticalFactionDef" } },
+          { "//": "TacticalFaction.Actors is a LAZY iterator over the map (TacticalFaction.cs:68), so it has no Count of its own - Enumerable.Count walks it once and answers with a number instead of a page of projected actors.",
+            "id": "actors", "verb": "call", "save": "ACTS",
+            "args": { "op": "get", "target": "${FPAGE.items[0].h}", "member": "Actors" } },
+          { "id": "actor-count", "verb": "call", "save": "N",
+            "args": { "op": "invoke", "type": "System.Linq.Enumerable", "member": "Count",
+                      "typeArgs": [ "PhoenixPoint.Tactical.Entities.TacticalActorBase" ],
+                      "args": [ { "$h": "${ACTS.value.h}" } ] } },
+          { "id": "record", "verb": "call",
+            "args": { "op": "invoke", "target": "${LOG.value.h}", "member": "Add",
+                      "args": [ "${FDEF.value.name}: ${N.value}" ] } },
+          { "id": "so-far", "verb": "call", "save": "SOFAR",
+            "args": { "op": "get", "target": "${LOG.value.h}", "member": "Count" } },
+          { "id": "more", "verb": "call", "save": "MORE",
+            "args": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "LesserThan",
+                      "args": [ "${SOFAR.value}", "${FACS.value.count}", 0.01 ] } }
+        ] } },
+
+    { "id": "read-log", "verb": "items", "save": "PER_FACTION", "args": { "h": "${LOG.value.h}", "pageSize": 12 } },
+    { "id": "state", "verb": "state", "save": "ST" }
+  ],
+
+  "finally": [
+    { "//": "NO lobby call here. A plan that dumped the player back to the menu on its own timeout would throw away a mission that may have loaded a second later, and `loadmap` leaves nothing behind that needs undoing - the level owns everything it built.",
+      "id": "release-log", "verb": "release", "args": { "h": "${LOG.value.h}" } },
+    { "id": "release-factions", "verb": "release", "args": { "h": "${FACS.value.h}" } }
+  ],
+
+  "output": {
+    "scene": "${ST.scene}",
+    "requestedScene": "${scene}",
+    "seed": "${seed}",
+    "phase": "${ST.phase}",
+    "level": "${ST.level}",
+    "cameFrom": "${ST0.phase}",
+    "factions": "${FACS.value.count}",
+    "perFaction": "${PER_FACTION.items}"
+  }
+}

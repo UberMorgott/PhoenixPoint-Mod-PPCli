@@ -1,7 +1,7 @@
 {
-  "//": "UNVERIFIED - written against source, never run. The game process this session was given died during the geoscape-load attempt (see README 'Plan library'), and every step below needs a geoscape level. Nothing here is guessed: every call carries its file:line.",
+  "//": "VERIFIED in-game 2026-08-28, on a campaign start-campaign.json began from the main menu: Materials 1000 -> 1500. It was UNVERIFIED until then only because nothing could reach a geoscape without playing one.",
   "//run": ".\\ppcli.ps1 plan .\\plans\\set-resources.json '{\"resource\":\"Materials\",\"amount\":500}'",
-  "//needs": "a GEOSCAPE save loaded - .\\ppcli.ps1 plan .\\plans\\load-mission.json '{\"name\":\"<save>\",\"phase\":\"geoscape\",\"waitReady\":false}' first.",
+  "//needs": "a live GEOSCAPE. From nothing: .\\ppcli.ps1 plan .\\plans\\start-campaign.json (~15 s). From a save: load-mission.json '{\"name\":\"<save>\",\"phase\":\"geoscape\",\"waitReady\":false}'.",
   "//delta": "amount is a DELTA, not an absolute. Wallet.Apply (Wallet.cs:140) is the shipped cheat path (UIGeoResourceGiverCheat.cs:25) and takes a diff; a negative amount takes resources away. There is no absolute setter, and faking one would need arithmetic the plan engine deliberately does not have.",
   "//resource": "ResourceType (ResourceType.cs): None Supplies Materials Tech AICore1 AICore2 AICore3 Research Production Mutagen LivingCrystals Orichalcum ProteanMutane.",
 

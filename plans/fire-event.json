@@ -1,0 +1,72 @@
+{
+  "//": "Fire a named geoscape event ON DEMAND, in a campaign the plan did not have to play up to.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\fire-event.json '{\"eventId\":\"PROG_PU1\"}'",
+  "//status": "VERIFIED in-game 2026-08-28 on a campaign started by start-campaign.json: PROG_PU1, AN1 and CHAIN_NJ1 all fired (\"Manual trigger of event 'AN1' from site '...'\"). An event whose site filters no live site satisfies is refused BY THE GAME with 'No site found to trigger event X manually from!' - EXPSITE_02 on day one is one - and that arrives here as a failed step, which is the right answer rather than a silent pass.",
+  "//needs": "a live geoscape - start-campaign.json gets there from the main menu in ~15 s.",
+  "//ids": "The id is the event's EventID string, NOT the def name (EXPSITE_02_GeoscapeEventDef has EventID 'EXPSITE_02'). The live list is one call: .\\ppcli.ps1 connect call '{\"op\":\"invoke\",\"target\":\"@geo\",\"member\":\"EventSystem\"}' then GetEventIDs() on the handle it returns. The second argument to GetEventByID is canFail - true is what turns 'no such event' into a null instead of a throw.",
+
+  "//loud": "GetEventByID is asserted here as a one-shot wait. The console command only PRINTS 'EventID not found' and returns ok (GeoscapeEventSystem.cs:684-687), which is exactly the silent no-op this plan exists to turn into a failure.",
+  "//vehicle": "MANDATORY, not a nicety. geo_event_trigger's Undefined/SiteVisited arm CASTS View.SelectedActor to GeoVehicle (GeoscapeEventSystem.cs:728) and NREs on anything else - including nothing selected, which is the state a freshly started campaign is in. The plan selects the faction's first vehicle through the view's own SetSelectedActor (GeoscapeView.cs:1054).",
+  "//site": "ponytail: no siteId. The trigger already picks a valid site for the event and teleports the vehicle to it (:738-751); SetEventForSite would need a site lookup this plan has no cheap route to. Add it when a run actually needs a named site.",
+
+  "timeoutMs": 120000,
+  "maxSteps": 60,
+
+  "vars": {
+    "eventId": "PROG_PU1",
+    "phaseTimeoutMs": 60000
+  },
+
+  "steps": [
+    { "id": "geoscape", "verb": "wait", "args": { "phase": "geoscape", "timeoutMs": "${phaseTimeoutMs}" } },
+
+    { "id": "events", "verb": "call", "save": "EVS",
+      "args": { "op": "get", "target": "@geo", "member": "EventSystem" } },
+    { "//": "FAIL LOUD, before anything is changed.",
+      "id": "event-exists", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "target": "${EVS.value.h}", "member": "GetEventByID", "args": [ "${eventId}", true ] } } },
+
+    { "//": "Read it FIRST so `finally` can put it back - a run that dies with events suppressed leaves a campaign in which nothing ever happens again.",
+      "id": "suppress-before", "verb": "call", "save": "SUP0",
+      "args": { "op": "get", "target": "${EVS.value.h}", "member": "SuppressEvents" } },
+    { "id": "unsuppress", "verb": "call",
+      "args": { "op": "set", "target": "${EVS.value.h}", "member": "SuppressEvents", "value": false } },
+
+    { "id": "view", "verb": "call", "save": "GV",
+      "args": { "op": "invoke", "target": "@level", "member": "GetComponent",
+                "typeArgs": [ "PhoenixPoint.Geoscape.View.GeoscapeView" ], "args": [] } },
+    { "//": "@faction is geo.ViewerFaction on the geoscape (PPBridgeMain.cs:231); Vehicles is GeoFaction.cs:137. `items` with pageSize 1 is the indexer, and an empty roster fails on the next step by name.",
+      "id": "vehicles", "verb": "call", "save": "VEHS",
+      "args": { "op": "get", "target": "@faction", "member": "Vehicles" } },
+    { "id": "first-vehicle", "verb": "items", "save": "VPAGE",
+      "args": { "h": "${VEHS.value.h}", "page": 0, "pageSize": 1 } },
+    { "//": "0 is SelectActorCameraChaseMode.DetermineIfChaseIsNeeded - the binder matches arity exactly, so the default cannot be omitted.",
+      "id": "select-vehicle", "verb": "call",
+      "args": { "op": "invoke", "target": "${GV.value.h}", "member": "SetSelectedActor",
+                "args": [ { "$h": "${VPAGE.items[0].h}" }, 0 ] } },
+
+    { "//": "The console command's own output is the receipt: it names the site it fired from.",
+      "id": "trigger", "verb": "console", "save": "FIRED",
+      "args": { "command": "geo_event_trigger", "args": [ "${eventId}" ] } },
+
+    { "id": "state", "verb": "state", "save": "ST" }
+  ],
+
+  "finally": [
+    { "//": "MANDATORY and first: SuppressEvents is the one global this plan writes.",
+      "id": "restore-suppress", "verb": "call",
+      "args": { "op": "set", "target": "${EVS.value.h}", "member": "SuppressEvents", "value": "${SUP0.value}" } },
+    { "id": "release-vehicles", "verb": "release", "args": { "h": "${VEHS.value.h}" } },
+    { "id": "release-view", "verb": "release", "args": { "h": "${GV.value.h}" } },
+    { "id": "release-events", "verb": "release", "args": { "h": "${EVS.value.h}" } }
+  ],
+
+  "output": {
+    "eventId": "${eventId}",
+    "suppressWas": "${SUP0.value}",
+    "vehicle": "${VPAGE.items[0].name}",
+    "consoleOutput": "${FIRED.output}",
+    "phase": "${ST.phase}"
+  }
+}

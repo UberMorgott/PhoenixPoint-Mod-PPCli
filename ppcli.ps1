@@ -38,6 +38,17 @@ param(
     [string] $ProfileId = '',
     [int]    $TimeoutSeconds = 300,
     [int]    $InitTimeoutSeconds = 90,
+    # How long ONE pipe frame may take to arrive. A verb answers in 17-60 ms and a cross-frame verb
+    # answers `accepted` immediately, so 30 s is already enormous; it is a ceiling on a wedged game,
+    # not a budget for a slow one.
+    [int]    $PipeTimeoutSeconds = 30,
+    # A stack naming this while the client is waiting means the run is already dead - see
+    # Get-LogFault in waits.ps1 for why the signal is a MOD frame and not the word "Exception".
+    [string] $FaultPattern = 'TFTV',
+    # Wait out the full budget anyway. For measuring a fault the fast-fail would otherwise cut short.
+    [switch] $IgnoreLogFaults,
+    # `deploy` only: write into an install other than the one `ppcli-install.txt` pins.
+    [switch] $Force,
     # Where `index` writes the def catalog and where `plan` resolves names from. A parameter only so
     # the offline tests can point at a fixture; nothing else has a reason to move it.
     [string] $CatalogDir = (Join-Path $PSScriptRoot 'catalog')
@@ -47,6 +58,22 @@ $ErrorActionPreference = 'Stop'
 function Note([string] $m) { [Console]::Error.WriteLine($m) }
 . (Join-Path $PSScriptRoot 'names.ps1')
 . (Join-Path $PSScriptRoot 'paths.ps1')
+. (Join-Path $PSScriptRoot 'waits.ps1')
+
+# One place decides whether a wait has already lost. Returns nothing, or throws naming the fault.
+# Throttled to once every 2 s: a poll loop runs four times a second and the log it re-reads is tens
+# of thousands of lines, so an unthrottled check would cost more than the wait it is shortening.
+function Assert-NoLogFault($mark) {
+    if ($IgnoreLogFaults) { return }
+    if ($mark.next -and (Get-Date) -lt $mark.next) { return }
+    $mark.next = (Get-Date).AddSeconds(2)
+    $fault = Get-LogFault $mark $FaultPattern
+    if (-not $fault) { return }
+    throw ("DEAD RUN: the game logged an exception matching '$FaultPattern' while this client was " +
+           "waiting, so the wait was abandoned instead of run to its full budget. Kill that game " +
+           "process and relaunch it; pass -IgnoreLogFaults to wait anyway, or -FaultPattern to " +
+           "change what counts. Log: $($mark.path)`n" + $fault)
+}
 
 function Invoke-Jobs([string] $jobsJson) {
     if (-not (Test-Path $exe))    { throw "No game executable at $exe" }
@@ -110,10 +137,15 @@ function Invoke-Jobs([string] $jobsJson) {
         Note "launched PID $($game.Id) (the only process this run may stop)"
 
         $start = Get-Date; $inited = $false
+        # This log did not exist a moment ago, so the mark is 0 and every line in it belongs to
+        # this run. A load that dies on a mod exception is caught here instead of at $TimeoutSeconds.
+        $mark = New-LogMark $logPath
         while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSeconds) {
             Start-Sleep -Seconds 3
             if ($game.HasExited) { Note 'the game exited before the DONE marker'; break }
             if (-not (Test-Path $logPath)) { continue }
+            $mark.path = $logPath
+            Assert-NoLogFault $mark
             if (-not $inited) {
                 $line = Select-String -Path $logPath -Pattern 'PPBridge \d.*build=([0-9a-f]{8})' | Select-Object -First 1
                 if ($line) { $inited = $true; $stamp = $line.Matches[0].Groups[1].Value }
@@ -196,17 +228,6 @@ function Get-Endpoint {
     $mine[0]
 }
 
-function Read-Exact([IO.Stream] $s, [int] $count) {
-    $buf = New-Object byte[] $count
-    $got = 0
-    while ($got -lt $count) {
-        $n = $s.Read($buf, $got, $count - $got)
-        if ($n -le 0) { throw "the pipe closed after $got of $count bytes" }
-        $got += $n
-    }
-    ,$buf
-}
-
 # One request per connection: connect, one length-prefixed UTF-8 frame out, one back, close.
 function Invoke-Pipe($ep, $body) {
     # Depth 32, not 12: a plan is a step list whose steps carry argument envelopes, and at depth 12
@@ -222,12 +243,14 @@ function Invoke-Pipe($ep, $body) {
         $client.Write($bytes, 0, $bytes.Length)
         $client.Flush()
 
-        $len = [BitConverter]::ToInt32((Read-Exact $client 4), 0)
+        # BOUNDED, both reads. A wedged game keeps this connection open and answers nothing.
+        $ms = $PipeTimeoutSeconds * 1000
+        $len = [BitConverter]::ToInt32((Read-Exact $client 4 $ms "pid $($ep.pid)"), 0)
         if ($len -le 0 -or $len -gt 262144) { throw "the server announced a $len byte frame" }
         # -NoEnumerate everywhere JSON comes back: PowerShell unrolls a one-element array into a
         # scalar, which silently turns a valid reply into a broken one (it already cost the batch
         # branch a false refusal).
-        ConvertFrom-Json ((New-Object Text.UTF8Encoding $false).GetString((Read-Exact $client $len))) -NoEnumerate
+        ConvertFrom-Json ((New-Object Text.UTF8Encoding $false).GetString((Read-Exact $client $len $ms "pid $($ep.pid)"))) -NoEnumerate
     }
     finally { $client.Dispose() }
 }
@@ -250,10 +273,14 @@ function Invoke-Verb([string] $verb, $verbArgs, $ep) {
         Note "job $jobId accepted, polling"
         $started  = Get-Date
         $deadline = $started.AddSeconds($TimeoutSeconds)
+        # A job that is dead is not slow. The mark is taken BEFORE the first poll, so only what the
+        # game logs while this client is actually waiting can end the wait.
+        $mark = New-LogMark (Get-GameLogPath $ep.pid)
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 250
             $reply = Invoke-Pipe $ep ([ordered]@{ token = $ep.token; id = 'c1'; verb = 'status'; args = @{ jobId = $jobId } })
             if ($reply.status -ne 'running') { break }
+            Assert-NoLogFault $mark
         }
         # The client's own ceiling, and it must not answer with the last poll: "running" as a FINAL
         # answer reads like a result and is not one, and the job would still be holding whatever it
@@ -300,14 +327,14 @@ function Resolve-PlanVars($vars, [string[]] $Skip = @()) {
 
 try {
 # Inside the try so a discovery refusal still leaves exactly one JSON object on stdout.
-if (-not $PPRoot) { $PPRoot = Find-PPInstall; Note "install: $PPRoot (discovered)" }
+if (-not $PPRoot) { $PPRoot = Find-PPInstall; Note "install: $PPRoot ($((Get-PPPinnedInstall) ? 'pinned in ppcli-install.txt' : 'discovered through Steam'))" }
 $modDir   = Join-Path $PPRoot 'Mods\PPBridge'
 $exe      = Join-Path $PPRoot 'PhoenixPointWin64.exe'
 $jobsPath = Join-Path $modDir 'ppcli-jobs.json'
 
 switch ($Command) {
     'deploy' {
-        & (Join-Path $PSScriptRoot 'deploy.ps1') -PPRoot $PPRoot | ForEach-Object { Note $_ }
+        & (Join-Path $PSScriptRoot 'deploy.ps1') -PPRoot $PPRoot -Force:$Force | ForEach-Object { Note $_ }
         [ordered]@{ ok = $true; deployed = (Join-Path $modDir 'PPBridge.dll') } | ConvertTo-Json -Compress
     }
     'run' {
@@ -396,6 +423,9 @@ switch ($Command) {
             Note "page ${page}: $($r.count) of $total"
             if (-not $r.hasMore) { break }
             $page++
+            # A server that always says hasMore is a bug, and `while ($true)` would page forever
+            # against it. 500 pages is 100000 defs - an order of magnitude past the real repository.
+            if ($page -ge 500) { throw "REFUSED: the index passed 500 pages and 'hasMore' is still true. Nothing was written." }
         }
         if ($defs.Count -ne $total) {
             throw "REFUSED: collected $($defs.Count) defs but the repository reports $total. Nothing was written."

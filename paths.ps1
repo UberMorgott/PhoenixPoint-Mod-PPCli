@@ -18,7 +18,34 @@ function Test-PPInstall([string] $Path) {
 
   -Roots exists so the offline test can hand this function a library list; nothing else passes it.
 #>
+<#
+  The install THIS MACHINE automates, remembered once instead of rediscovered.
+
+  Steam discovery is right for a stranger with exactly one install and wrong for anyone who keeps a
+  separate copy for automation: it finds the REAL Steam install - the game the user actually plays -
+  and a bare `deploy` then writes into it. One optional line in `ppcli-install.txt` beside this
+  script settles it, and a machine without that file behaves exactly as before.
+
+  -PinFile exists so the offline test can point at a fixture; nothing else passes it.
+  ponytail: one path, one line. A machine that needs two automation installs names them with -PPRoot.
+#>
+function Get-PPPinnedInstall([string] $PinFile) {
+    $pin = $PinFile ? $PinFile : (Join-Path $PSScriptRoot 'ppcli-install.txt')
+    if (-not (Test-Path $pin)) { return $null }
+    $path = (Get-Content -Raw $pin).Trim()
+    # A stale pin must not silently fall back to discovery - that is the incident this file prevents.
+    if (-not (Test-PPInstall $path)) {
+        throw ("REFUSED: $pin pins '$path', which has no PhoenixPointWin64.exe in it. Point it at the " +
+               "install you automate, or delete it to go back to Steam discovery: Remove-Item '$pin'.")
+    }
+    return (Get-Item $path).FullName
+}
+
 function Find-PPInstall([string[]] $Roots) {
+    if (-not $Roots) {
+        $pinned = Get-PPPinnedInstall
+        if ($pinned) { return $pinned }
+    }
     # NOT named $roots: PowerShell variable names are case-insensitive, so a local $roots IS the
     # $Roots parameter and clearing it silently threw the caller's list away.
     $libraries = @()

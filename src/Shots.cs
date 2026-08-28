@@ -40,6 +40,15 @@ namespace Morgott.PPBridge
             internal string Part;
             internal float Damage, Armor;
             internal int Targets;
+            /// <summary>Instance id of the actor that stopped it, 0 for none. Compared against
+            /// <see cref="TargetId"/>, because a NAME is not an identity - two Crabmen on the map
+            /// carry the same GameObject name and a bystander would then read as the target.</summary>
+            internal int ActorId;
+            /// <summary>Health damage this projectile put into <see cref="TargetId"/> ALONE, summed
+            /// by the patch from the game's own per-target accumulation. <see cref="Damage"/> is the
+            /// projectile's total across every actor it touched, which is a different number the
+            /// moment a shot clips a bystander.</summary>
+            internal float TargetDamage;
 
             /// <summary>
             /// MEASURED, and it is the difference between a number and a lie. When a projectile hits
@@ -66,6 +75,12 @@ namespace Morgott.PPBridge
         /// projectile - and the patch is not even installed then.</summary>
         internal static bool On;
 
+        /// <summary>The actor the volley is AIMED at, by Unity instance id; 0 means "not told".
+        /// Set by <c>observe {"action":"start","target":N}</c> and read by the patch. Without it a
+        /// bystander - or the shooter's own body - counts as a hit and inflates every figure the
+        /// bench reports for the weapon.</summary>
+        internal static int TargetId;
+
         /// <summary>Impacts since <c>start</c>. A live, POSITIVE, single-read predicate, which is
         /// exactly the shape <c>wait</c> can use.</summary>
         internal static int Recorded { get { return total; } }
@@ -78,14 +93,16 @@ namespace Morgott.PPBridge
         /// <summary>Called from the patch, on the main thread. Never throws and never allocates
         /// beyond the two strings the caller already has.</summary>
         internal static void Record(float x, float y, float z, string actor, string part,
-                                    float damage, float armor, int targets)
+                                    float damage, float armor, int targets,
+                                    int actorId = 0, float targetDamage = 0f)
         {
             if (!On) return;
             ring[head] = new Impact
             {
                 X = x, Y = y, Z = z,
                 Actor = actor, Part = part,
-                Damage = damage, Armor = armor, Targets = targets
+                Damage = damage, Armor = armor, Targets = targets,
+                ActorId = actorId, TargetDamage = targetDamage
             };
             head = (head + 1) % Capacity;
             if (stored < Capacity) stored++; else dropped++;
@@ -99,7 +116,7 @@ namespace Morgott.PPBridge
             string action = a == null ? null : (string)a["action"];
             switch (action)
             {
-                case "start": return Start();
+                case "start": return Start(a);
                 case "stop": return Stop();
                 case "mark": mark = total; return new { ok = true, mark, observing = On };
                 case "read": return Read(a);
@@ -116,21 +133,29 @@ namespace Morgott.PPBridge
             try { if (Arm != null) Arm(false); }
             catch (Exception) { }
             Arm = null;
+            TargetId = 0;
             head = stored = dropped = total = mark = 0;
             Array.Clear(ring, 0, ring.Length);
         }
 
         private static object Bad(string message) { return new { ok = false, code = "observe", error = message }; }
 
-        private static object Start()
+        private static object Start(JObject a)
         {
             if (Arm == null) return Bad("no shot observer installed - this is the offline half, or the mod is shutting down");
+            JToken t = a == null ? null : a["target"];
+            // A target that was GIVEN must be usable. Silently ignoring a malformed one would report
+            // targetHits:0 for a volley that hit nothing but the target, which is the worst answer of
+            // the three (right shape, wrong number, no complaint).
+            if (t != null && t.Type != JTokenType.Null && t.Type != JTokenType.Integer)
+                return Bad("observe start's \"target\" must be an actor's integer instanceId");
             string error = Arm(true);
             if (error != null) return Bad("could not install the observer: " + error);
             head = stored = dropped = total = mark = 0;
             Array.Clear(ring, 0, ring.Length);
+            TargetId = t == null || t.Type == JTokenType.Null ? 0 : (int)(long)t;
             On = true;
-            return new { ok = true, observing = true, capacity = Capacity };
+            return new { ok = true, observing = true, capacity = Capacity, target = TargetId };
         }
 
         private static object Stop()
@@ -146,8 +171,8 @@ namespace Morgott.PPBridge
         {
             List<Impact> items = Snapshot();
             float[] aim = Aim(a);
-            int hits = 0;
-            float damage = 0f, armor = 0f, onActors = 0f;
+            int hits = 0, targetHits = 0;
+            float damage = 0f, armor = 0f, onActors = 0f, onTarget = 0f;
             // Only rows with a real impact point reach the dispersion arithmetic - see Impact.HasGeometry.
             List<Impact> placed = new List<Impact>(items.Count);
             for (int i = 0; i < items.Count; i++)
@@ -155,6 +180,14 @@ namespace Morgott.PPBridge
                 // A HIT is "an actor stopped it", never "damage was dealt": a fully armoured hit does
                 // zero health damage and is still a hit.
                 if (items[i].Actor != null) { hits++; onActors += items[i].Damage; }
+                // ...and a hit ON THE TARGET is a stricter thing again: identity, not "some actor".
+                // Both figures stay at zero when no target was named, rather than quietly falling
+                // back to the all-actor totals under a name that promises otherwise.
+                if (TargetId != 0)
+                {
+                    if (items[i].ActorId == TargetId) targetHits++;
+                    onTarget += items[i].TargetDamage;
+                }
                 damage += items[i].Damage;
                 armor += items[i].Armor;
                 if (items[i].HasGeometry) placed.Add(items[i]);
@@ -172,7 +205,9 @@ namespace Morgott.PPBridge
                     y = m.HasGeometry ? (object)m.Y : null,
                     z = m.HasGeometry ? (object)m.Z : null,
                     actor = m.Actor, part = m.Part,
-                    damage = m.Damage, armor = m.Armor, targets = m.Targets
+                    onTarget = TargetId != 0 && m.ActorId == TargetId,
+                    damage = m.Damage, damageOnTarget = m.TargetDamage,
+                    armor = m.Armor, targets = m.Targets
                 });
             }
 
@@ -183,9 +218,17 @@ namespace Morgott.PPBridge
                 recorded = total,
                 stored = items.Count,
                 dropped,
+                // THREE different questions, and mixing them is how a bench lies. `hits` is "an actor
+                // stopped it" - ANY actor, the shooter and every bystander included. `targetHits` is
+                // "the actor this volley was aimed at stopped it", and it is the one that measures the
+                // weapon against the target. It reads 0 when no target was given to `start`.
                 hits,
                 misses = items.Count - hits,
                 hitRate = items.Count == 0 ? 0.0 : Math.Round((double)hits / items.Count, 4),
+                target = TargetId == 0 ? (object)null : TargetId,
+                targetHits,
+                targetMisses = items.Count - targetHits,
+                targetHitRate = items.Count == 0 ? 0.0 : Math.Round((double)targetHits / items.Count, 4),
                 // The authoritative damage figure. An actor's Health.Max does NOT stay where it was
                 // put - the game recomputes a stat from its base and modifications - so an HP
                 // before/after read around a raised target HP is not a measurement of the weapon.
@@ -195,6 +238,10 @@ namespace Morgott.PPBridge
                 // a live run put 33 into a dead tree, and a single "damage" figure that mixed that
                 // in with the target's would read as the weapon doing more damage than it does.
                 damageOnActors = Math.Round(onActors, 4),
+                // ...and stricter still: what the TARGET actually took, summed from the game's own
+                // per-target accumulation rather than from the projectile's total. A shot that clips
+                // a bystander adds to damageOnActors and not to this.
+                damageOnTarget = Math.Round(onTarget, 4),
                 armorTotal = Math.Round(armor, 4),
                 // Rows that hit nothing at all and therefore have no impact point.
                 noGeometry = items.Count - placed.Count,

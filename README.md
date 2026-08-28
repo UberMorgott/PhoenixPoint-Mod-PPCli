@@ -1,8 +1,25 @@
+<!-- tools\sync-standalone.ps1 publishes this file as the standalone repo's ROOT README.md; every
+     relative link below is therefore written for the ROOT, not for this docs\public\ directory. -->
 # PPCLI
 
 PPCLI is a Windows command-line control channel into a running Phoenix Point for mod developers and their coding agents. It combines the dev-only PPBridge mod (`com.morgott.PPBridge`) with a PowerShell 7 client, and returns exactly one compact JSON object on stdout while sending diagnostics to stderr, so every result can be piped directly into `ConvertFrom-Json`. Decompiled source tells you what the code appears intended to do; PPCLI lets you query, invoke, and measure what the running game actually did.
 
 Three more pages, and nothing else to read: [`PLAYBOOK.md`](PLAYBOOK.md) turns a plain intent into the exact command line, [`docs/REFERENCE.md`](docs/REFERENCE.md) is the deep reference behind every verb, plan and measured trap, and [`AGENTS.md`](AGENTS.md) is the operating brief for a coding agent driving PPCLI.
+
+## Cold start — no campaign, no save, no setup
+
+From the main menu of a game that has never played anything, PPCLI can put you in a real situation in about a dozen seconds. This is the shortest route to a reproducible test.
+
+| Intent | Command |
+|---|---|
+| Launch any shipped map as a playable mission. | `.\ppcli.ps1 plan .\plans\start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}'` |
+| Start a real campaign; the game generates the factions, the starting base, and the initial squad. | `.\ppcli.ps1 plan .\plans\start-campaign.json '{"difficultyIndex":1}'` |
+| Build a mission with your own map, mission type, roster, and enemy budget — including an empty player squad. | `.\ppcli.ps1 plan .\plans\build-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","playerCount":2}'` |
+| Fire a named geoscape event on demand. | `.\ppcli.ps1 plan .\plans\fire-event.json '{"eventId":"PROG_PU1"}'` |
+
+`scene` is a `MapPlotDef`'s own scene name; 213 plots ship with the game, and `ALN_PLT_Nest_48x48_A_PlotDef` is reached as `"scene":"ALN_PLT_Nest_48x48_A"`.
+
+A **running geoscape cannot be left** from outside the game. All of these refuse immediately if one is open, because returning to the lobby (or loading a save) out of a live geoscape tears the level down while its view keeps updating, and the game never reaches the main menu again. Quit the campaign from the in-game pause menu, or restart the game. Leaving a tactical mission is safe, and the plans do it for you.
 
 ## What it can do
 
@@ -16,7 +33,7 @@ Console commands are one surface. Reflection, definition discovery, plans, live-
 | `find` | Searches the live definition repository by name substring, exact GUID, and optional type. | `.\ppcli.ps1 connect find '{"query":"Crabman","type":"PhoenixPoint.Tactical.Entities.TacActorDef"}'` |
 | `index` | Pages the live definition repository into `catalog\defs.ndjson` and `catalog\meta.json`. Plans can then resolve plain names such as `crabman` locally and immediately. | `.\ppcli.ps1 index` |
 | `plan` | Runs a declarative multi-step sequence from `plans\*.json`, with waits, timeouts, assertions, saved intermediate values, and a required `finally` cleanup block. Cleanup runs on success, failure, timeout, and cancellation. One request replaces repeated pipe round-trips. | `.\ppcli.ps1 plan .\plans\spawn-at-coordinate.json '{"defName":"crabman","faction":"alien","x":11.5,"z":-4.5}'` |
-| Shot observer and `plans\weapon-test.json` | Equips and reloads a selected soldier, spawns an enemy at a requested distance, fires N real shots, and returns impact points, hits, misses, damage, armor, hit rate, and dispersion. The result is measured from live projectiles, not inferred from weapon definitions. | `.\ppcli.ps1 plan .\plans\weapon-test.json '{"weaponDef":"PX_AssaultRifle_WeaponDef","enemyDef":"crabman","distance":10.0,"shots":5}'` |
+| Shot observer and `plans\weapon-test.json` | Equips and reloads a selected soldier, spawns an enemy at a requested distance, fires N real shots, and returns impact points, armor, dispersion about the aim point, and hits and damage counted twice over — once against the aimed-at target (`targetHits`, `damageOnTarget`) and once against any actor a projectile touched (`hitsAnyActor`, `damageOnActors`). The result is measured from live projectiles, not inferred from weapon definitions. | `.\ppcli.ps1 plan .\plans\weapon-test.json '{"weaponDef":"PX_AssaultRifle_WeaponDef","enemyDef":"crabman","distance":10.0,"shots":5}'` |
 | `ping` | Reports protocol and loaded bridge build. | `.\ppcli.ps1 connect ping` |
 | `state` | Reports phase, scene, level, and level state. | `.\ppcli.ps1 connect state` |
 | `roots` | Returns the current live entrances: `game`, `phoenix`, `defs`, `level`, `geo`, `tac`, `map`, `view`, `faction`, and `selected`. | `.\ppcli.ps1 connect roots` |
@@ -58,6 +75,8 @@ All commands above are PowerShell 7 commands run from the repository root. Add `
    ```
 
    `deploy` performs a Release build and installs `PPBridge.dll` and `meta.json` in `$PPRoot\Mods\PPBridge`. If the deploy target is an automation copy without `ModSDK`, run `.\deploy.ps1 -PPRoot $PPRoot -RefRoot 'C:\path\to\a\full\Phoenix Point install'` instead.
+
+   If you keep a separate copy of the game for automation, write its path into `ppcli-install.txt` beside `ppcli.ps1`, one line. Every command then defaults to that install instead of the one Steam discovery finds, and `deploy` refuses any other install until you repeat it as `-PPRoot '<path>' -Force`. Without that file nothing changes.
 
 4. Arm the endpoint explicitly. `deploy` does not create this file:
 
@@ -104,11 +123,12 @@ Every process launch generates a 128-bit random bearer token. The token is writt
 
 ## Limitations
 
-- **UNVERIFIED:** `plans\set-resources.json` has not been confirmed in a live geoscape.
-- **UNVERIFIED:** `plans\unlock-research.json` has not been confirmed in a live geoscape.
-- **UNVERIFIED:** the geoscape half of `plans\load-mission.json` has not been confirmed. Its tactical path is verified. `restore` itself is issue-only; the plan's waits are the completion protocol.
+- **A live geoscape is a one-way street.** Returning to the lobby or loading a save from outside the game wedges the process: the level is destroyed while `GeoscapeView` keeps updating and throwing every frame, and the main menu never comes back. The cold-start plans refuse rather than trigger it. To start a second campaign in one session, restart the game.
+- **UNVERIFIED:** the geoscape half of `plans\load-mission.json`. Its tactical path is verified. Against a live geoscape it hits the limitation above, and it can also report success without loading anything, because its phase predicate is already true on the level it is leaving. `restore` itself is issue-only; the plan's waits are the completion protocol.
+- `plans\build-mission.json` stops in the deployment phase when the player roster is explicit, which is correct: the squad has to be placed. It reports `turnStarted:false` rather than waiting for a turn that no unattended run will ever start.
+- `plans\start-mission.json` does not expose `loadmap`'s plot and parcel tag filter; the plan engine cannot splice a list into a console argument list.
 - `plans\weapon-test.json` needs a playing tactical mission and a selected shooter. It deliberately leaves the spawned enemy and equipped weapon in place. Random placement can fail the line-of-sight assertion; use `seed` to reproduce a placement.
-- Volleys beyond approximately six consecutive shots have lost a projectile in testing. The plan fails its `landed` assertion instead of returning a short volley. Use five shots or fewer for now.
+- Volleys beyond approximately six consecutive shots lose a projectile. `shots` is accepted from 1 to 100, and the plan fails its `landed` assertion by name instead of returning a short volley. The cause is pacing: the same seed completes 10 of 10 when about 3 seconds of dead time follows each activation. Target death was investigated and ruled out. No honest settle predicate is known — the ability's `IsExecuting` is already false while a shot is merely enqueued, and `TacticalActorBase.HasExecutingAbility(null, false)` never goes false. Use five shots or fewer for now.
 - Handles belong to one process and epoch. A game restart or scene unload invalidates them.
 - PPBridge serves one pipe connection at a time. Do not drive one install concurrently from multiple agents.
 

@@ -1,8 +1,8 @@
 {
-  "//": "UNVERIFIED - written against source, never run. The game process this session was given died during the geoscape-load attempt (see README 'Plan library'), and every step below needs a geoscape level.",
+  "//": "VERIFIED in-game 2026-08-28, on a campaign start-campaign.json began from the main menu: PX_Alien_Fishman_ResearchDef went Hidden -> Completed. It was UNVERIFIED until then only because nothing could reach a geoscape without playing one.",
   "//run": ".\\ppcli.ps1 plan .\\plans\\unlock-research.json '{\"researchId\":\"PX_Alien_Fishman_ResearchDef\"}'",
   "//id-was-wrong": "The old default PX_Alien_Autopsy_ResearchDef does not exist in this build's def repository at all (catalog\\defs.ndjson, 377 ResearchDefs, generated 2026-08-28 against game 1.0.2.0). ResearchDef.Id USUALLY equals the def name but not always - ANU_AerialWarfare_ResearchDef carries Id ANU_Aerial_Warfare_ResearchDef - which is why the catalog stores the Id separately and the client sends that.",
-  "//needs": "a GEOSCAPE save loaded - .\\ppcli.ps1 plan .\\plans\\load-mission.json '{\"name\":\"<save>\",\"phase\":\"geoscape\",\"waitReady\":false}' first.",
+  "//needs": "a live GEOSCAPE. From nothing: .\\ppcli.ps1 plan .\\plans\\start-campaign.json (~15 s). From a save: load-mission.json '{\"name\":\"<save>\",\"phase\":\"geoscape\",\"waitReady\":false}'.",
   "//why-complete": "CompleteResearch (Research.cs:576, the research_complete command's own path at :1040) is the REWARDING path - it runs the unlock cascade. Writing researchElement.State directly (the `research` command, Research.cs:938-947) only flips a flag: no rewards, no cascade. Use this plan to complete, never a raw State write as a substitute.",
   "//points": "The console's add_research_pts adds progress instead of finishing; Research.AddProgressToResearch (:820) is its call. This plan finishes.",
   "//id": "researchId is the ResearchElement.ResearchID that GetResearchById (:763) matches EXACTLY - not a substring, and not the def's display name. `console research_stats` lists them.",

@@ -33,6 +33,15 @@ namespace Morgott.PPBridge
         private static Harmony harmony;
 
         /// <summary>
+        /// DamageAccumulation's own per-target list. The public GetAllTargetDamageResults() (:709)
+        /// yields the DamageResults with the TARGET stripped off, so it can answer "how much damage
+        /// did this projectile do" and cannot answer "how much did it do TO THIS ACTOR" - which is
+        /// the figure a weapon bench is actually after. Null if the field ever moves, and then the
+        /// per-target damage is simply reported as zero rather than guessed.
+        /// </summary>
+        private static readonly FieldInfo TargetsData = AccessTools.Field(typeof(DamageAccumulation), "_targetsData");
+
+        /// <summary>
         /// Installs or removes the patch. Null on success, a reason otherwise - the verb refuses
         /// loudly rather than starting an observer that would record nothing. Unpatching rather
         /// than leaving a gated patch in place is deliberate: "costs nothing when not observing"
@@ -96,11 +105,35 @@ namespace Morgott.PPBridge
                 Shots.Record(lastHit.Point.x, lastHit.Point.y, lastHit.Point.z,
                              actor == null ? null : actor.name,
                              collider == null ? null : collider.name,
-                             damage, armor, targets);
+                             damage, armor, targets,
+                             actor == null ? 0 : actor.GetInstanceID(),
+                             OnTarget(____damageAccum));
             }
             // A patch that can throw inside the game loop is a defect. This one cannot: a measurement
             // tap must never be able to take the shot it is measuring down with it.
             catch (Exception) { }
+        }
+
+        /// <summary>
+        /// Health damage this projectile put into <see cref="Shots.TargetId"/> alone. Matched on
+        /// GetActor() rather than on the receiver itself: a shot resolves against a BODY PART or a
+        /// carried item (both are IDamageReceivers), and comparing those to the actor would score
+        /// every real hit as zero. 0 when no target was named, when the field moved, or when this
+        /// projectile did not reach the target at all.
+        /// </summary>
+        private static float OnTarget(DamageAccumulation accum)
+        {
+            if (Shots.TargetId == 0 || accum == null || TargetsData == null) return 0f;
+            System.Collections.IEnumerable rows = TargetsData.GetValue(accum) as System.Collections.IEnumerable;
+            if (rows == null) return 0f;
+            float sum = 0f;
+            foreach (DamageAccumulation.TargetData td in rows)
+            {
+                if (td == null || td.Target == null) continue;
+                TacticalActorBase hit = td.Target.GetActor();
+                if (hit != null && hit.GetInstanceID() == Shots.TargetId) sum += td.DamageResult.HealthDamage;
+            }
+            return sum;
         }
     }
 }

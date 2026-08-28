@@ -5,18 +5,37 @@ param(
     [string] $PPRoot = '',
     # Where the REFERENCE assemblies (ModSDK\, PhoenixPointWin64_Data\Managed\) come from. Only worth
     # setting when the deploy target is a copy that has no ModSDK.
-    [string] $RefRoot = ''
+    [string] $RefRoot = '',
+    # Deploy somewhere other than the install `ppcli-install.txt` pins. Only means anything on a
+    # machine that HAS that file; without one there is nothing to override.
+    [switch] $Force,
+    # Which file pins this machine's automation install. A parameter only so the offline test can
+    # point at a fixture; nothing else passes it.
+    [string] $PinFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'paths.ps1')
 
-if (-not $PPRoot) { $PPRoot = Find-PPInstall; Write-Host "install: $PPRoot (discovered)" }
+$pinned = Get-PPPinnedInstall $PinFile
+if (-not $PPRoot) { $PPRoot = Find-PPInstall; Write-Host "install: $PPRoot ($($pinned ? 'pinned in ppcli-install.txt' : 'discovered through Steam'))" }
 # Creating Mods\PPBridge under a path that is not an install is the trap this guard exists for: it
 # succeeds, deploys nothing anyone will load, and reads exactly like a working deploy.
 if (-not (Test-PPInstall $PPRoot)) {
     throw "No Phoenix Point at $PPRoot (no PhoenixPointWin64.exe there). Pass -PPRoot '<install folder>'."
 }
+
+# THE ONLY WRITER. Discovery answers with the install Steam knows about, which on a machine that
+# keeps a separate copy for automation is the game its owner actually PLAYS - and a bare `deploy`
+# then rewrites a mod inside it without ever saying so. `ppcli-install.txt` names the copy this
+# machine automates; a machine that has no such file never reaches this guard.
+if ($pinned -and (Get-Item $PPRoot).FullName -ne $pinned -and -not $Force) {
+    throw ("REFUSED: this machine automates '$pinned' (named in $($PinFile ? $PinFile : (Join-Path $PSScriptRoot 'ppcli-install.txt'))), " +
+           "and this deploy targets '$PPRoot' instead - which is where the game you actually play lives. " +
+           "Nothing was built and nothing was written. Deploy there on purpose with: " +
+           ".\ppcli.ps1 deploy -PPRoot '$PPRoot' -Force")
+}
+
 if (-not $RefRoot) { $RefRoot = (Test-Path (Join-Path $PPRoot 'ModSDK')) ? $PPRoot : (Find-PPInstall) }
 
 # The csproj already builds into a folder named after the assembly, which is exactly the layout

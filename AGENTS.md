@@ -55,10 +55,28 @@ Use these exact shapes. Add `-PPRoot $PPRoot` as shown; handles and job ids must
 
 Use `@game`, `@phoenix`, `@defs`, `@level`, `@geo`, `@tac`, `@map`, `@view`, `@faction`, and `@selected` as live `call` targets. Use `find` for definitions, `types` and `members` for discovery, `inspect` for object identity plus members, `items` for collection pages, and `release` when a handle is no longer needed. Handles die on scene unload and process restart.
 
+## Getting into a situation from nothing
+
+Do not ask a human to load a save first. From the main menu, with no campaign ever played:
+
+| Intent | Command |
+|---|---|
+| Any shipped map, as a playable mission (about 12 seconds). | `.\ppcli.ps1 plan .\plans\start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}' -PPRoot $PPRoot` |
+| A real campaign, with a generated base and squad (about 15 seconds). | `.\ppcli.ps1 plan .\plans\start-campaign.json '{"difficultyIndex":1}' -PPRoot $PPRoot` |
+| A mission whose map, mission type, player roster and enemy budget you choose. `playerCount:0` gives an empty squad. | `.\ppcli.ps1 plan .\plans\build-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","playerCount":2}' -PPRoot $PPRoot` |
+| A named geoscape event, on demand. | `.\ppcli.ps1 plan .\plans\fire-event.json '{"eventId":"PROG_PU1"}' -PPRoot $PPRoot` |
+
+`scene` is a `MapPlotDef`'s own `Scene.SceneName`; find plots with `find '{"query":"PlotDef","pageSize":50}'`.
+
 ## Traps to check first
+
+- **Never try to leave a running geoscape from out here.** `FinishLevelAndGoToLobby` and `restore` both destroy the level while `GeoscapeView` keeps updating, which throws every frame and stops the main menu from ever coming up. Symptom: `state` reports `phase:menu`, `scene:HomeScreen`, `level:null` forever. The only recovery is restarting the process. The cold-start plans refuse in 1 millisecond rather than do it; leaving a tactical mission is safe.
+- `loadmap` is menu-only. Inside a tactical level it throws `InvalidCastException` from `TacticalGameCrt`. `start-mission.json` handles the transition for you.
+- Returning to the menu is not instant even when `state` says `phase:menu`. The phase flips as soon as the old level is gone; the HomeScreen level is up several seconds later, and anything sent in that gap is swallowed. Wait for `@level.IsPlaying` as well as the phase.
 
 - Partial item names match ammunition as well as weapons. A direct `find` for `PX_AssaultRifle` returns the ammo clip and weapon, and a `defs[0]` path can select `PX_AssaultRifle_AmmoClip_ItemDef`. The local name resolver may refuse the ambiguity instead. Symptom: ammo is added or tested instead of the weapon. Use the exact `PX_AssaultRifle_WeaponDef` name and a `WeaponDef` type filter.
 - `god_mode` invalidates damage measurement. The damage path returns before its report and before HP changes. Symptom: shots land but measured damage is silently zero. Keep `god_mode` false; `plans\weapon-test.json` saves, disables, and restores it.
+- A volley longer than about six consecutive shots loses a projectile. `shots` is accepted from 1 to 100, but past roughly six one activation returns and no projectile ever lands, and the plan then fails at its `landed` assertion by name instead of returning a short volley as `ok:true`. The cause is pacing, established by matched runs: the same seed completes 10 of 10 when about 3 seconds of dead time follows each activation. Target death is ruled out — the target read `InPlay` with full health immediately before the failing activation, and topping it up before every shot changed nothing. No honest settle predicate is known: the ability's `IsExecuting` is already false while a shot is merely enqueued, and `TacticalActorBase.HasExecutingAbility(null, false)` never goes false. Use five shots or fewer.
 - `plans\equip-actor.json` adds a weapon but does not load a magazine. Symptom: the weapon is present but cannot fire or has zero charges. Use `plans\weapon-test.json`, which calls `TacticalItem.ReloadForFree`, or explicitly reload after equipping.
 
 ## Worked example
@@ -70,4 +88,11 @@ $r = .\ppcli.ps1 plan .\plans\weapon-test.json '{"weaponDef":"PX_AssaultRifle_We
 $r.result.output
 ```
 
-The returned output contains the exact weapon and enemy defs, requested and achieved distance, shots requested and fired, projectile count, `hits`, `misses`, `hitRate`, `damageTotal`, `damageOnActors`, armor, charges before and after, aim point, every impact, and dispersion. Treat `ok:false`, a failed assertion in `trace`, or `stale:true` as a failed measurement; do not infer success from visible game state alone.
+The returned output contains the exact weapon and enemy defs, requested and achieved distance, shots requested and fired, projectile count, armor, charges before and after, aim point, `enemyFeet`, every impact, dispersion, and two separate families of hit figures:
+
+- **Per target** — `targetHits`, `targetHitRate`, `damageOnTarget`. Keyed on the aimed-at actor's instance id. This is the weapon's score against the target, and it is what to quote.
+- **Any actor** — `hitsAnyActor`, `misses`, `hitRateAnyActor`, `damageTotal`, `damageOnActors`. These count every actor a projectile touched, bystanders and the shooter included, so they read high. A live 10-shot run returned `targetHits` 6 against `hitsAnyActor` 9, and `damageOnTarget` 153 against `damageOnActors` 201.
+
+`dispersion` is measured about the aim point, `TacticalAbilityTarget.GetWorkingPosition()`, not about the enemy's feet. The feet position is reported separately as `enemyFeet`; measuring about it inflated one real run's `mean` from 0.3896 to 0.9403.
+
+Treat `ok:false`, a failed assertion in `trace`, or `stale:true` as a failed measurement; do not infer success from visible game state alone.
