@@ -7,10 +7,22 @@ obj/
 catalog/defs.ndjson
 catalog/meta.json
 
-# Written by `deploy` with THIS machine's install path. The monorepo ignores it too; it was missing
-# from this generated list, so a stranger who cloned, deployed and committed put their own path in.
+# Written by `deploy` with THIS machine's install path. Read by paths.ps1, never shipped.
 ppcli-install.txt
 
 # Game and client runtime droppings
 Console.log
 *.tmp
+
+# Internal lab notes and drivers. NOT published: each names this machine's install or its Steam
+# profile id, and each is addressed to us rather than to a user of the tool.
+#   - the two capability notes read as a list of things the tool CANNOT do, which is the wrong
+#     front page for a consumer; the work they describe already landed in the published docs.
+#   - headless-harness.md documents ContentTool's autogate.ps1 / AutoRun.cs, which do not exist
+#     in this tree at all.
+#   - spider-demo.ps1 needs com.morgott.ContentTool + morgott.demo.customcreature, neither of
+#     which a PPCLI user has.
+CODEX-gap-research.md
+TODO-audit-capabilities.md
+docs/headless-harness.md
+spider-demo.ps1
