@@ -2,7 +2,7 @@
 
 PPCLI is a Windows command-line control channel into a running Phoenix Point for mod developers and their coding agents. It combines the dev-only PPBridge mod (`com.morgott.PPBridge`) with a PowerShell 7 client, and returns exactly one compact JSON object on stdout while sending diagnostics to stderr, so every result can be piped directly into `ConvertFrom-Json`. Decompiled source tells you what the code appears intended to do; PPCLI lets you query, invoke, and measure what the running game actually did.
 
-Three more pages, and nothing else to read: [`PLAYBOOK.md`](PLAYBOOK.md) turns a plain intent into the exact command line, [`docs/REFERENCE.md`](docs/REFERENCE.md) is the deep reference behind every verb, plan and measured trap, and [`AGENTS.md`](AGENTS.md) is the operating brief for a coding agent driving PPCLI.
+Three more pages, and nothing else to read: [`PLAYBOOK.md`](PLAYBOOK.md) turns a plain intent into the exact command line, [`docs/REFERENCE.md`](docs/REFERENCE.md) is the deep reference behind every verb, plan and measured trap, and [`AGENTS.md`](AGENTS.md) is the operating brief for a coding agent driving PPCLI. Optional background, not part of the reading path: [`CODEX-gap-research.md`](CODEX-gap-research.md) and [`TODO-audit-capabilities.md`](TODO-audit-capabilities.md) are the capability audits this tool was hardened against, and [`spider-demo.ps1`](spider-demo.ps1) is the longest worked example of driving the client (it needs two mods PPCLI does not ship — read it for the idioms).
 
 ## Cold start — no campaign, no save, no setup
 
