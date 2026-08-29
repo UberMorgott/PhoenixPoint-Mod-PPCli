@@ -183,6 +183,11 @@ not a mission: `start-campaign.json` gets there from the main menu.
 | restore a snapshot, then place an equipped composition | `.\ppcli.ps1 plan .\plans\situation.json '{"snapshot":"SNAPSHOT_NAME","defName":"crabman","count":3,"itemName":"assault rifle"}'` |
 | the same, on the mission already loaded | `.\ppcli.ps1 plan .\plans\situation.json '{"restoreFirst":false,"defName":"crabman","count":3}'` |
 | run a cursor-scoped console command at a point | `.\ppcli.ps1 plan .\plans\aim-and-run.json '{"x":-0.5,"y":0.0,"z":14.5,"command":"info","cmdArgs":[]}'` |
+| …and REFUSE unless the cursor really landed on an actor | add `"requireActor":true` |
+| kill ONE named actor, cleanly, through the real damage pipeline | `.\ppcli.ps1 plan .\plans\kill-actor.json '{"actorName":"Crabman_10"}'` |
+| …and attribute the kill to a killer | add `"source":"HANDLE"` |
+| end the mission and go back to the geoscape | `.\ppcli.ps1 plan .\plans\end-mission.json '{"outcome":"win"}'` |
+| age a live campaign — run the geoscape clock fast (geoscape) | `.\ppcli.ps1 plan .\plans\geo-fast-forward.json '{"forMs":60000}'` |
 | add resources (a DELTA, geoscape) | `.\ppcli.ps1 plan .\plans\set-resources.json '{"resource":"Materials","amount":500}'` |
 | complete a research (geoscape) | `.\ppcli.ps1 plan .\plans\unlock-research.json '{"researchId":"fishman research"}'` |
 
@@ -231,12 +236,66 @@ Read live on one roster: `NJ_Armadillo_1` → `…, Vehicle_TagDef, Vehicle_Clas
 `items` still pages it, and a missing `count` does not mean "not a collection".
 Pass a row's `h` wherever a plan takes an actor: `"shooter":"h:3:17"`, `"actor":"h:3:17"`.
 
+### The open screen — reading and changing it
+
+`roots` names the live UI the same way it names the level. Three roots, both phases:
+
+| root | tactical | geoscape |
+|---|---|---|
+| `@view` | `TacticalView` | `GeoscapeView` |
+| `@viewstate` | `TacticalView.CurrentState` | `GeoscapeView.CurrentViewState` |
+| `@modules` | `TacticalModulesData` | `GeoscapeModulesData` |
+
+That is enough to answer "does this screen render what the patch claims": `@viewstate` says which
+screen is open, `@modules` reaches the named module holders (`ModalModule`,
+`DeploymentMissionBriefingModule`, `FactionDataTracker`, …), and ordinary `get`/`inspect` read the
+text a module is showing.
+
+To CHANGE screen, invoke the view's **own public `To*State()` method** —
+`ToResearchState`, `ToDiplomacyState`, `ToPhoenixpediaState`, `ToBaseLayoutState`,
+`ToManufacturingState`, `ToMemorialState`, `ToRosterState`, … and `ResetViewState(null)` to go back:
+
+```powershell
+.\ppcli.ps1 connect call '{"op":"invoke","target":"@view","member":"ToResearchState","args":[]}'
+.\ppcli.ps1 connect roots       # roots.viewstate.type -> ...ViewStates.UIStateResearch
+.\ppcli.ps1 connect call '{"op":"invoke","target":"@view","member":"ResetViewState","args":[null]}'
+```
+
+**Never re-Enter a popped UI state, and never push onto `_statesStack` by hand.** `@viewstate` is
+re-read from the live view on every `roots` call precisely so nobody holds one: a handle to a state
+the stack has already popped still resolves, and entering it is how this project has wedged the
+geoscape before. The `To*State()` methods each pick their own `StateStackAction`
+(`GeoscapeView.cs:414-759`), which is the part a hand-rolled push gets wrong.
+
+### Ageing a campaign — reaching a state nobody played to
+
+A fresh `start-campaign` geoscape has no faction wars, no completed research and no excavations.
+`geo-fast-forward` runs the real simulation instead of faking a date:
+
+```powershell
+.\ppcli.ps1 plan .\plans\geo-fast-forward.json '{"forMs":60000}'
+```
+
+- **Rate, measured:** `Scale` 3600 for 30 real seconds advanced the campaign `1.00:01:37.2` — about
+  **one in-game day per 28 real seconds**.
+- **3600 is the ceiling this project has proved.** Higher is not automatically better: the hourly
+  scheduler dequeues what is overdue in ONE pass, so a frame that jumps several hours collapses them
+  into one callback and can skip midnight entirely. Keep it under one in-game hour per frame.
+- The plan restores `Scale` **and** `Paused` in its `finally`, whatever happens.
+- Ageing is the expensive part, so pay for it once: `connect snapshot '{"name":"aged"}'` afterwards
+  and `restore` it in later runs.
+
 ## Ask the game something
 
 | Intent | Command |
 |---|---|
 | what is loaded right now | `.\ppcli.ps1 connect state` |
-| the live entrances (`@tac`, `@map`, `@selected`, …) | `.\ppcli.ps1 connect roots` |
+| the live entrances (`@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@selected`, …) | `.\ppcli.ps1 connect roots` |
+| what screen is open RIGHT NOW (either phase) | `.\ppcli.ps1 connect roots` → `roots.viewstate.type` |
+| open a geoscape screen | `.\ppcli.ps1 connect call '{"op":"invoke","target":"@view","member":"ToResearchState","args":[]}'` |
+| go back to the default geoscape screen | `.\ppcli.ps1 connect call '{"op":"invoke","target":"@view","member":"ResetViewState","args":[null]}'` |
+| read a named UI module of the open screen | `.\ppcli.ps1 connect inspect '{"h":"@modules","filter":"*Module*"}'` |
+| yield for a span of real time inside a plan | a step `{"verb":"wait","args":{"forMs":30000}}` |
 | find a def by name | `.\ppcli.ps1 connect find '{"query":"Crabman"}'` |
 | enumerate the def repository, one page | `.\ppcli.ps1 connect find '{"all":true,"page":0,"pageSize":200}'` |
 | any of the 344 native console commands | `.\ppcli.ps1 connect console '{"command":"info","args":[]}'` |
@@ -245,17 +304,53 @@ Pass a row's `h` wherever a plan takes an actor: `"shooter":"h:3:17"`, `"actor":
 | read the impacts so far | `.\ppcli.ps1 connect observe '{"action":"read","aim":[0,0,0]}'` |
 | stop watching (and unpatch) | `.\ppcli.ps1 connect observe '{"action":"stop"}'` |
 | read a live field / call a method | `.\ppcli.ps1 connect call '{"op":"get","target":"@selected","member":"Pos"}'` |
+| read one field OFF A DEF, by name, in one call | `.\ppcli.ps1 connect call '{"op":"get","target":"@def:Crabman_Gunner_TacCharacterDef","member":"Armor"}'` |
+| dump a def's values — EVERY field, nulls and non-scalars marked (diff two runs to see what a mod changed) | `.\ppcli.ps1 connect inspect '{"h":"@def:Crabman_Gunner_TacCharacterDef","values":true}'` |
+| the number the game's C# sees for a `ModifiableValue` (opt-in: it runs an operator) | `.\ppcli.ps1 connect call '{"op":"get","target":"HANDLE","member":"Value","convertTo":"System.Single"}'` |
 | what members does this handle have | `.\ppcli.ps1 connect inspect '{"h":"HANDLE"}'` |
+| …only the ones matching a name | `.\ppcli.ps1 connect inspect '{"h":"HANDLE","filter":"*Coefficient*"}'` |
+| …the next page of them (400 per page) | `.\ppcli.ps1 connect inspect '{"h":"HANDLE","page":1}'` |
 | page a collection handle (`page` is 0-based) | `.\ppcli.ps1 connect items '{"h":"HANDLE","pageSize":20}'` |
+| is `X.Y` a **field**, a **property**, or absent? | `.\ppcli.ps1 connect call '{"op":"invoke","type":"HarmonyLib.AccessTools","member":"Field","args":[{"$type":"PhoenixPoint.Modding.SomeClass"},"_someField"]}'` |
 | save a named state | `.\ppcli.ps1 connect snapshot '{"name":"before"}'` |
 | reload it (issue-only — follow with a `wait`) | `.\ppcli.ps1 connect restore '{"name":"before"}'` |
 | wait for a mission to be playable | `.\ppcli.ps1 connect wait '{"ready":true,"timeoutMs":120000}'` |
 | a long plan is still running | `.\ppcli.ps1 connect status '{"jobId":"JOB_ID"}'` |
+| MANY calls at once (ONE PowerShell process, N short connections) | `.\ppcli.ps1 connect multi '[{"id":"a","verb":"state"},{"id":"b","verb":"roots"}]'` |
+| …the same, from a generated file | `.\ppcli.ps1 connect multi @requests.json` |
+
+`connect multi` is **one PowerShell process and one endpoint, with one short connection per
+request** — not one held-open pipe. It is **sequential, not transactional**: the whole array is
+validated before row 1 is sent, but once sending starts a transport failure leaves every earlier
+row's side effects committed.
 
 `SAVE_NAME`, `SNAPSHOT_NAME`, `HANDLE` and `JOB_ID` are **placeholders, not values**: every other line
 above is paste-ready as written. `HANDLE` looks like `h:3:17` and comes out of a `find`/`call` reply
 in THIS session (a handle from a previous one is dead); `JOB_ID` is the `jobId` the plan reply
 carried; the save and snapshot names are whatever exists in the install you are driving.
+
+### "Does this member even exist?" — ask the live assembly, not the source
+
+Reflection-shaped questions are answerable through `call` alone, with no screen open and no mission
+loaded. `{"$type":"..."}` is the envelope that passes a **type** as an argument, so Harmony's own
+lookups become one-line probes:
+
+```powershell
+# a FIELD:    non-null handle = it exists, null = it does not
+.\ppcli.ps1 connect call '{"op":"invoke","type":"HarmonyLib.AccessTools","member":"Field","args":[{"$type":"PhoenixPoint.Geoscape.View.ViewModules.UIModuleDeploymentMissionBriefing"},"DeployButton"]}'
+# the same type with a member it does NOT have answers "value":null - that is the absence result
+.\ppcli.ps1 connect call '{"op":"invoke","type":"HarmonyLib.AccessTools","member":"Field","args":[{"$type":"PhoenixPoint.Geoscape.View.ViewModules.UIModuleDeploymentMissionBriefing"},"_mission"]}'
+# a PROPERTY: same shape, .Property instead
+.\ppcli.ps1 connect call '{"op":"invoke","type":"HarmonyLib.AccessTools","member":"Property","args":[{"$type":"..."},"Name"]}'
+# the declared TYPE of the field that came back
+.\ppcli.ps1 connect call '{"op":"get","target":"<FIELDINFO>","member":"FieldType"}'
+```
+
+`null` is the whole answer: a `Traverse.Create(x).Field("name")` in some mod that names a member the
+live assembly does not have returns null at runtime and does nothing, silently. Three of an audited
+mod's dead features were proved dead in one line each this way. `inspect`/`members` answer the same
+question in bulk (`{"filter":"*Coefficient*"}`); `AccessTools` answers it about a **named** member,
+including a private one, and says which kind it is.
 
 ## When it goes wrong
 

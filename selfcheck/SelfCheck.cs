@@ -31,12 +31,24 @@ namespace Morgott.PPBridge
     {
         public string Guid;
         public string name { get; set; }
+        // The two shapes a value dump used to drop SILENTLY: a null field and a non-scalar one.
+        public string Missing = null;   // = null only to silence CS0649; the dump must SAY it is null
+        public List<int> Tags = new List<int> { 1, 2 };
+    }
+
+    /// <summary>A struct with an implicit conversion to a scalar - ModifiableValue's shape.</summary>
+    internal struct Scal
+    {
+        public float v;
+        public Scal(float v) { this.v = v; }
+        public static implicit operator float(Scal s) { return s.v * 2f; }
     }
 
     internal class Ov
     {
         // = 0 only to silence CS0649: this field is written by the binder, never by C# code here.
         public int Field = 0;
+        public Scal Scalar = new Scal(2.5f);
         public string Prop { get; set; }
 
         public static string M(int x) { return "int"; }
@@ -473,6 +485,52 @@ namespace Morgott.PPBridge
                   R("find", "{'query':'hello','type':'Morgott.PPBridge.FakeDef'}"));
             Check("find-needs-a-query", R("find", "{}").Contains("\"code\":\"args\""), "an empty query was accepted");
 
+            // --- a def is addressable BY NAME, so reading one of its fields is ONE round trip.
+            Check("def-target-by-name", R("inspect", "{'h':'@def:hello_def'}").Contains("\"type\":\"Morgott.PPBridge.FakeDef\""),
+                  R("inspect", "{'h':'@def:hello_def'}"));
+            Check("def-target-by-guid", R("inspect", "{'h':'@def:g1'}").Contains("\"ok\":true"), R("inspect", "{'h':'@def:g1'}"));
+            Check("def-target-unknown-name-points-at-find", R("inspect", "{'h':'@def:hello'}").Contains("use `find`"),
+                  R("inspect", "{'h':'@def:hello'}"));
+            Check("def-envelope-takes-a-name",
+                  R("call", "{'op':'invoke','type':'" + OvType + "','member':'TakeDef','args':[{'$def':'other'}]}").Contains("\"value\":\"other\""),
+                  R("call", "{'op':'invoke','type':'" + OvType + "','member':'TakeDef','args':[{'$def':'other'}]}"));
+
+            // --- the value dump: FIELDS only, no handles, so two runs diff mechanically. EVERY field
+            // appears - a silent omission makes "unchanged" and "not observed" identical in a diff.
+            string dump = R("inspect", "{'h':'@def:hello_def','values':true}");
+            Check("inspect-values-dumps-fields", dump.Contains("\"Guid\":\"g1\"") && dump.Contains("\"name\":\"hello_def\""), dump);
+            Check("inspect-values-says-null-out-loud", dump.Contains("\"Missing\":null"), dump);
+            Check("inspect-values-marks-a-non-scalar-field",
+                  dump.Contains("\"$omitted\":\"System.Collections.Generic.List") && dump.Contains("\"count\":2"), dump);
+            Check("inspect-values-is-byte-identical-on-a-second-read",
+                  dump == R("inspect", "{'h':'@def:hello_def','values':true}"), dump);
+            Check("inspect-values-drops-the-member-list", !dump.Contains("\"members\""), dump);
+            Check("inspect-values-needs-an-instance", R("members", "{'type':'" + OvType + "','values':true}").Contains("\"code\":\"args\""),
+                  R("members", "{'type':'" + OvType + "','values':true}"));
+
+            // --- member discovery: a glob, and PAGING instead of a silent cut at the cap.
+            Check("members-glob-filter", R("members", "{'type':'" + OvType + "','filter':'*TakeV3*'}").Contains("\"count\":1"),
+                  R("members", "{'type':'" + OvType + "','filter':'*TakeV3*'}"));
+            Check("members-glob-that-matches-nothing",
+                  R("members", "{'type':'" + OvType + "','filter':'*NoSuchMember*'}").Contains("\"count\":0"),
+                  R("members", "{'type':'" + OvType + "','filter':'*NoSuchMember*'}"));
+            string mp0 = R("members", "{'type':'" + OvType + "','pageSize':1}");
+            string mp1 = R("members", "{'type':'" + OvType + "','page':1,'pageSize':1}");
+            Check("members-pages", mp0.Contains("\"count\":1") && mp0.Contains("\"hasMore\":true") && !mp0.Contains("\"total\":1"), mp0);
+            Check("members-page-1-is-a-different-member", mp0 != mp1 && mp1.Contains("\"page\":1"), mp1);
+            Check("members-past-the-end", R("members", "{'type':'" + OvType + "','page':9999,'pageSize':1}").Contains("\"count\":0"),
+                  R("members", "{'type':'" + OvType + "','page':9999,'pageSize':1}"));
+
+            // --- a user-defined conversion runs ONLY when the caller names the destination type.
+            // Running an operator is running arbitrary user code, so a plain `get` must not do it.
+            string scal = R("call", "{'op':'get','target':'" + ov + "','member':'Scalar'}");
+            Check("a-plain-get-runs-no-conversion-operator", scal.Contains("\"v\":2.5") && !scal.Contains("$scalar") && !scal.Contains("converted"), scal);
+            string conv = R("call", "{'op':'get','target':'" + ov + "','member':'Scalar','convertTo':'System.Single'}");
+            Check("convert-to-runs-the-operator-on-request", conv.Contains("\"v\":2.5") && conv.Contains("\"converted\":5"), conv);
+            Check("convert-to-an-impossible-type-refuses",
+                  R("call", "{'op':'get','target':'" + ov + "','member':'Scalar','convertTo':'System.DateTime'}").Contains("\"code\":\"convert\""),
+                  R("call", "{'op':'get','target':'" + ov + "','member':'Scalar','convertTo':'System.DateTime'}"));
+
             // --- find {all:true}: enumeration is OPT-IN, ordered and paged. The flag is what stops a
             // typo'd variable from turning into a dump of the whole def repository, so a missing query
             // WITHOUT it must still refuse; and the sort must be total, or a page boundary would skip
@@ -770,6 +828,15 @@ namespace Morgott.PPBridge
             Check("wait-on-the-wrong-phase-times-out",
                   Run("wait", "{'phase':'geoscape','timeoutMs':1,'everyFrames':1}", 50, -1, 2).Contains("\"code\":\"timeout\""),
                   "a phase that never matched came back green");
+            // --- {"forMs"}. A bounded YIELD, and the one wait whose whole point is that time passing
+            // is a SUCCESS. Fast-forwarding the geoscape is "run at this Scale for this long", and
+            // spelling that as a never-true predicate would report every healthy run as a failure.
+            Check("wait-for-a-span-does-not-finish-early",
+                  Run("wait", "{'forMs':5000}", 3, -1, 0).Contains("never finished"),
+                  Run("wait", "{'forMs':5000}", 3, -1, 0));
+            Check("wait-for-a-span-succeeds-when-it-elapses",
+                  Run("wait", "{'forMs':1}", 50, -1, 2).Contains("\"ok\":true"),
+                  Run("wait", "{'forMs':1}", 50, -1, 2));
             // A predicate that is broken forever must still SAY so - a bare timeout would send an
             // agent looking at the game instead of at its own typo.
             Check("wait-timeout-reports-the-last-error",

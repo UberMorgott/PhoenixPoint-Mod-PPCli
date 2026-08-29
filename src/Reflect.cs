@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 
 namespace Morgott.PPBridge
@@ -169,9 +170,9 @@ namespace Morgott.PPBridge
             catch (TargetInvocationException ex)
             {
                 Exception inner = ex.InnerException ?? ex;
-                result = Bad("threw", inner.GetType().Name + ": " + inner.Message);
+                result = Threw(inner);
             }
-            catch (Exception ex) { result = Bad("threw", ex.GetType().Name + ": " + ex.Message); }
+            catch (Exception ex) { result = Threw(ex); }
 
             // The last cap, and the only one that can see the whole answer: a projection that is
             // individually within every other limit can still add up to a response an agent should
@@ -183,6 +184,32 @@ namespace Morgott.PPBridge
             if (bytes <= MaxResponseBytes) return result;
             return Bad("cap", "the result projects to " + bytes + " bytes, over the " + MaxResponseBytes +
                               " byte cap - ask for a smaller page, a narrower filter, or a single member");
+        }
+
+        /// <summary>
+        /// A game method that throws inside `call` used to answer with the type and message ALONE,
+        /// and "NullReferenceException: Object reference not set to an instance of an object" names
+        /// nothing at all - the one exception shape that carries no information in its message is
+        /// also the commonest one a reflection driver provokes. The top frames say WHICH member of
+        /// the game blew up, which is the whole question. Capped at 6 frames and clipped like every
+        /// other string here, so a deep stack cannot become the response.
+        /// </summary>
+        private static object Threw(Exception ex)
+        {
+            string[] frames = (ex.StackTrace ?? "").Split('\n');
+            List<string> top = new List<string>();
+            for (int i = 0; i < frames.Length && top.Count < 6; i++)
+            {
+                string f = frames[i].Trim();
+                if (f.Length > 0) top.Add(Protocol.Clip(f));
+            }
+            return new
+            {
+                ok = false,
+                code = "threw",
+                error = Protocol.Clip(ex.GetType().Name + ": " + ex.Message),
+                at = top.ToArray()
+            };
         }
 
         private static object Bad(string code, string message)
@@ -306,7 +333,7 @@ namespace Morgott.PPBridge
             switch (op)
             {
                 case "new": return New(type, argsArr);
-                case "get": return GetSet(type, target, haveTarget, member, null, false);
+                case "get": return GetSet(type, target, haveTarget, member, null, false, (string)a["convertTo"]);
                 case "set":
                     if (a["value"] == null) return Bad("args", "set needs \"value\"");
                     return GetSet(type, target, haveTarget, member, a["value"], true);
@@ -326,13 +353,68 @@ namespace Morgott.PPBridge
             if (tok.Type == JTokenType.String)
             {
                 string s = (string)tok;
+                // A def is addressable BY NAME here so reading one field is one round trip instead of
+                // three (find -> guid -> GetDef -> get). The prefix is explicit: a bare name could
+                // collide with a root alias, and guessing which one was meant is how the wrong def
+                // gets edited.
+                if (s.StartsWith("@def:", StringComparison.OrdinalIgnoreCase)) return ResolveDef(s.Substring(5), out target, out error);
                 if (s.StartsWith("@", StringComparison.Ordinal)) return ResolveRoot(s.Substring(1), out target, out error);
                 return Resolve(s, out target, out error);
             }
             JObject o = tok as JObject;
             if (o != null && o["$h"] != null) return Resolve((string)o["$h"], out target, out error);
-            error = "target must be a handle \"h:e:i\", a root alias \"@name\", or {\"$h\":...}";
+            if (o != null && o["$def"] != null) return ResolveDef((string)o["$def"], out target, out error);
+            error = "target must be a handle \"h:e:i\", a root alias \"@name\", a def \"@def:<name|guid>\", " +
+                    "or {\"$h\":...} / {\"$def\":...}";
             return false;
+        }
+
+        /// <summary>
+        /// One def, named the way a human names it: an exact guid first (the repository's own O(1)
+        /// lookup), else an EXACT def name, case-insensitive. Never a substring - <c>find</c> is the
+        /// search verb, and a substring that happened to match two defs would silently pick one.
+        /// </summary>
+        internal static bool ResolveDef(string key, out object def, out string error)
+        {
+            def = null;
+            error = null;
+            if (string.IsNullOrEmpty(key)) { error = "a def reference needs a def name or a guid"; return false; }
+            if (Protocol.DefByGuid != null)
+            {
+                def = Protocol.DefByGuid(key);
+                if (def != null) return true;
+            }
+            if (Protocol.AllDefs == null)
+            {
+                error = "no def with guid '" + key + "', and no def repository to look a name up in";
+                return false;
+            }
+
+            List<object> hits = new List<object>();
+            foreach (object d in Protocol.AllDefs())
+            {
+                if (d == null) continue;
+                string name, guid;
+                if (!DefIdentity(d, d.GetType(), out name, out guid)) continue;
+                if (!string.Equals(name, key, StringComparison.OrdinalIgnoreCase)) continue;
+                hits.Add(d);
+                if (hits.Count > 4) break;
+            }
+            if (hits.Count == 0)
+            {
+                error = "no def named '" + key + "' (an EXACT name, case-insensitive, or a guid) - " +
+                        "use `find` to search by substring";
+                return false;
+            }
+            if (hits.Count > 1)
+            {
+                error = "'" + key + "' names " + (hits.Count > 4 ? "at least 5" : hits.Count.ToString(CultureInfo.InvariantCulture)) +
+                        " defs (" + string.Join(", ", hits.Select(h => h.GetType().Name).Distinct().Take(5).ToArray()) +
+                        ") - pass its guid instead";
+                return false;
+            }
+            def = hits[0];
+            return true;
         }
 
         private static bool ResolveRoot(string alias, out object target, out string error)
@@ -410,7 +492,8 @@ namespace Morgott.PPBridge
             return Value(result);
         }
 
-        private static object GetSet(Type type, object target, bool haveTarget, string member, JToken value, bool write)
+        private static object GetSet(Type type, object target, bool haveTarget, string member, JToken value, bool write,
+                                     string convertTo = null)
         {
             if (string.IsNullOrEmpty(member)) return Bad("args", "get/set needs \"member\"");
 
@@ -434,7 +517,17 @@ namespace Morgott.PPBridge
             if (!write)
             {
                 if (prop != null && prop.GetGetMethod(true) == null) return Bad("member", "'" + member + "' is write-only");
-                return Value(prop != null ? prop.GetValue(self, null) : field.GetValue(self));
+                object raw = prop != null ? prop.GetValue(self, null) : field.GetValue(self);
+                if (string.IsNullOrEmpty(convertTo)) return Value(raw);
+                // OPT-IN, and the ordinary projection comes back too: the caller asked for a number,
+                // not for the struct to be replaced by one.
+                string typeError2;
+                Type dest = ResolveType(convertTo, null, out typeError2);
+                if (dest == null) return Bad("type", typeError2);
+                object converted;
+                string convertError;
+                if (!TryConvert(raw, dest, out converted, out convertError)) return Bad("convert", convertError);
+                return new { ok = true, value = Project(raw), convertedTo = dest.FullName, converted = Project(converted) };
             }
 
             object bound;
@@ -779,9 +872,10 @@ namespace Morgott.PPBridge
                 }
                 case "$def":
                 {
-                    if (Protocol.DefByGuid == null) { error = "no def lookup installed"; return false; }
-                    object def = Protocol.DefByGuid((string)payload);
-                    if (def == null) { error = "no def with guid '" + (string)payload + "'"; return false; }
+                    // A guid OR an exact def name: the guid hop exists because `find` returns one,
+                    // not because the binder needs it.
+                    object def;
+                    if (!ResolveDef((string)payload, out def, out error)) return false;
                     if (!target.IsInstanceOfType(def))
                     {
                         error = "def '" + (string)payload + "' is a " + def.GetType().Name + ", not a " + target.Name;
@@ -936,19 +1030,10 @@ namespace Morgott.PPBridge
             if (v == null) return null;
             Type t = v.GetType();
 
-            if (t.IsEnum)
-                return new Dictionary<string, object> { { "$enum", v.ToString() }, { "type", t.FullName } };
-            if (v is string) return Protocol.Clip((string)v);
-            if (t.IsPrimitive) return v;
-            if (v is decimal) return (double)(decimal)v;
-            // A whitelist, not a walk: these four have no meaningful handle form and their ToString
-            // is a documented round-trippable format rather than an arbitrary override.
-            if (v is Guid || v is DateTime || v is TimeSpan)
-                return Convert.ToString(v, CultureInfo.InvariantCulture);
             if (v is Type) return new Dictionary<string, object> { { "$type", ((Type)v).FullName }, { "assembly", ((Type)v).Assembly.GetName().Name } };
 
-            object inlined;
-            if (TryInlineStruct(v, t, out inlined)) return inlined;
+            object scalar;
+            if (TryScalar(v, out scalar)) return scalar;
 
             Dictionary<string, object> dto = new Dictionary<string, object>
             {
@@ -985,6 +1070,27 @@ namespace Morgott.PPBridge
         }
 
         /// <summary>
+        /// Everything that projects to a value rather than to a handle: primitives, strings, enums,
+        /// the three round-trippable structs, and a small inlineable value type. Split out of
+        /// <see cref="Project"/> so a bulk read can ask "would this be a scalar?" WITHOUT minting a
+        /// handle for every answer of "no".
+        /// </summary>
+        private static bool TryScalar(object v, out object dto)
+        {
+            dto = null;
+            if (v == null) return false;
+            Type t = v.GetType();
+            if (t.IsEnum) { dto = new Dictionary<string, object> { { "$enum", v.ToString() }, { "type", t.FullName } }; return true; }
+            if (v is string) { dto = Protocol.Clip((string)v); return true; }
+            if (t.IsPrimitive) { dto = v; return true; }
+            if (v is decimal) { dto = (double)(decimal)v; return true; }
+            // A whitelist, not a walk: these three have no meaningful handle form and their ToString
+            // is a documented round-trippable format rather than an arbitrary override.
+            if (v is Guid || v is DateTime || v is TimeSpan) { dto = Convert.ToString(v, CultureInfo.InvariantCulture); return true; }
+            return TryInlineStruct(v, t, out dto);
+        }
+
+        /// <summary>
         /// A small value type whose public fields are all primitive is projected inline - that is
         /// how Vector3 comes back readable instead of as a handle. Fields are READ, never getters,
         /// and the shape is capped at four so nothing large sneaks through this door.
@@ -1000,6 +1106,57 @@ namespace Morgott.PPBridge
             foreach (FieldInfo f in fields) d[f.Name] = f.GetValue(v);
             dto = d;
             return true;
+        }
+
+        /// <summary>
+        /// A user-defined conversion, run ONLY because a caller named the destination type
+        /// (<c>call {"op":"get", …, "convertTo":"System.Single"}</c>). `wp.Value` on a
+        /// Base.Entities.Statuses.ModifiableValue is a float through an implicit operator, and this
+        /// endpoint hands back the struct - the conversion is how a reader gets the same number.
+        ///
+        /// It is OPT-IN because running an operator is running arbitrary user code: it may allocate,
+        /// mutate, log, block or throw, and projection's whole safety story is that it reads fields.
+        /// Found generically - <c>op_Implicit</c>/<c>op_Explicit</c> declared on EITHER the source or
+        /// the destination type, which is where C# looks - and no type is named here. Exactly one
+        /// candidate is an answer; two is a question this file refuses to settle.
+        /// </summary>
+        private static bool TryConvert(object v, Type dest, out object result, out string error)
+        {
+            result = null;
+            error = null;
+            if (v == null) { error = "the value is null, so there is nothing to convert"; return false; }
+            Type src = v.GetType();
+            if (dest.IsInstanceOfType(v)) { result = v; return true; }
+
+            List<MethodInfo> hits = new List<MethodInfo>();
+            foreach (Type owner in new Type[] { src, dest })
+                foreach (MethodInfo m in owner.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (m.Name != "op_Implicit" && m.Name != "op_Explicit") continue;
+                    if (m.ReturnType != dest) continue;
+                    ParameterInfo[] ps = m.GetParameters();
+                    if (ps.Length != 1 || !ps[0].ParameterType.IsAssignableFrom(src)) continue;
+                    if (!hits.Contains(m)) hits.Add(m);
+                }
+            if (hits.Count == 0)
+            {
+                error = "no user-defined conversion from " + src.FullName + " to " + dest.FullName +
+                        " is declared on either type";
+                return false;
+            }
+            if (hits.Count > 1)
+            {
+                error = hits.Count + " conversions from " + src.FullName + " to " + dest.FullName +
+                        " - name a different destination type";
+                return false;
+            }
+            try { result = hits[0].Invoke(null, new object[] { v }); return true; }
+            catch (Exception ex)
+            {
+                error = "the conversion operator threw: " + ex.GetType().Name + ": " +
+                        (ex.InnerException == null ? ex.Message : ex.InnerException.Message);
+                return false;
+            }
         }
 
         /// <summary>Count without enumerating: only from a collection that already knows its size.</summary>
@@ -1066,11 +1223,13 @@ namespace Morgott.PPBridge
             if (a == null) return Bad("args", "members needs {type} or {h}");
             Type type;
             string error;
-            string handle = (string)a["h"];
-            if (!string.IsNullOrEmpty(handle))
+            // Same target grammar as `inspect`: a handle, a root alias, or a def by name. Refusing
+            // "@def:X" here while inspect accepted it was a difference with no reason behind it.
+            JToken tok = a["h"];
+            if (tok != null && tok.Type != JTokenType.Null)
             {
                 object target;
-                if (!Resolve(handle, out target, out error)) return Bad("handle", error);
+                if (!ResolveTarget(tok, out target, out error)) return Bad("handle", error);
                 type = target.GetType();
             }
             else
@@ -1078,31 +1237,118 @@ namespace Morgott.PPBridge
                 type = ResolveType((string)a["type"], (string)a["assembly"], out error);
                 if (type == null) return Bad("type", error);
             }
-            return MembersOf(type, (string)a["filter"], null);
+            return MembersOf(type, a, null, null);
         }
 
         private static object Inspect(JObject a)
         {
-            string handle = a == null ? null : (string)a["h"];
+            JToken tok = a == null ? null : a["h"];
+            if (tok == null || tok.Type == JTokenType.Null)
+                return Bad("args", "inspect needs {h}: a handle \"h:e:i\", a root alias \"@tac\", or a def \"@def:<name|guid>\"");
             object target;
             string error;
-            if (!Resolve(handle, out target, out error)) return Bad("handle", error);
+            if (!ResolveTarget(tok, out target, out error)) return Bad("handle", error);
             // Project first: it refreshes the lease and gives back the same identity fields any
             // other result would carry, so `inspect` and a call result describe an object the same way.
-            return MembersOf(target.GetType(), a == null ? null : (string)a["filter"], Project(target));
+            return MembersOf(target.GetType(), a, Project(target), target);
         }
 
-        private static object MembersOf(Type type, string filter, object self)
+        /// <summary>
+        /// A member filter is a plain substring, or a glob when it carries <c>*</c>/<c>?</c> - so
+        /// "members matching *Coefficient*" is askable instead of guessable. Matched against the
+        /// whole formatted line for the member list, and against the bare name for a value dump.
+        /// </summary>
+        private static bool MemberMatches(string text, string filter)
         {
-            List<string> lines = new List<string>();
-            bool more = false;
-            Action<string> add = s =>
+            if (string.IsNullOrEmpty(filter)) return true;
+            if (filter.IndexOf('*') < 0 && filter.IndexOf('?') < 0)
+                return text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
+            Regex rx;
+            if (!globCache.TryGetValue(filter, out rx))
             {
-                if (more) return;
-                if (!string.IsNullOrEmpty(filter) && s.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) return;
-                if (lines.Count >= MaxMemberResults) { more = true; return; }
-                lines.Add(s);
-            };
+                rx = new Regex("^" + Regex.Escape(filter).Replace("\\*", ".*").Replace("\\?", ".") + "$",
+                               RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                globCache[filter] = rx;
+            }
+            return rx.IsMatch(text);
+        }
+
+        private static readonly Dictionary<string, Regex> globCache = new Dictionary<string, Regex>();
+
+        /// <summary>
+        /// EVERY instance field of one live object, each with an explicit status. This is what makes
+        /// two runs diffable: no handles (their ids differ every session), so the same object read
+        /// twice produces byte-identical JSON unless a value actually changed.
+        ///
+        /// NOTHING IS SILENTLY OMITTED. A field that is not a scalar is the marker
+        /// <c>{"$omitted":type[,count][,guid]}</c>, a null field is JSON <c>null</c>, and a read that
+        /// threw is <c>{"$error":exceptionType}</c> - because in a mechanical diff "unchanged" and
+        /// "not observed" must never look the same.
+        ///
+        /// ponytail: FIELDS only. A property is a getter and this file's whole projection contract is
+        /// that it never calls one; def data is fields anyway. The marker carries type, collection
+        /// count and def guid - all field reads - and no handle; `get` that member by name when you
+        /// want the object itself.
+        /// </summary>
+        private static object ValuesOf(Type type, object instance, string filter)
+        {
+            SortedDictionary<string, object> values = new SortedDictionary<string, object>(StringComparer.Ordinal);
+            foreach (FieldInfo f in Hierarchy(type, t => t.GetFields(AnyDeclared)))
+            {
+                if (f.IsStatic) continue;
+                // An auto-property's backing field is reported under the PROPERTY's name: it is the
+                // property's value, read without ever calling a getter, and "<name>k__BackingField"
+                // is not a name anyone can look up.
+                string name = f.Name;
+                int close = name.IndexOf(">k__BackingField", StringComparison.Ordinal);
+                if (name.Length > 0 && name[0] == '<' && close > 0) name = name.Substring(1, close - 1);
+                if (values.ContainsKey(name)) continue;   // a derived field shadows its base
+                if (!MemberMatches(name, filter)) continue;
+                object raw;
+                try { raw = f.GetValue(instance); }
+                catch (Exception ex) { values[name] = new Dictionary<string, object> { { "$error", ex.GetType().Name } }; continue; }
+                if (raw == null) { values[name] = null; continue; }
+                object dto;
+                // Asked BEFORE projecting: Project would mint a handle for every non-scalar field and
+                // fill the lease table with objects nobody asked for.
+                values[name] = TryScalar(raw, out dto) ? dto : Omitted(raw);
+            }
+            return values;
+        }
+
+        /// <summary>
+        /// The stand-in for a field the dump will not read: its type, plus the two identities that do
+        /// NOT move between sessions - a known collection size and a def's guid, both read as fields.
+        /// No handle, no getter, nothing session-scoped: this line has to be byte-identical on a
+        /// second run of an unchanged object.
+        /// </summary>
+        private static object Omitted(object v)
+        {
+            Dictionary<string, object> d = new Dictionary<string, object> { { "$omitted", v.GetType().FullName } };
+            int? count = CountOf(v);
+            if (count != null) d["count"] = count.Value;
+            FieldInfo guid = v.GetType().GetField("Guid");
+            if (guid != null && guid.FieldType == typeof(string))
+            {
+                try { d["guid"] = (string)guid.GetValue(v); } catch (Exception) { }
+            }
+            return d;
+        }
+
+        private static object MembersOf(Type type, JObject a, object self, object instance)
+        {
+            string filter = a == null ? null : (string)a["filter"];
+            int page = a == null || a["page"] == null ? 0 : (int)a["page"];
+            int size = a == null || a["pageSize"] == null ? MaxMemberResults : (int)a["pageSize"];
+            JToken valuesTok = a == null ? null : a["values"];
+            bool wantValues = valuesTok != null && valuesTok.Type == JTokenType.Boolean && (bool)valuesTok;
+            if (page < 0) return Bad("args", "page must be >= 0");
+            if (size < 1 || size > MaxMemberResults) return Bad("args", "pageSize must be 1.." + MaxMemberResults);
+            if (wantValues && instance == null)
+                return Bad("args", "values:true needs a live object - ask `inspect`, not `members`");
+
+            List<string> lines = new List<string>();
+            Action<string> add = s => { if (MemberMatches(s, filter)) lines.Add(s); };
 
             foreach (ConstructorInfo c in type.GetConstructors(AnyDeclared))
                 add("C " + Sig(c));
@@ -1119,17 +1365,42 @@ namespace Morgott.PPBridge
                 add("M " + Sig(m) + (m.DeclaringType == type ? "" : " <" + m.DeclaringType.Name + ">"));
             }
 
-            return new
+            // PAGED, not silently cut. The old cap dropped everything past 400 with a bare
+            // "truncated":true and no way to ask for the rest.
+            long skip = (long)page * size;
+            if (skip > lines.Count) skip = lines.Count;
+            List<string> shown = new List<string>();
+            for (int i = (int)skip; i < lines.Count && shown.Count < size; i++) shown.Add(lines[i]);
+            bool more = skip + shown.Count < lines.Count;
+
+            Dictionary<string, object> dto = new Dictionary<string, object>
             {
-                ok = true,
-                type = type.FullName,
-                assembly = type.Assembly.GetName().Name,
-                baseType = type.BaseType == null ? null : type.BaseType.FullName,
-                self,
-                count = lines.Count,
-                truncated = more,
-                members = lines.ToArray()
+                { "ok", true },
+                { "type", type.FullName },
+                { "assembly", type.Assembly.GetName().Name },
+                { "baseType", type.BaseType == null ? null : type.BaseType.FullName },
+                { "self", self },
+                { "count", shown.Count },
+                { "total", lines.Count },
+                { "page", page },
+                { "pageSize", size },
+                { "truncated", more },
+                { "hasMore", more }
             };
+            // The member LIST is the shape and the value dump is the data; asking for both is how a
+            // def dump hits the 64 KB cap and comes back as a refusal instead of a table.
+            if (wantValues)
+            {
+                // A value dump exists to be DIFFED, and `self` carried the two fields that make two
+                // identical reads differ anyway: a handle is minted fresh on every call, and an
+                // instanceId is new every session. The name and guid stay - they identify the object
+                // and they do not move.
+                Dictionary<string, object> id = self as Dictionary<string, object>;
+                if (id != null) { id.Remove("h"); id.Remove("instanceId"); }
+                dto["values"] = ValuesOf(type, instance, filter);
+            }
+            else dto["members"] = shown.ToArray();
+            return dto;
         }
 
         private static object Items(JObject a)

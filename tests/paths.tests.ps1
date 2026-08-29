@@ -145,6 +145,37 @@ Assert-Refusal 'no profile refuses and names -ProfileId' '-ProfileId' `
 Assert-Refusal 'two profiles refuse rather than pick one' '2 Steam profiles' `
     { Find-PPProfileId $profilesTwo }
 
+# Line 2 of the pin is the install's own profile, so a script no longer threads -ProfileId everywhere.
+$pinProf = Join-Path $scratch 'pin-profile.txt'
+$pinProfBad = Join-Path $scratch 'pin-profile-bad.txt'
+$pinProfMissing = Join-Path $scratch 'pin-profile-missing.txt'
+Set-Content -Path $pinProf        -Encoding utf8NoBOM -Value @($installA, '22222222222222222')
+Set-Content -Path $pinProfBad     -Encoding utf8NoBOM -Value @($installA, 'not-a-steam-id')
+Set-Content -Path $pinProfMissing -Encoding utf8NoBOM -Value @($installA, '99999999999999999')
+Assert-Value 'a second pin line is the profile that install writes' `
+    (Find-PPProfileId $profilesTwo $pinProf) '22222222222222222'
+Assert-Value 'a pin with only a path still resolves the install' `
+    (Get-PPPinnedInstall $pinProf) ((Get-Item $installA).FullName)
+Assert-Value 'no second line leaves profile discovery exactly as it was' `
+    ([string](Get-PPPinnedProfileId $pinGood $profilesOne)) ''
+Assert-Refusal 'a pinned profile that is not a SteamID64 refuses' 'not a SteamID64' `
+    { Find-PPProfileId $profilesTwo $pinProfBad }
+Assert-Refusal 'a pinned profile with no directory refuses instead of falling back' 'no directory under' `
+    { Find-PPProfileId $profilesTwo $pinProfMissing }
+
+# THE CROSS-INSTALL DEFECT: line 2 is line 1's profile. An explicit -PPRoot naming ANOTHER install
+# used to get the pinned profile anyway, which points the run at the wrong profile and reads exactly
+# like the mod not being activated.
+Assert-Value 'the pinned profile still applies to the install line 1 names' `
+    (Find-PPProfileId $profilesTwo $pinProf $installA) '22222222222222222'
+Assert-Refusal 'a pinned profile is NOT the default for a different install' '2 Steam profiles' `
+    { Find-PPProfileId $profilesTwo $pinProf $installB }
+
+$pinExtra = Join-Path $scratch 'pin-three-lines.txt'
+Set-Content -Path $pinExtra -Encoding utf8NoBOM -Value @($installA, '22222222222222222', 'D:\somewhere-else')
+Assert-Refusal 'a third pin line refuses instead of being ignored' 'at most two' `
+    { Get-PPPinLines $pinExtra }
+
 # deploy into a path that is not an install used to SUCCEED, creating Mods\PPBridge under it and
 # reading exactly like a working deploy.
 $deployOut = & pwsh -NoProfile -File (Join-Path $root 'deploy.ps1') -PPRoot $libNone 2>&1

@@ -53,7 +53,9 @@ $server = Start-Job -ArgumentList $pipe -ScriptBlock {
                  '{"status":"accepted","id":"c1","jobId":"j2"}',
                  '{"status":"running","jobId":"j2","id":"c1"}',
                  '{"status":"done","id":"c1","jobId":"j2","result":{"ok":true,"slow":true}}',
-                 '{"status":"done","id":"c1","jobId":"j3","result":{"ok":true,"echo":"one"}}')
+                 '{"status":"done","id":"c1","jobId":"j3","result":{"ok":true,"echo":"one"}}',
+                 '{"status":"done","id":"c1","jobId":"j4","result":{"ok":true,"row":1}}',
+                 '{"status":"done","id":"c1","jobId":"j5","result":{"ok":false,"error":"row 2 refused"}}')
     $seen = @()
     foreach ($r in $replies) {
         $s = New-Object IO.Pipes.NamedPipeServerStream $pipe, ([IO.Pipes.PipeDirection]::InOut)
@@ -73,6 +75,7 @@ try {
     $out1 = (& $cli connect state -PPRoot $fake 2>$null) -join "`n"
     $out2 = (& $cli connect console '{"command":"x","args":["y"]}' -PPRoot $fake -TimeoutSeconds 20 2>$null) -join "`n"
     $out3 = (& $cli connect ping '["one"]' -PPRoot $fake 2>$null) -join "`n"
+    $out4 = (& $cli connect multi '[{"id":"a","verb":"state"},{"id":"b","verb":"call","args":{"op":"get"}}]' -PPRoot $fake 2>$null) -join "`n"
     $sent = @(Receive-Job -Job $server -Wait)
 }
 finally {
@@ -99,9 +102,28 @@ Assert-Match 'the args array survives'       $sent[1] '"args"\s*:\s*\["y"\]'
 Assert-Match 'a single-element array stays an array' $sent[4] '"args"\s*:\s*\["one"\]'
 Assert-Match 'the poll asks for status'      $sent[2] '"verb"\s*:\s*"status"'
 Assert-Match 'the poll names the job it is waiting on' $sent[2] '"jobId"\s*:\s*"j2"'
-# Exactly five frames: a client that re-polled a job already reported done, or skipped the poll and
-# printed 'accepted', both change this count.
-Assert-Value 'the client sent one frame per exchange' $sent.Count '5'
+
+# ---------------------------------------------------------------- connect multi: N verbs, ONE process
+# One endpoint discovery, one token, two requests, and STILL exactly one JSON object on stdout.
+Assert-Value 'multi answers for every request'   (& { if ($out4) { [string](ConvertFrom-Json $out4).count } }) '2'
+Assert-Value 'multi keeps the caller ids'        (& { if ($out4) { ((ConvertFrom-Json $out4).results.id) -join ',' }}) 'a,b'
+Assert-Value 'multi unwraps each reply'          (& { if ($out4) { [string](ConvertFrom-Json $out4).results[0].reply.result.row } }) '1'
+# A refused row does NOT abort the run - an enumeration whose row 40 fails still wants rows 41-188.
+Assert-Value 'a refused request is a result, not an abort' (& { if ($out4) { [string](ConvertFrom-Json $out4).failed } }) '1'
+Assert-Value 'multi is not ok when a row refused' (& { if ($out4) { [string](ConvertFrom-Json $out4).ok } }) 'False'
+Assert-Match 'multi sends the same token on every frame' $sent[6] '"token"\s*:\s*"cafebabecafebabe"'
+Assert-Match 'multi sends the second verb'       $sent[6] '"verb"\s*:\s*"call"'
+
+# Exactly seven frames: a client that re-polled a job already reported done, or skipped the poll and
+# printed 'accepted', both change this count - as would a multi that re-discovered the endpoint.
+Assert-Value 'the client sent one frame per exchange' $sent.Count '7'
+
+# PREVALIDATION, and the server is already gone - which is the point. The whole array is checked
+# BEFORE row 1 is sent, so a bad row 2 must be refused by name even when there is no endpoint at all
+# to send row 1 to. If the check ever slides back into the execution loop this reads
+# 'no live PPBridge endpoint' instead, and row 1 will have been sent (and executed) first.
+$bad = (& $cli connect multi '[{"id":"a","verb":"state"},{"id":"b"}]' -PPRoot $fake 2>$null) -join "`n"
+Assert-Match 'a malformed row is caught before anything is sent' $bad "request 2 .*'verb'"
 
 # ---------------------------------------------------------------- the endpoint directory
 Assert-Value 'a dead endpoint file is swept' ($(if (Test-Path $stale) { 'survived' } else { 'swept' })) 'swept'

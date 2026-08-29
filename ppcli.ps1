@@ -33,8 +33,8 @@ param(
     # Which install to drive. Empty = discover it through Steam (paths.ps1); pass it explicitly when
     # you keep more than one install, which is the normal setup for automation.
     [string] $PPRoot = '',
-    # Which per-SteamID profile that install writes. Empty = the single profile directory under
-    # ...LocalLow\Snapshot Games Inc\Phoenix Point\Steam\, if there is exactly one.
+    # Which per-SteamID profile that install writes. Empty = line 2 of ppcli-install.txt, else the
+    # single profile directory under ...LocalLow\Snapshot Games Inc\Phoenix Point\Steam\.
     [string] $ProfileId = '',
     [int]    $TimeoutSeconds = 300,
     [int]    $InitTimeoutSeconds = 90,
@@ -96,9 +96,10 @@ function Invoke-Jobs([string] $jobsJson) {
     # in this install's profile: the game then launches perfectly, prints nothing, and the run reads
     # exactly like a crashed mod. Read-only - this file is never rewritten by hand, because
     # re-serialising it once shrank it 32991 -> 18996 B.
-    if (-not $ProfileId) { $ProfileId = Find-PPProfileId }
+    # -Install: the pinned profile is line 1's profile, so it applies only when THIS install is line 1.
+    if (-not $ProfileId) { $ProfileId = Find-PPProfileId -Install $PPRoot }
     $jopt = Join-Path $env:USERPROFILE "AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam\$ProfileId\Options.jopt"
-    if (-not (Test-Path $jopt)) { throw "REFUSED: no profile at $jopt - is -ProfileId ($ProfileId) right for $PPRoot?" }
+    if (-not (Test-Path $jopt)) { throw "REFUSED: no profile at $jopt - is -ProfileId ($ProfileId) right for ${PPRoot}?" }
     if (-not (Test-ModActivated $jopt 'com.morgott.PPBridge')) {
         throw ("REFUSED: 'com.morgott.PPBridge' is not in MOD_ACTIVATED in $jopt. " +
                "Launch $PPRoot once, enable PPBridge in the mod manager, quit, then re-run. " +
@@ -360,10 +361,59 @@ switch ($Command) {
     }
     'connect' {
         if (-not $Arg1) { throw "usage: ppcli.ps1 connect <verb> [json-args]" }
-        $args1 = $null
-        # -NoEnumerate: a top-level JSON array of args would otherwise arrive as a scalar.
-        if ($Arg2) { $args1 = ConvertFrom-Json $Arg2 -NoEnumerate }   # fails loudly here, not in the game
-        Send-Verb $Arg1 $args1
+        # N VERBS, ONE PROCESS. Not a game-side verb: the pipe is one request per connection either
+        # way, and what cost four minutes for a 188-call enumeration was PowerShell start-up, not the
+        # game (which answers in 17-60 ms). The endpoint is discovered ONCE and every request rides
+        # the same token; `batch` is untouched because it cold-launches by design.
+        if ($Arg1 -eq 'multi') {
+            if (-not $Arg2) { throw "usage: ppcli.ps1 connect multi '<json array of {id,verb,args}>' | @requests.json | -" }
+            $text = if ($Arg2 -eq '-') { [Console]::In.ReadToEnd() }
+                    elseif ($Arg2.StartsWith('@')) {
+                        $p = $Arg2.Substring(1)
+                        if (-not (Test-Path $p)) { throw "no request file at $p" }
+                        Get-Content -Raw $p
+                    }
+                    else { $Arg2 }
+            # -NoEnumerate: a one-request array would otherwise arrive as a scalar and be refused.
+            $reqs = ConvertFrom-Json $text -NoEnumerate -Depth 64
+            if ($reqs -isnot [array]) { throw "connect multi takes a JSON ARRAY of {id, verb, args} objects" }
+            # PREVALIDATE THE WHOLE ARRAY BEFORE ROW 1 IS SENT. The check used to live inside the
+            # execution loop, so a typo in row 2 was discovered only AFTER row 1 had already changed
+            # the game - and the thrown error then took row 1's result with it. This is sequential,
+            # never transactional: once sending starts, a transport failure still leaves every
+            # earlier row's side effects committed.
+            $n = 0
+            foreach ($r in $reqs) {
+                $n++
+                if ($r -isnot [psobject] -or $null -eq $r.PSObject.Properties['verb']) { throw "request $n is not an object with a 'verb'" }
+                if (-not $r.verb) { throw "request $n has no 'verb'" }
+            }
+
+            $ep = Get-Endpoint
+            Note "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol)) - $($reqs.Count) requests"
+
+            $out = New-Object Collections.Generic.List[object]
+            $failed = 0
+            $n = 0
+            foreach ($r in $reqs) {
+                $n++
+                $reply = Invoke-Verb $r.verb $r.args $ep
+                # A refusal is a RESULT here, never an abort: an enumeration whose row 40 fails still
+                # wants rows 41-188, and the per-row `ok` says which ones to distrust.
+                $bad = ($reply.status -ne 'done') -or
+                       ($null -ne $reply.result -and $null -ne $reply.result.PSObject.Properties['ok'] -and -not $reply.result.ok)
+                if ($bad) { $failed++ }
+                $out.Add([ordered]@{ id = ($r.id ? $r.id : "m$n"); ok = (-not $bad); reply = $reply })
+            }
+            [ordered]@{ ok = ($failed -eq 0); count = $out.Count; failed = $failed; results = $out } |
+                ConvertTo-Json -Depth 32 -Compress
+        }
+        else {
+            $args1 = $null
+            # -NoEnumerate: a top-level JSON array of args would otherwise arrive as a scalar.
+            if ($Arg2) { $args1 = ConvertFrom-Json $Arg2 -NoEnumerate }   # fails loudly here, not in the game
+            Send-Verb $Arg1 $args1
+        }
     }
     'plan' {
         if (-not $Arg1) { throw "usage: ppcli.ps1 plan <plan-file.json> ['{""var"":value,...}']" }

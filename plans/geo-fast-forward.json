@@ -1,0 +1,67 @@
+{
+  "//": "Age a live campaign: run the geoscape clock fast for a fixed span of REAL time, then put the clock back exactly as it was found.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\geo-fast-forward.json '{\"forMs\":60000}'",
+  "//lever": "GeoLevelController.Timing (GeoLevelController.cs:229) -> Base.Core.Timing.Scale (:79) and .Paused (:100). The console command `geo_speed` is the same lever with a x300 multiplier baked in (GeoLevelController.cs:1683); setting Scale directly is the same thing without the multiplier to guess at.",
+  "//real": "This is REAL simulation, not a calendar cosmetic. The hourly callback (GeoLevelController.cs:761) runs research, faction income, bases and manufacturing (:777-833), and at midnight the building/diplomacy/alien/mission daily pipeline (:779-781, :836-868).",
+  "//rate": "MEASURED: Scale 3600 unpaused for 28 real seconds advanced the campaign by 1 day 00:02:09.6. Budget about one in-game day per 28 real seconds.",
+  "//ceiling": "3600 IS THE CEILING THIS PROJECT HAS PROVED. Higher is not automatically faster-and-safe: the scheduler reads Timing.Now ONCE per pass and dequeues whatever is overdue (TimingScheduler.cs:425-441), and the hourly callback schedules its successor from the clock it woke up on (:833) - so a frame that jumps over several hours COLLAPSES them into one callback and can miss midnight entirely. Keep advancement under one in-game hour per rendered frame. A `geo_speed 30` (Scale 9000) trial lost its endpoint and is not evidence either way.",
+  "//restore": "The finally block restores BOTH Scale and Paused to whatever they were, so an aged campaign is handed back paused if it was found paused. Ageing is expensive; snapshot the result (`connect snapshot`) rather than paying for it twice.",
+
+  "timeoutMs": 900000,
+
+  "vars": {
+    "forMs": 30000,
+    "scale": 3600.0
+  },
+
+  "steps": [
+    { "id": "timing", "verb": "call", "save": "TIM",
+      "args": { "op": "get", "target": "@geo", "member": "Timing" } },
+    { "//": "Read BEFORE anything is written - these two values are the whole contract of the finally block.",
+      "id": "scale-was", "verb": "call", "save": "SCALE0",
+      "args": { "op": "get", "target": "${TIM.value.h}", "member": "Scale" } },
+    { "id": "paused-was", "verb": "call", "save": "PAUSED0",
+      "args": { "op": "get", "target": "${TIM.value.h}", "member": "Paused" } },
+    { "id": "elapsed-was", "verb": "call", "save": "EL0",
+      "args": { "op": "get", "target": "@geo", "member": "ElaspedTime" } },
+    { "//": "TimeUnit is a struct with one private TimeSpan (TimeUnit.cs:16), so it projects as a handle; its ToString is the round-trippable d.hh:mm:ss.",
+      "id": "elapsed-was-text", "verb": "call", "save": "EL0T",
+      "args": { "op": "invoke", "target": "${EL0.value.h}", "member": "ToString", "args": [] } },
+
+    { "id": "set-scale", "verb": "call",
+      "args": { "op": "set", "target": "${TIM.value.h}", "member": "Scale", "value": "${scale}" } },
+    { "id": "unpause", "verb": "call",
+      "args": { "op": "set", "target": "${TIM.value.h}", "member": "Paused", "value": false } },
+
+    { "//": "The only wait with no predicate. Game time is driven by real time through Scale, so 'run for this long' IS the fast-forward, and it is a SUCCESS when it elapses.",
+      "id": "run", "verb": "wait", "args": { "forMs": "${forMs}" } },
+
+    { "//": "Stop the clock BEFORE reading, or the two readings below straddle a moving target.",
+      "id": "pause", "verb": "call",
+      "args": { "op": "set", "target": "${TIM.value.h}", "member": "Paused", "value": true } },
+    { "id": "elapsed-now", "verb": "call", "save": "EL1",
+      "args": { "op": "get", "target": "@geo", "member": "ElaspedTime" } },
+    { "id": "elapsed-now-text", "verb": "call", "save": "EL1T",
+      "args": { "op": "invoke", "target": "${EL1.value.h}", "member": "ToString", "args": [] } }
+  ],
+
+  "finally": [
+    { "//": "MANDATORY. A plan that left Scale at 3600 hands a human a campaign running 3600x, which reads as the game having broken itself.",
+      "id": "restore-scale", "verb": "call",
+      "args": { "op": "set", "target": "${TIM.value.h}", "member": "Scale", "value": "${SCALE0.value}" } },
+    { "id": "restore-paused", "verb": "call",
+      "args": { "op": "set", "target": "${TIM.value.h}", "member": "Paused", "value": "${PAUSED0.value}" } },
+    { "id": "release-el0", "verb": "release", "args": { "h": "${EL0.value.h}" } },
+    { "id": "release-el1", "verb": "release", "args": { "h": "${EL1.value.h}" } },
+    { "id": "release-timing", "verb": "release", "args": { "h": "${TIM.value.h}" } }
+  ],
+
+  "output": {
+    "scaleUsed": "${scale}",
+    "scaleRestoredTo": "${SCALE0.value}",
+    "pausedRestoredTo": "${PAUSED0.value}",
+    "realMs": "${forMs}",
+    "elapsedBefore": "${EL0T.value}",
+    "elapsedAfter": "${EL1T.value}"
+  }
+}

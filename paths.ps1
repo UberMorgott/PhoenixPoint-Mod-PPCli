@@ -28,11 +28,38 @@ function Test-PPInstall([string] $Path) {
 
   -PinFile exists so the offline test can point at a fixture; nothing else passes it.
   ponytail: one path, one line. A machine that needs two automation installs names them with -PPRoot.
+
+  LINE 2 is OPTIONAL and is that install's SteamID64 profile. An install and the profile it writes
+  are one fact, not two: with only the path pinned, every helper script had to thread
+  `-ProfileId <SteamID64>` through every call. Absent, nothing changes - discovery still refuses
+  when a machine has more than one profile, which is the right answer to a question only the owner
+  can settle.
 #>
+function Get-PPPinLines([string] $PinFile) {
+    $pin = $PinFile ? $PinFile : (Join-Path $PSScriptRoot 'ppcli-install.txt')
+    if (-not (Test-Path $pin)) { return @() }
+    $lines = @(Get-Content $pin | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+    # A third line is not a comment and not a fact this file knows - silently ignoring it is how a
+    # pin that means something else than its owner thinks goes unnoticed.
+    if ($lines.Count -gt 2) {
+        throw ("REFUSED: $pin has $($lines.Count) content lines; it holds at most two - line 1 = install path, " +
+               'line 2 = that install profile id (SteamID64). Blank lines and # comments are ignored.')
+    }
+    return $lines
+}
+
+# Two paths naming the same folder, without requiring either to exist: an explicit -PPRoot is compared
+# against pin line 1 before line 2 may be believed.
+function Test-PPSamePath([string] $a, [string] $b) {
+    if (-not $a -or -not $b) { return $false }
+    return ([IO.Path]::GetFullPath($a).TrimEnd('\', '/') -ieq [IO.Path]::GetFullPath($b).TrimEnd('\', '/'))
+}
+
 function Get-PPPinnedInstall([string] $PinFile) {
     $pin = $PinFile ? $PinFile : (Join-Path $PSScriptRoot 'ppcli-install.txt')
-    if (-not (Test-Path $pin)) { return $null }
-    $path = (Get-Content -Raw $pin).Trim()
+    $lines = @(Get-PPPinLines $PinFile)
+    if ($lines.Count -eq 0) { return $null }
+    $path = $lines[0]
     # A stale pin must not silently fall back to discovery - that is the incident this file prevents.
     if (-not (Test-PPInstall $path)) {
         throw ("REFUSED: $pin pins '$path', which has no PhoenixPointWin64.exe in it. Point it at the " +
@@ -130,9 +157,43 @@ function Test-ModActivated([string] $JoptPath, [string] $ModId) {
     return (@($arr.ObjectValue.CollectionValues) -contains $ModId)
 }
 
-function Find-PPProfileId([string] $Dir) {
+<#
+  The profile the pinned install writes, if its owner said so on line 2 of ppcli-install.txt.
+  A pin that names a profile the machine does not have is a REFUSAL, never a silent fall back to
+  discovery - the same rule the install pin follows, for the same reason.
+#>
+function Get-PPPinnedProfileId([string] $PinFile, [string] $Dir) {
+    $lines = @(Get-PPPinLines $PinFile)
+    if ($lines.Count -lt 2) { return $null }
+    $id = $lines[1]
+    $pin = $PinFile ? $PinFile : (Join-Path $PSScriptRoot 'ppcli-install.txt')
+    if ($id -notmatch '^\d{7,20}$') {
+        throw "REFUSED: line 2 of $pin is '$id', which is not a SteamID64. Line 1 = install path, line 2 = profile id."
+    }
+    $profileRoot = $Dir ? $Dir : (Join-Path $env:USERPROFILE 'AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam')
+    if (-not (Test-Path (Join-Path $profileRoot $id))) {
+        throw "REFUSED: $pin pins profile '$id', which has no directory under $profileRoot. Fix line 2 or delete it."
+    }
+    return $id
+}
+
+function Find-PPProfileId([string] $Dir, [string] $PinFile, [string] $Install) {
     # $dir would BE $Dir - see the note in Find-PPInstall.
     $profileRoot = $Dir ? $Dir : (Join-Path $env:USERPROFILE 'AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Steam')
+    # Only when this is a real run (no fixture directory) or the caller named a pin file: a test
+    # pointed at a fixture must not read the machine's own pin - see the note in Find-PPInstall.
+    if ($PinFile -or -not $Dir) {
+        # LINE 2 IS LINE 1's PROFILE, never a machine-wide default. An explicit -PPRoot selecting a
+        # DIFFERENT install must fall back to ordinary discovery (and to its refusal), or this pin
+        # silently points the run at the other install's profile - which reads exactly like the mod
+        # not being activated. Compared as paths, not validated: a stale line 1 is Get-PPPinnedInstall's
+        # refusal to make, and only when the pin is actually being used to choose the install.
+        $line1 = @(Get-PPPinLines $PinFile)[0]
+        if (-not $Install -or (Test-PPSamePath $Install $line1)) {
+            $pinned = Get-PPPinnedProfileId $PinFile $Dir
+            if ($pinned) { return $pinned }
+        }
+    }
     $ids = @()
     if (Test-Path $profileRoot) { $ids = @(Get-ChildItem -Directory $profileRoot -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) }
     if ($ids.Count -eq 1) { return $ids[0] }

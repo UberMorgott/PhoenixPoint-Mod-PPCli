@@ -1,0 +1,89 @@
+{
+  "//": "Kill ONE named actor through the game's own terminal damage path, leaving IsDead=true and a clean mission state.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\kill-actor.json '{\"actorName\":\"Crabman_10\"}'",
+  "//why": "The old workaround (GetAbility<DieAbility> then Activate(null)) throws inside RagdollDieAbility.Die: that ability casts action.Param to a DeathReport and reads its ImpactForce (RagdollDieAbility.cs:68-69), and null is not a DeathReport. It is NOT a missing damage source. ApplyDamage builds the report itself - ApplyDamageInternal stores LastDamageSource and CurrentDamageForce BEFORE health crosses zero (TacticalActorBase.cs:844-875), so Die() has a complete non-null report to hand the ability (:616-628).",
+  "//lever": "TacticalActorBase.ApplyDamage(DamageResult) (TacticalActorBase.cs:950) - the same terminal call a real bullet makes (DamageAccumulation.ApplyAddedDamage_Default, DamageAccumulation.cs:565-626). The argument shape is the game's own `damage` cheat, TacConsoleGameplay.cs:340-347.",
+  "//name": "actorName is the actor's GameObject name, i.e. the `name` field every handle DTO carries and what `console list_actors` prints. DamageResult is a STRUCT, so `op:new` refuses it (a struct has no reflected constructor) - Activator.CreateInstance boxes a default one and `set` mutates that box.",
+  "//source": "DamageResult.Source is a plain `object` (DamageResult.cs:39); the game's own cheat passes the IConsole. Default here is the target itself, which the log calls an \"unknown source\" - an attribution note, not a broken death. Pass `source` (a handle) to attribute the kill to a killer.",
+  "//god_mode": "MUST be false or ApplyDamageInternal returns at :846 before the health change and nothing dies. Not touched here: this plan does not own that variable.",
+
+  "timeoutMs": 30000,
+
+  "vars": {
+    "actorName": "",
+    "healthDamage": 99999.0,
+    "damageType": "Projectile_StandardDamageTypeEffectDef",
+    "impactForce": 200.0,
+    "source": ""
+  },
+
+  "steps": [
+    { "//": "GameObject.Find only sees ACTIVE objects, which is exactly the set that can be killed.",
+      "id": "find-object", "verb": "call", "save": "GO",
+      "args": { "op": "invoke", "type": "UnityEngine.GameObject", "member": "Find", "args": [ "${actorName}" ] } },
+    { "//": "A missing name gives GameObject.Find null, and every later step would then fail on a null target with a reflection message instead of the real reason. Say the real reason here.",
+      "id": "assert-object", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "type": "UnityEngine.GameObject", "member": "Find", "args": [ "${actorName}" ] } } },
+
+    { "//": "The actor component hangs under the named GameObject, not always on it.",
+      "id": "find-actor", "verb": "call", "save": "ACTOR",
+      "args": { "op": "invoke", "target": "${GO.value.h}", "member": "GetComponentInChildren",
+                "typeArgs": [ "PhoenixPoint.Tactical.Entities.TacticalActorBase" ], "args": [] } },
+    { "id": "assert-actor", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "invoke", "target": "${GO.value.h}", "member": "GetComponentInChildren",
+                          "typeArgs": [ "PhoenixPoint.Tactical.Entities.TacticalActorBase" ], "args": [] } } },
+
+    { "id": "was-dead", "verb": "call", "save": "BEFORE",
+      "args": { "op": "get", "target": "${ACTOR.value.h}", "member": "IsDead" } },
+    { "id": "origin", "verb": "call", "save": "POS",
+      "args": { "op": "get", "target": "${ACTOR.value.h}", "member": "Pos" } },
+
+    { "id": "make-damage", "verb": "call", "save": "DR",
+      "args": { "op": "invoke", "type": "System.Activator", "member": "CreateInstance",
+                "args": [ { "$type": "PhoenixPoint.Tactical.Entities.DamageResult" } ],
+                "sig": [ "System.Type" ] } },
+    { "id": "health-damage", "verb": "call",
+      "args": { "op": "set", "target": "${DR.value.h}", "member": "HealthDamage", "value": "${healthDamage}" } },
+    { "//": "OPTIONAL, and proved optional: the same kill runs clean with damageType set to \"\" (the step is then skipped) exactly as it does with Projectile_Standard. It is set by default only because every real hit sets it - LastDamageType is copied from it (TacticalActorBase.cs:869) and the view's damage notification reads it (:886-895), so a kill with a damage type looks to the rest of the game like a kill and not like a cheat. Set it to \"\" to reproduce the game's own `damage` cheat, which leaves it null.",
+      "id": "damage-type", "verb": "call", "if": "${damageType}",
+      "args": { "op": "set", "target": "${DR.value.h}", "member": "DamageTypeDef", "value": { "$def": "${damageType}" } } },
+    { "id": "armor-damage", "verb": "call",
+      "args": { "op": "set", "target": "${DR.value.h}", "member": "ArmorDamage", "value": 0.0 } },
+    { "//": "The force the DeathReport copies out and RagdollDieAbility reads. Zero here is a ragdoll that never moves.",
+      "id": "impact-force", "verb": "call",
+      "args": { "op": "set", "target": "${DR.value.h}", "member": "ImpactForce", "value": { "$v3": [ 0.0, "${impactForce}", 0.0 ] } } },
+    { "id": "damage-origin", "verb": "call",
+      "args": { "op": "set", "target": "${DR.value.h}", "member": "DamageOrigin",
+                "value": { "$v3": [ "${POS.value.x}", "${POS.value.y}", "${POS.value.z}" ] } } },
+    { "id": "source-self", "verb": "call", "unless": "${source}",
+      "args": { "op": "set", "target": "${DR.value.h}", "member": "Source", "value": { "$h": "${ACTOR.value.h}" } } },
+    { "id": "source-given", "verb": "call", "if": "${source}",
+      "args": { "op": "set", "target": "${DR.value.h}", "member": "Source", "value": { "$h": "${source}" } } },
+
+    { "id": "apply-damage", "verb": "call",
+      "args": { "op": "invoke", "target": "${ACTOR.value.h}", "member": "ApplyDamage", "args": [ { "$h": "${DR.value.h}" } ] } },
+
+    { "//": "Death runs through Die() and the ragdoll ability on later frames, so the proof is a wait, not a read.",
+      "id": "assert-dead", "verb": "wait",
+      "args": { "timeoutMs": 10000,
+                "call": { "op": "get", "target": "${ACTOR.value.h}", "member": "IsDead" } } },
+    { "id": "killer", "verb": "call", "save": "KILLER",
+      "args": { "op": "get", "target": "${ACTOR.value.h}", "member": "LastDamageSource" } }
+  ],
+
+  "finally": [
+    { "id": "release-damage", "verb": "release", "args": { "h": "${DR.value.h}" } },
+    { "id": "release-object", "verb": "release", "args": { "h": "${GO.value.h}" } },
+    { "id": "release-killer", "verb": "release", "args": { "h": "${KILLER.value.h}" } },
+    { "id": "release-actor", "verb": "release", "args": { "h": "${ACTOR.value.h}" } }
+  ],
+
+  "output": {
+    "actor": "${actorName}",
+    "wasDead": "${BEFORE.value}",
+    "isDead": true,
+    "killer": "${KILLER.value}"
+  }
+}

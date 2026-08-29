@@ -64,6 +64,27 @@ the default for every command; `deploy` then REFUSES any other install and names
 `-PPRoot '<path>' -Force` line that proceeds anyway. No such file, no change: a machine with one
 install behaves exactly as before.
 
+**The pin carries the profile too, on line 2.** An install and the SteamID64 profile it writes are
+one fact, and pinning only the path meant every helper script had to thread `-ProfileId` through
+every call. `ppcli-install.txt` is therefore up to two lines — path, then optionally the profile id
+(`#` comments and blank lines ignored):
+
+```
+D:\PP-Instance2
+76561198000000000
+```
+
+An explicit `-ProfileId` still wins. A second line that is not a SteamID64, or that names a profile
+with no directory under `...\Phoenix Point\Steam\`, is REFUSED rather than quietly falling back to
+discovery — the same rule the path line follows. With no second line the multi-profile refusal is
+unchanged, because which of two Steam accounts an install writes is a question only its owner can
+settle. A **third** content line is refused too: the file holds exactly these two facts.
+
+Line 2 is **line 1's** profile, not a machine-wide default: an explicit `-PPRoot` naming a *different*
+install falls back to ordinary discovery and to its refusal. Otherwise the pin would quietly hand the
+other install's profile to the preflight, which fails looking exactly like a mod that was never
+activated.
+
 ## SECURITY — what this actually opens
 
 Plainly, so you can decide for yourself:
@@ -119,6 +140,8 @@ nor from an administrator or SYSTEM.
 .\ppcli.ps1 connect wait '{"ready":true,"timeoutMs":120000}' # frame-polled, never blocks Update()
 .\ppcli.ps1 connect snapshot '{"name":"before"}'            # save, and wait for it to finish
 .\ppcli.ps1 connect var '{"name":"ai_enabled","value":"false"}'
+.\ppcli.ps1 connect multi '[{"id":"a","verb":"state"},{"id":"b","verb":"call","args":{"op":"get","target":"@tac","member":"TurnNumber"}}]'
+.\ppcli.ps1 connect multi @requests.json                    # or `-` to read the array from stdin
 .\ppcli.ps1 plan .\plans\spawn-at-coordinate.json '{"x":11.5,"z":-4.5,"faction":"alien"}'
 .\ppcli.ps1 plan .\plans\aim-and-run.json '{"x":-0.5,"y":0.0,"z":14.5,"command":"info","cmdArgs":[]}'
 .\ppcli.ps1 index                                           # ONE TIME: write catalog\defs.ndjson
@@ -188,7 +211,7 @@ whether or not its assertions held.
 | Param | Default | Notes |
 |---|---|---|
 | `-PPRoot` | *`ppcli-install.txt`, else discovered through Steam* | install to drive; required when you keep more than one and have not pinned one |
-| `-ProfileId` | *the single profile directory* | Steam profile id; required when you have more than one |
+| `-ProfileId` | *line 2 of `ppcli-install.txt`, else the single profile directory* | Steam profile id; required when you have more than one and have not pinned one |
 | `-Force` | off | `deploy` only: write into an install other than the pinned one |
 | `-TimeoutSeconds` | `300` | the client's own ceiling per job; at it the job is CANCELLED and the answer is `{"status":"timeout","cancelled":true}` |
 | `-InitTimeoutSeconds` | `90` | `run` only: how long to wait for the mod's init line |
@@ -222,8 +245,8 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 | `call` | `{op, assembly, type, target, member, sig, typeArgs, args, value}` | `{ok, value}` / `{ok, void}` / `{ok, code, error}` |
 | `roots` | — | `{ok, roots{alias: value}}` — late-bound entrances |
 | `types` | `{pattern, assembly}` | matching type full names, capped at 100 |
-| `members` | `{type\|h, assembly, filter}` | declared + inherited members, capped at 400 |
-| `inspect` | `{h, filter}` | the handle's identity **and** its type's members |
+| `members` | `{type\|h, assembly, filter, page, pageSize}` | declared + inherited members. `filter` is a substring, or a **glob** when it carries `*`/`?` (`"*Coefficient*"`), matched against the whole formatted line. **Paged**, 400 per page: `total` is the full filtered count and `hasMore`/`truncated` say there is another page — nothing is silently cut any more |
+| `inspect` | `{h, filter, page, pageSize, values}` | the handle's identity **and** its type's members. `h` takes a handle, a root alias (`"@tac"`) or a def by name (`"@def:NJ_Heavy_LeftArm_BodyPartDef"`). `values:true` returns a `values` dump instead of the member list — see below |
 | `items` | `{h, page, pageSize}` | one explicitly requested page of a collection — **`page` is 0-based** (`Reflect.cs:1112,1117`); `page:1` on a 14-item collection with `pageSize:20` returns nothing |
 | `release` | `{h}` | `{ok, released, held}` |
 | `find` | `{query, type, assembly}` | defs by name substring or exact guid → `{name, guid, type}`, capped at 100 |
@@ -235,9 +258,43 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 | `plan` | `{plan:{steps,finally,vars,output}, vars}` | one request, one structured result, per-step trace |
 | `status` / `cancel` | `{jobId}` | job-table questions, answered on the pipe thread |
 
+### `connect multi` — N verbs, ONE process
+
+Not a game-side verb, and **not a persistent connection**: the server holds ONE pipe instance and
+serves exactly ONE request before disposing that connection (`src\PipeServer.cs:163-167`, `:257-266`),
+so `multi` is a client-side loop that opens a fresh short connection per request — N of them — over
+one discovered endpoint and token. Nothing is reused but the *process*, and that is the whole 20x:
+the game answers in 17-60 ms, so what cost **four minutes** for a 188-call enumeration was PowerShell
+process start-up, 188 times over. Holding the pipe open instead would monopolise the single server
+instance and lock out `status`/`cancel` for no gain. `multi` takes the same JSON array
+`batch` takes (`[{id, verb, args}, …]`), inline, from `@file.json`, or from stdin with `-`, and
+returns one object:
+
+```json
+{"ok":false,"count":188,"failed":1,"results":[{"id":"m1","ok":true,"reply":{…}}, …]}
+```
+
+A refusal inside is a **result, not an abort** — an enumeration whose row 40 fails still wants rows
+41-188, and each row's own `ok` says which to distrust. `batch` is untouched: it cold-launches a game
+by design and remains the answer when nothing is running.
+
+**The whole array is validated before row 1 is sent.** The `verb` check used to live inside the
+execution loop, so a typo in row 2 was discovered only *after* row 1 had already changed the game —
+and the throw then took row 1's result with it. It is still **sequential, not transactional**: once
+sending starts, a transport failure leaves every earlier row's side effects committed, and the
+partial `results` array is what says how far it got.
+
 `batch` is implemented and shipped: one cold launch for a JSON array of `{id,verb,args}`. The gameplay
 verbs an earlier spec wanted in C# (`mission.load`, `spawn.actor`, `res.set`, `equip`) ship instead as
 parameterised files in `plans\` — see **Plan library** below.
+
+### A game method that throws names its own frames
+
+`{"ok":false,"code":"threw"}` carries an `at` array of the top **6** stack frames beside the message.
+`NullReferenceException: Object reference not set to an instance of an object` is the commonest
+failure a reflection driver provokes and the one exception whose message says nothing at all — the
+frames are the entire answer to "which member of the game blew up". Clipped and capped like every
+other string in a reply, so a deep stack can never become the response.
 
 ## P2 — the `call` reflection runtime
 
@@ -252,12 +309,47 @@ overload scorer, the handle table and the DTO caps with no game running.
 | `op` | Needs | Notes |
 |---|---|---|
 | `invoke` | `type` (static) or `target` (instance) + `member` | `sig` / `typeArgs` when asked for |
-| `get` | `member` | property or field, static or instance |
+| `get` | `member` | property or field, static or instance. Optional `convertTo`: run a user-defined conversion to that type ON REQUEST and answer with `converted` alongside the untouched `value` |
 | `set` | `member` + `value` | refuses readonly/const/write-only |
 | `new` | `type` + `args` | constructors are never inherited |
 
-`target` is a handle (`"h:3:17"`), a **root alias** (`"@tac"`, re-resolved live every request), or
-`{"$h":"h:3:17"}`. An explicit `type` alongside a target is a filter for reaching a base-class member.
+`target` is a handle (`"h:3:17"`), a **root alias** (`"@tac"`, re-resolved live every request), a
+**def by name or guid** (`"@def:Crabman_Gunner_TacCharacterDef"`), or `{"$h":"h:3:17"}` /
+`{"$def":"..."}`. An explicit `type` alongside a target is a filter for reaching a base-class member.
+
+### A def in ONE round trip, and a dump two runs can diff
+
+Reading one def field used to cost three calls — `find` for the guid, `GetDef` for a handle, then the
+member. `@def:` collapses that: the name is matched EXACTLY (case-insensitive) after the guid lookup
+misses, and two defs of one name refuse rather than pick. `{"$def":"..."}` takes a name the same way,
+so every plan that hard-codes a guid can hold a name instead.
+
+```powershell
+.\ppcli.ps1 connect call    '{"op":"get","target":"@def:NJ_Heavy_LeftArm_BodyPartDef","member":"Armor"}'
+.\ppcli.ps1 connect inspect '{"h":"@def:NJ_Heavy_LeftArm_BodyPartDef","values":true}'
+.\ppcli.ps1 connect inspect '{"h":"@def:Frenzy_StatusDef","values":true,"filter":"*Coefficient*"}'
+```
+
+`values:true` reads **every instance field** and returns them name-sorted, ordinally. It is the A/B
+tool: no handles are minted, so the same def read in two sessions produces byte-identical JSON unless
+a value actually changed — `diff` settles "did this mod change that def" instead of eyeballing two
+transcripts. **Nothing is silently dropped**, because in a mechanical diff "unchanged" and "not
+observed" must not look the same. Every field is one of:
+
+| shape | meaning |
+|---|---|
+| a scalar | the value, projected as anywhere else |
+| `null` | the field IS null — said out loud, not omitted |
+| `{"$omitted":type[,"count"][,"guid"]}` | a non-scalar: its type, a collection size when the object knows one, and a def's `Guid` — all field reads, no handle, nothing session-scoped |
+| `{"$error":exceptionType}` | the read threw; the field exists and its value is unknown |
+
+Its one deliberate ceiling: **fields only.** A property is a getter and the projection contract here
+is that it never calls one; def data is fields anyway. An auto-property's backing field is reported
+under the property's name, because that value is read without running any code. Use `get` on the
+member by name when you want the object behind an `$omitted`.
+
+The **member list is omitted** when `values:true`: the list is the shape and the dump is the data,
+and asking for both is how a def hits the 64 KB cap and comes back a refusal instead of a table.
 
 ### Argument envelopes
 
@@ -290,7 +382,14 @@ Projection **never** calls an arbitrary `ToString`, **never** enumerates an `IEn
 walks properties or getters and **never** serialises fields automatically:
 
 - primitives, strings (clipped at 2000 chars), enums (`{"$enum","type"}`) → inline
-- a value type with 1–4 public primitive fields (i.e. `Vector3`) → inline as `{type,x,y,z}`
+- a value type with 1–4 public primitive fields (i.e. `Vector3`) → inline as `{type,x,y,z}`. A
+  user-defined conversion is **never** run for you: `op_Implicit` can allocate, mutate, log or throw,
+  and projection's whole safety story is that it reads fields. Ask for it — `call {"op":"get", …,
+  "convertTo":"System.Single"}` — and the reply carries `value` (the struct, unchanged) plus
+  `convertedTo` and `converted`. Live: `Willpower.Value` on a soldier projects
+  `{BaseValue:0, ModificationValue:6}` and converts to `6`, which is `ModifiableValue.EndValue`.
+  The operator is found generically on the source **or** destination type (where C# looks); zero
+  candidates and two candidates are both refusals, never a guess
 - a collection → `{h, type, count, collection:true}`; `count` only when the object already knows it
 - anything else → `{h, type, name, instanceId, guid}` — the last three read only from
   `UnityEngine.Object`/`BaseDef`, which is a whitelist, not a walk
@@ -305,8 +404,25 @@ Re-read from the game on **every** request; a cached root would keep answering w
 of a mission that ended. Every accessor is the game's own — `GameUtl.cs:38,51,101`,
 `TacticalLevelController.cs:155,161,165`, `TacticalView.cs:148,189`, `GeoLevelController.cs:209`.
 
-`game` · `phoenix` · `defs` · `level` · `geo` · `tac` · `map` · `view` · `faction` · `selected`.
+`game` · `phoenix` · `defs` · `level` · `geo` · `tac` · `map` · `view` · `viewstate` · `modules` ·
+`faction` · `selected`.
 A wrong-phase alias answers `null` (not "no such alias") — those are different answers.
+
+**The three UI roots are phase-aware**, so the same alias names the open screen in either phase:
+
+| alias | tactical | geoscape |
+|---|---|---|
+| `view` | `TacticalLevelController.View` (`:165`) | `GeoLevelController.View` (`GeoLevelController.cs:101`) |
+| `viewstate` | `TacticalView.CurrentState` (`TacticalView.cs:171`) | `GeoscapeView.CurrentViewState` (`GeoscapeView.cs:193`) |
+| `modules` | `TacticalView.TacticalModules` (`:114`) | `GeoscapeView.GeoscapeModules` (`GeoscapeView.cs:62`) |
+
+`view` was tactical-only until 2026-08-29, which left the entire geoscape UI unnameable — "is this
+patch's screen actually rendering what it claims" was an unanswerable question, and a runtime audit
+had to mark nine such checks UNTESTABLE. It is a re-read, never a cached handle, for a reason beyond
+the usual one: **entering a UI state the stack has already popped wedges the game**, and a saved
+`viewstate` handle is exactly how somebody ends up doing that. Change screens with the view's own
+public `To*State()` / `ResetViewState()` methods (`GeoscapeView.cs:414-759`), which choose their own
+`StateStackAction`; do not push onto the private `_statesStack` by hand.
 
 ### Spawn an actor at a CHOSEN COORDINATE — VERIFIED IN-GAME 2026-08-25
 
@@ -628,7 +744,15 @@ or raise `-TimeoutSeconds` when a long plan is intended.
 | `{"ready":true}` | `TacticalLevelController.HasAnyTurnStarted` (`:237,631,715`) |
 | `{"phase":"tactical"}` | the `state` verb's own phase |
 | `{"call":{...}}` | any `call`, truthy result, re-evaluated each poll |
+| `{"forMs":N}` | **no predicate**: yield N ms of REAL time, then succeed |
 | `+ "not": true` | the same predicate, inverted |
+
+**`forMs` is the one wait with nothing to poll**, and it exists for fast-forwarding. Geoscape time is
+driven by real time through `Base.Core.Timing.Scale` (`Timing.cs:79`), so "let the campaign run for
+30 s at Scale 3600" IS the operation — and there is no single fixed-argument `call` that turns "the
+campaign clock has passed T" into a bool, because a step's arguments are substituted once. Written as
+a predicate that never comes true it would report every healthy fast-forward as a step **failure**;
+`forMs` reports it as the success it is. It is still bounded by `MaxWaitMs` and still cancellable.
 
 **`not` exists because half the interesting predicates are the wrong way round** — "the ability has
 STOPPED executing", "the queue is EMPTY". The `System.Object.Equals(false, x)` idiom the spawn plans
@@ -843,7 +967,10 @@ no way to re-parameterise it without a rebuild. **`src\` was not touched.**
 | `situation.json` | all of `spawn-squad` + `snapshot` `restoreFirst` `itemName` `equip` | restore a snapshot, place a composition at a distance with equipment, summarise the result — preloads the actor def **and** the item def (`give` does the same, `TacConsoleGameplay.cs:770`) | **PARTLY** — spawn+equip body verified, restore head not, preload verification pending |
 | `set-resources.json` | `resource` `amount` | apply a resource **delta** through the shipped cheat path, wallet read back before/after | **VERIFIED** 2026-08-28 — Materials **1000 → 1500** on a campaign `start-campaign.json` began from the main menu |
 | `unlock-research.json` | `researchId` | `CompleteResearch` (rewards + cascade), state read back before/after | **VERIFIED** 2026-08-28 — `PX_Alien_Fishman_ResearchDef` went **Hidden → Completed**, same campaign |
-| `aim-and-run.json` | `x` `y` `z` `aimOffsetY` `command` `cmdArgs` | freeze input, aim the cursor, run a cursor-scoped command, restore | verified 2026-08-25 (P3) |
+| `aim-and-run.json` | `x` `y` `z` `aimOffsetY` `command` `cmdArgs` `requireActor` | freeze input, aim the cursor, run a cursor-scoped command, restore | verified 2026-08-25 (P3); `requireActor` **VERIFIED** 2026-08-29 both ways — refused on a point 32 m off the camera centre, green on `Facehugger_9` at every offset 0.2–0.8 |
+| `kill-actor.json` | `actorName` `healthDamage` `damageType` `impactForce` `source` | kill ONE named actor through `TacticalActorBase.ApplyDamage`, the same terminal call a bullet makes | **VERIFIED** 2026-08-29 — `Crabman_8` and `Crabman_10` went `IsDead false → true`, ragdoll completed, no exception, with and without a `damageType` |
+| `end-mission.json` | `outcome` `settleMs` | `win`/`lose` → `GameOver()` → battle summary → `GoToGeoscape()` → the campaign | **VERIFIED** 2026-08-29 — from a REAL `GeoScavengingMission`: `UIStateBattleSummary` → `phase:"geoscape"` → `UIStateGeoModal` with `ModalType.GeoScavengeOutcome`, 13.6 s |
+| `geo-fast-forward.json` | `forMs` `scale` | run the geoscape clock at `Scale` for a span of real time, then put `Scale` **and** `Paused` back | **VERIFIED** 2026-08-29 — 30 real s at Scale 3600 advanced `ElaspedTime` `00:00:00 → 1.00:01:37.2`, both values restored |
 | `weapon-test.json` | `shooter` `weaponDef` `enemyDef` `distance` `tolerance` `shots` `attackType` `setSpread` `spread` `seed` `targetHp` | equip a weapon, put an enemy at a distance, fire N shots, report every impact point + dispersion | **VERIFIED** 2026-08-28 — see *The weapon bench* below |
 
 ```powershell
@@ -855,6 +982,9 @@ no way to re-parameterise it without a rebuild. **`src\` was not touched.**
 .\ppcli.ps1 plan .\plans\situation.json       '{"restoreFirst":false,"count":3,"minDistance":9.0,"maxDistance":11.0}'
 .\ppcli.ps1 plan .\plans\set-resources.json   '{"resource":"Materials","amount":500}'
 .\ppcli.ps1 plan .\plans\unlock-research.json '{"researchId":"PX_Alien_Fishman_ResearchDef"}'
+.\ppcli.ps1 plan .\plans\kill-actor.json      '{"actorName":"Crabman_10"}'
+.\ppcli.ps1 plan .\plans\end-mission.json     '{"outcome":"win"}'
+.\ppcli.ps1 plan .\plans\geo-fast-forward.json '{"forMs":60000}'
 ```
 
 ### `spawn-squad.json` — measured, not asserted

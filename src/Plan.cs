@@ -187,6 +187,9 @@ namespace Morgott.PPBridge
         ///   - {"phase":"..."} is the `state` verb's own phase field.
         ///   - {"call":{...}} is any `call` at all, re-evaluated each poll; that is how "the actor is
         ///     InPlay" is expressed (ActorComponent.cs:114, ActorSpawner.cs:23).
+        ///   - {"forMs":N} has no predicate at all: it yields N ms of REAL time and then SUCCEEDS.
+        ///     The one thing the other three cannot say, and the fast-forward primitive - see the
+        ///     `duration` field for why a never-true predicate is not an acceptable substitute.
         ///
         /// A predicate that ERRORS counts as "not true yet" on purpose: @tac is null while a mission
         /// loads, and the whole reason to wait is that the thing is not there yet. The last error is
@@ -198,18 +201,26 @@ namespace Morgott.PPBridge
             private readonly string phase;        // or a phase name to match against `state`
             private readonly int every;
             private readonly bool negate;
+            /// <summary>The one wait with NO predicate: yield for a fixed span of real time and then
+            /// SUCCEED. It exists because game time is driven by real time through Base.Core.Timing
+            /// (Timing.cs:79,100) - "let the geoscape run for 30 s at Scale 3600" is the fast-forward
+            /// primitive, and there is no single fixed-argument call that turns "the campaign clock
+            /// has passed T" into a bool. Spelling it as a predicate that never comes true would
+            /// report a healthy fast-forward as a step FAILURE.</summary>
+            private readonly bool duration;
             private readonly DateTime started = DateTime.UtcNow;
             private readonly DateTime deadline;
             private int countdown, polls;
             private string lastError;
             private JToken last;
 
-            private Waiter(JObject call, string phase, int every, int timeoutMs, bool negate)
+            private Waiter(JObject call, string phase, int every, int timeoutMs, bool negate, bool duration = false)
             {
                 this.call = call;
                 this.phase = phase;
                 this.every = every;
                 this.negate = negate;
+                this.duration = duration;
                 countdown = 1;                     // evaluate on the very first tick
                 deadline = started.AddMilliseconds(timeoutMs);
             }
@@ -225,6 +236,10 @@ namespace Morgott.PPBridge
                 // arguments are substituted once when the step starts - so it cannot be done at all.
                 bool negate = Truthy(a["not"]);
 
+                JToken forMs = a["forMs"];
+                if (forMs != null && forMs.Type == JTokenType.Integer)
+                    return new Waiter(null, null, every, Clamp(forMs, DefaultWaitMs, 1, MaxWaitMs), negate: false, duration: true);
+
                 string phase = (string)a["phase"];
                 if (!string.IsNullOrEmpty(phase)) return new Waiter(null, phase, every, timeout, negate);
 
@@ -236,13 +251,20 @@ namespace Morgott.PPBridge
                 if (call != null) return new Waiter(call, null, every, timeout, negate);
 
                 return Bad("args", "wait needs one of {\"ready\":true} (HasAnyTurnStarted), " +
-                                   "{\"phase\":\"tactical|geoscape|menu|loading\"} or {\"call\":{...}}");
+                                   "{\"phase\":\"tactical|geoscape|menu|loading\"}, {\"call\":{...}} " +
+                                   "or {\"forMs\":N} (yield N ms of REAL time, then succeed)");
             }
 
             public object Tick(bool cancelled)
             {
                 int ms = (int)(DateTime.UtcNow - started).TotalMilliseconds;
                 if (cancelled) return new { ok = false, code = "cancelled", error = "cancelled after " + ms + " ms", waitedMs = ms, polls };
+
+                if (duration)
+                {
+                    if (DateTime.UtcNow <= deadline) return null;
+                    return new { ok = true, waitedMs = ms, polls, negated = false, value = (JToken)null };
+                }
 
                 if (--countdown <= 0)
                 {

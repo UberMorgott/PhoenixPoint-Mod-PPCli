@@ -13,7 +13,8 @@
     "z": 0.0,
     "aimOffsetY": 0.05,
     "command": "info",
-    "cmdArgs": []
+    "cmdArgs": [],
+    "requireActor": false
   },
 
   "steps": [
@@ -46,6 +47,13 @@
       "id": "confirm-aim", "verb": "call", "save": "AIMED",
       "args": { "op": "get", "target": "@view", "member": "CursorScreenPos" } },
 
+    { "//": "WHAT THE CURSOR ACTUALLY RESOLVED TO. Every actor-scoped console command starts with the same view.SelectAtCursor() (TacConsoleGameplay.cs:48-54, :528, :565) and NREs inside the game's own code when it hands back Actor=null - which is exactly what an unrevealed or unrendered target does (TacticalView.cs:701-760). Set requireActor for `remove`/`damage`/`heal`/`set_hp`/`apply_status` and the plan refuses HERE, naming the aim, instead of the game throwing three lines later. Left off by default because `blast`, `tp` and `info` legitimately aim at bare floor.",
+      "id": "cursor-selection", "verb": "call", "save": "SEL", "if": "${requireActor}",
+      "args": { "op": "invoke", "target": "@view", "member": "SelectAtCursor", "args": [] } },
+    { "id": "assert-actor", "verb": "wait", "if": "${requireActor}",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "get", "target": "${SEL.value.h}", "member": "Actor" } } },
+
     { "//": "The command itself. Note `vars` returns ok:false alongside valid output; onError stays fail for everything else.",
       "id": "run-command", "verb": "console", "save": "OUT",
       "args": { "command": "${command}", "args": "${cmdArgs}" } }
@@ -55,6 +63,7 @@
     { "//": "MANDATORY. A plan that disabled input and never restored it leaves the game unusable to a human, so this runs on success, on failure, on the deadline and on cancel.",
       "id": "restore-input", "verb": "call",
       "args": { "op": "set", "target": "${BEH.value.h}", "member": "InputDisabled", "value": false } },
+    { "id": "release-selection", "verb": "release", "if": "${requireActor}", "args": { "h": "${SEL.value.h}" } },
     { "id": "release-director", "verb": "release", "args": { "h": "${DIR.value.h}" } },
     { "id": "release-manager", "verb": "release", "args": { "h": "${MGR.value.h}" } },
     { "id": "release-camera", "verb": "release", "args": { "h": "${CAM.value.h}" } },

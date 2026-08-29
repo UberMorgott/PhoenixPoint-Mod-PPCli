@@ -1,0 +1,50 @@
+{
+  "//": "End the mission the way the game ends it, and LEAVE it: win -> battle summary -> geoscape. The other half of start-mission, which only ever got you IN.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\end-mission.json '{\"outcome\":\"win\"}'",
+  "//lever": "The console `win`/`lose` sets every faction's outcome and then calls TacticalLevelController.GameOver() (TacticalLevelController.cs:1051-1065, :1092-1108). GameOver raises wrapping-up, runs cleanup/XP/telemetry, raises GameOverEvent and tears the mod hooks down (:825-843) - materially better than assigning IsGameOver or calling FinishLevel by hand, both of which skip all of that.",
+  "//exit": "The callback that actually leaves tactical is private TacticalView.GoToGeoscape(), which builds a TacticalGameResult and calls PhoenixGame.FinishLevel (TacticalView.cs:1112-1120, PhoenixGame.cs:262-265). It is the battle-summary button's own callback (:1109); invoking it is pressing that button, not a shortcut past it.",
+  "//rewards": "The post-mission REWARD screen only exists if tactical was entered from a REAL GeoMission: the launch stores _missionToComplete (GeoLevelController.cs:1412-1466) and the return calls _missionToComplete.Complete(result) then resets the view with LastMission/CompletedMissionResult (:683-713). After a synthetic `start-mission` this plan still leaves tactical correctly, but there is no campaign to come back to and no reward modal - `viewstate` will say so.",
+  "//check": "The proof of arrival is `@viewstate`, which is re-read from the live view every call (PPBridgeMain.Roots). Read it, do not hold a handle to it: entering a UI state the stack has already popped is how this project has broken the geoscape before.",
+
+  "timeoutMs": 300000,
+
+  "vars": {
+    "outcome": "win",
+    "settleMs": 2000
+  },
+
+  "steps": [
+    { "id": "in-tactical", "verb": "wait", "args": { "phase": "tactical", "timeoutMs": 5000 } },
+    { "id": "mission", "verb": "state", "save": "BEFORE" },
+
+    { "//": "`win` or `lose`. Both end through GameOver(); which one only changes the factions' recorded outcome.",
+      "id": "finish", "verb": "console", "save": "OUT",
+      "args": { "command": "${outcome}", "args": [] } },
+    { "id": "game-over", "verb": "wait",
+      "args": { "timeoutMs": 30000, "call": { "op": "get", "target": "@tac", "member": "IsGameOver" } } },
+
+    { "//": "GameOver switches the view to its own end state on a LATER frame - a battle summary, or a cutscene that ends in the same callback (TacticalView.cs:1100-1109). Let it land before pressing its button.",
+      "id": "settle", "verb": "wait", "args": { "forMs": "${settleMs}" } },
+    { "id": "end-state", "verb": "roots", "save": "ENDSTATE" },
+
+    { "id": "leave", "verb": "call",
+      "args": { "op": "invoke", "target": "@view", "member": "GoToGeoscape", "args": [] } },
+    { "//": "Unloading tactical and loading the geoscape is a scene change, so every handle taken above is from a dead epoch by the time this returns. Nothing below reads one.",
+      "id": "left", "verb": "wait", "args": { "phase": "geoscape", "timeoutMs": 180000 } },
+    { "id": "arrived", "verb": "state", "save": "AFTER" },
+    { "id": "arrived-view", "verb": "roots", "save": "AFTERVIEW" }
+  ],
+
+  "finally": [
+    { "//": "MANDATORY, and deliberately EMPTY of restores: this plan ends a mission on purpose and there is nothing to put back. What it does owe is a final honest reading of where the game now is, taken even when the plan failed half way.",
+      "id": "where", "verb": "state", "save": "WHERE" }
+  ],
+
+  "output": {
+    "outcome": "${outcome}",
+    "mission": "${BEFORE.scene}",
+    "endState": "${ENDSTATE.roots.viewstate.type}",
+    "phase": "${AFTER.phase}",
+    "geoState": "${AFTERVIEW.roots.viewstate.type}"
+  }
+}

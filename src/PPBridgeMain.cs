@@ -225,6 +225,17 @@ namespace Morgott.PPBridge
         ///   tac.View.SelectedActor                          - TacticalView.cs:148
         /// A null root is reported as null rather than omitted: "wrong phase" and "no such alias"
         /// are different answers.
+        ///
+        /// THE UI ROOTS. `view` used to be tactical-only, which left the whole geoscape UI unnameable
+        /// and made "does this screen render what the patch claims" an unanswerable question. It now
+        /// answers with whichever view the CURRENT phase owns:
+        ///   geo.View                                        - GeoLevelController.cs:101
+        ///   tac.View.TacticalModules / geo.View.GeoscapeModules - TacticalView.cs:114, GeoscapeView.cs:62
+        ///   tac.View.CurrentState / geo.View.CurrentViewState   - TacticalView.cs:171, GeoscapeView.cs:193
+        /// `viewstate` is the TOP of the state stack, re-read here every call - a saved handle to a
+        /// UI state is a handle to a state the stack may already have popped, and ENTERING a popped
+        /// state is how this project has broken the UI before. To CHANGE state, invoke the view's own
+        /// public To*State() method (GeoscapeView.cs:414-759); never push onto _statesStack by hand.
         /// </summary>
         private static Dictionary<string, object> Roots()
         {
@@ -240,10 +251,27 @@ namespace Morgott.PPBridge
                 { "geo", geo },
                 { "tac", tac },
                 { "map", tac == null ? null : tac.Map },
-                { "view", tac == null ? null : (object)tac.View },
+                { "view", tac != null ? (object)tac.View : (geo == null ? null : (object)geo.View) },
+                { "viewstate", ViewState(tac, geo) },
+                { "modules", tac != null ? (tac.View == null ? null : (object)tac.View.TacticalModules)
+                                         : (geo == null || geo.View == null ? null : (object)geo.View.GeoscapeModules) },
                 { "faction", geo != null ? geo.ViewerFaction : (tac == null || tac.View == null ? null : (object)tac.View.ViewerFaction) },
                 { "selected", tac == null || tac.View == null ? null : tac.View.SelectedActor }
             };
+        }
+
+        /// <summary>The open screen, from whichever view this phase owns. Tactical's CurrentState
+        /// getter already guards its own empty stack (TacticalView.cs:171-178); the geoscape's
+        /// CurrentViewState does not, so an empty stack there is a null root and not a throw.</summary>
+        private static object ViewState(TacticalLevelController tac, GeoLevelController geo)
+        {
+            try
+            {
+                if (tac != null) return tac.View == null ? null : (object)tac.View.CurrentState;
+                if (geo != null) return geo.View == null ? null : (object)geo.View.CurrentViewState;
+            }
+            catch (Exception) { /* a view mid-teardown has no state; that is null, not a failed roots */ }
+            return null;
         }
 
         /// <summary>
