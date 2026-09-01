@@ -35,6 +35,12 @@ Start-Process "<install>\PhoenixPointWin64.exe" -ArgumentList '-mods'
 .\ppcli.ps1 index                                    # ONE TIME, AFTER the gate: builds catalog\defs.ndjson
 ```
 
+**`deploy` refuses an install whose game process is running.** Checked BEFORE build and copy; the
+running process's executable PATH is matched against the resolved target `-PPRoot` (never by process
+name), so a game running in the other install does not block the deploy. The live process cannot
+hot-swap the DLL, so every result measured after such a deploy would be stale. `-AllowRunning`
+downgrades the refusal to a warning and proceeds — for staging files for the next launch.
+
 The build needs the reference assemblies the game already ships — `<install>\ModSDK\Assembly-CSharp.dll`,
 `<install>\ModSDK\0Harmony.dll` and `<install>\PhoenixPointWin64_Data\Managed\` — plus a .NET SDK and
 the .NET Framework 4.7.2 targeting pack. `deploy.ps1` passes `/p:PPRoot=` for you; a stripped copy
@@ -213,6 +219,7 @@ whether or not its assertions held.
 | `-PPRoot` | *`ppcli-install.txt`, else discovered through Steam* | install to drive; required when you keep more than one and have not pinned one |
 | `-ProfileId` | *line 2 of `ppcli-install.txt`, else the single profile directory* | Steam profile id; required when you have more than one and have not pinned one |
 | `-Force` | off | `deploy` only: write into an install other than the pinned one |
+| `-AllowRunning` | off | `deploy` only: downgrade the running-process refusal to a warning and proceed (stage files for the next launch). Separate from `-Force`, which overrides the pinned install |
 | `-TimeoutSeconds` | `300` | the client's own ceiling per job; at it the job is CANCELLED and the answer is `{"status":"timeout","cancelled":true}` |
 | `-InitTimeoutSeconds` | `90` | `run` only: how long to wait for the mod's init line |
 | `-PipeTimeoutSeconds` | `30` | ceiling on ONE pipe frame — a wedged game, not a slow one |
@@ -233,6 +240,14 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 
 - **Exactly ONE compact JSON object on stdout.** Everything else on stderr.
 - `stdout | ConvertFrom-Json` always works — no decoration, no banner.
+- **Exit code 1 for any `ok:false` or non-`done` reply.** Previously the client printed the refusal
+  and exited 0, so a caller reading the result payload got `$null` from a process that reported
+  success — an error was indistinguishable from an empty result. Absence and refusal are now
+  distinguishable by both the payload shape and `$LASTEXITCODE`.
+- Worked example: `connect items '{"pageSize":400}'` → `{"ok":false,"code":"args","error":"pageSize
+  must be 1..200"}` with NO `items` key at all and exit 1. `pageSize` is deliberately NOT clamped: a
+  silent clamp makes a caller that pages by its requested size skip records. An empty-but-valid sweep
+  returns `"items":[]` with exit 0.
 
 ## Verbs
 
@@ -256,6 +271,7 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 | `snapshot` | `{name, timeoutMs}` | `{ok, name}` — waits for the save to actually finish |
 | `restore` | `{name}` | `{ok, issued:"load_game", note}` — issue only; load has no completion signal |
 | `plan` | `{plan:{steps,finally,vars,output}, vars}` | one request, one structured result, per-step trace |
+| `screenshot` | `{path?}` | capture at end of frame (Unity `WaitForEndOfFrame` + `ScreenCapture.CaptureScreenshotAsTexture` + `EncodeToPNG`); returns `{ok, path, width, height, bytes}`. Default output: `<ModDir>\ppcli-shot-<utc yyyyMMdd-HHmmss>-<seq>.png`. Optional `path` must be absolute (a relative path is refused: *screenshot's "path" must be an absolute path*); parent directory is created. Returns an `IPending` — the JSON response is never sent before the PNG bytes are on disk. Timeout 10 s → `code:"timeout"`; a cancelled or timed-out capture never writes the file |
 | `status` / `cancel` | `{jobId}` | job-table questions, answered on the pipe thread |
 
 ### `connect multi` — N verbs, ONE process

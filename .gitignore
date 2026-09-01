@@ -13,3 +13,7 @@ ppcli-install.txt
 # Game and client runtime droppings
 Console.log
 *.tmp
+ppcli-shot-*.png
+
+# Serena's per-project cache, written by whatever agent last navigated this repo
+.serena/

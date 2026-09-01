@@ -26,6 +26,11 @@ Everything below is run from the PPCLI directory against a **running** game. Dep
    on the machine this was measured on). A game YOU launched by hand is fine — the mod publishes its
    endpoint whenever it is enabled and armed, whoever started the process. Redeploy after every mod
    edit (`.\ppcli.ps1 deploy`) or the game silently runs the old DLL.
+   **`deploy` refuses an install whose game process is running** — checked before build and copy,
+   matched by the running process's executable path against the resolved `-PPRoot` (never by process
+   name), so a game running in the OTHER install does not block the deploy. `-AllowRunning` downgrades
+   the refusal to a warning and proceeds (for staging files for the next launch); `-Force` is a
+   separate switch that overrides the pinned install, not the running-process guard.
    **`run` and `batch` are not free**: they restore `Options.jopt` byte-exact afterwards, discarding
    any setting changed during that session, and they delete the run's log before launching.
    `connect` does neither.
@@ -315,6 +320,8 @@ A fresh `start-campaign` geoscape has no faction wars, no completed research and
 | save a named state | `.\ppcli.ps1 connect snapshot '{"name":"before"}'` |
 | reload it (issue-only — follow with a `wait`) | `.\ppcli.ps1 connect restore '{"name":"before"}'` |
 | wait for a mission to be playable | `.\ppcli.ps1 connect wait '{"ready":true,"timeoutMs":120000}'` |
+| capture a screenshot of the game | `.\ppcli.ps1 connect screenshot` |
+| …to a chosen path (must be absolute) | `.\ppcli.ps1 connect screenshot '{"path":"C:\\Temp\\shot.png"}'` |
 | a long plan is still running | `.\ppcli.ps1 connect status '{"jobId":"JOB_ID"}'` |
 | MANY calls at once (ONE PowerShell process, N short connections) | `.\ppcli.ps1 connect multi '[{"id":"a","verb":"state"},{"id":"b","verb":"roots"}]'` |
 | …the same, from a generated file | `.\ppcli.ps1 connect multi @requests.json` |
@@ -354,6 +361,10 @@ including a private one, and says which kind it is.
 
 ## When it goes wrong
 
+- **`REFUSED: '<path>' has Phoenix Point running (PID <n>)`** — `deploy` detected a game process
+  whose executable lives inside the target install. The live process cannot hot-swap the DLL, so
+  every result measured after such a deploy would be stale. Pass `-AllowRunning` to downgrade to a
+  warning and stage the files for the next launch. Nothing is built and nothing is written otherwise.
 - **`REFUSED: no live PPBridge endpoint`** — no game is running with the endpoint armed. `run`
   cold-launches one; the mod also has to be ticked on once in that install's profile, and
   `Mods\PPBridge\ppcli-enabled` has to exist (see rule 1).
@@ -376,7 +387,12 @@ including a private one, and says which kind it is.
   `.\ppcli.ps1 deploy` and start over.
 
 Output contract: **exactly one compact JSON object on stdout**, everything else on stderr, so
-`.\ppcli.ps1 connect state | ConvertFrom-Json` always works.
+`.\ppcli.ps1 connect state | ConvertFrom-Json` always works. **Exit code 1 for any `ok:false` or
+non-`done` reply** — a refusal is now distinguishable from an empty-but-valid result by both the
+payload shape and `$LASTEXITCODE`. Example: `connect items '{"pageSize":400}'` exits 1 with
+`{"ok":false,"code":"args","error":"pageSize must be 1..200"}` and no `items` key at all;
+`pageSize` is deliberately not clamped (a silent clamp makes a caller that pages by its requested
+size skip records). An empty-but-valid sweep returns `"items":[]` with exit 0.
 
 Every `file:line` on this page points into Phoenix Point's own **decompiled** assembly, which this
 repository does not ship. Timings and figures quoted here were measured on the development machine;
