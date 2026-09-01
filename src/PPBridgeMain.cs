@@ -84,6 +84,7 @@ namespace Morgott.PPBridge
             Protocol.UnityAlive = o => !(o is UnityEngine.Object) || (UnityEngine.Object)o != null;
             Protocol.SnapshotStart = StartSnapshot;
             Protocol.SaveExists = SaveExists;
+            Protocol.CaptureRun = Screenshot.Run;
             // The `observe` verb's game half. Installing the delegate does NOT install the patch -
             // that happens on `observe {"action":"start"}` and is undone on stop, so a session that
             // never measures a shot carries no Harmony patch at all.
@@ -133,6 +134,7 @@ namespace Morgott.PPBridge
             Protocol.UnityAlive = null;
             Protocol.SnapshotStart = null;
             Protocol.SaveExists = null;
+            Protocol.CaptureRun = null;
             log = null;
         }
 

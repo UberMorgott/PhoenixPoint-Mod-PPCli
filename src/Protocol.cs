@@ -111,6 +111,13 @@ namespace Morgott.PPBridge
         internal static Func<string, bool> SaveExists;
 
         /// <summary>
+        /// Installed by the game half: args -> an <see cref="IPending"/> that captures the framebuffer
+        /// at end of frame, or an error DTO. A delegate for the usual reason - Screenshot.cs names
+        /// Unity types and this file must stay compilable with no game at all.
+        /// </summary>
+        internal static Func<JObject, object> CaptureRun;
+
+        /// <summary>
         /// Never throws: a bad file yields an empty list and a named reason, because a parse failure
         /// that reached the caller as an exception would kill the run instead of reporting it.
         /// </summary>
@@ -168,6 +175,10 @@ namespace Morgott.PPBridge
                         return Console(job.Args);
                     case "var":
                         return Var(job.Args);
+                    // Cross-frame: the result is an IPending the Runner ticks until the PNG is on
+                    // disk, so the client never gets a path to a file that is not written yet.
+                    case "screenshot":
+                        return CaptureRun == null ? Fail("no screenshot capture installed") : CaptureRun(job.Args);
                     default:
                         // P2's verbs live in Reflect and P3's in Plan; both answer null for anything
                         // they do not own, so an unknown verb still gets the same refusal it always

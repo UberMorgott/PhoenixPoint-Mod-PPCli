@@ -63,6 +63,16 @@
       <HintPath>$(UnityManaged)\UnityEngine.PhysicsModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- `screenshot`: ScreenCapture.CaptureScreenshotAsTexture lives in its own module, and
+         ImageConversion.EncodeToPNG in another. -->
+    <Reference Include="UnityEngine.ScreenCaptureModule">
+      <HintPath>$(UnityManaged)\UnityEngine.ScreenCaptureModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(UnityManaged)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- The game already ships Newtonsoft, so the wire format costs no new dependency and no
          hand-written parser. Private=false: it is already in the install. -->
     <Reference Include="Newtonsoft.Json">
