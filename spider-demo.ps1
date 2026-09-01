@@ -88,7 +88,8 @@ function Plan([string] $file, $vars) {
     if (-not $r.ok) { throw "plan $file failed at '$($r.step)': $($r.error)" }
     $r.output
 }
-function Items($h, $n = 20) { (PP 'items' @{ h = $h; pageSize = $n }).items }
+# A refusal has no `items` key, so returning `.items` blind turns "bad argument" into "found nothing".
+function Items($h, $n = 20) { $r = PP 'items' @{ h = $h; pageSize = $n }; if (-not $r.ok) { throw "items failed: $($r.error)" }; $r.items }
 function V3($p) { @{ '$v3' = @($p.x, $p.y, $p.z) } }
 function Dist($a, $b) { [Math]::Sqrt([Math]::Pow($a.x - $b.x, 2) + [Math]::Pow($a.z - $b.z, 2)) }
 function Assert([bool] $ok, [string] $what) { if (-not $ok) { throw "FAILED: $what" }; Say "  PASS $what" }

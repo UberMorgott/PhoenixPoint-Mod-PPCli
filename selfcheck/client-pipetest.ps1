@@ -55,7 +55,8 @@ $server = Start-Job -ArgumentList $pipe -ScriptBlock {
                  '{"status":"done","id":"c1","jobId":"j2","result":{"ok":true,"slow":true}}',
                  '{"status":"done","id":"c1","jobId":"j3","result":{"ok":true,"echo":"one"}}',
                  '{"status":"done","id":"c1","jobId":"j4","result":{"ok":true,"row":1}}',
-                 '{"status":"done","id":"c1","jobId":"j5","result":{"ok":false,"error":"row 2 refused"}}')
+                 '{"status":"done","id":"c1","jobId":"j5","result":{"ok":false,"error":"row 2 refused"}}',
+                 '{"status":"done","id":"c1","jobId":"j6","result":{"ok":false,"code":"args","error":"pageSize must be 1..200"}}')
     $seen = @()
     foreach ($r in $replies) {
         $s = New-Object IO.Pipes.NamedPipeServerStream $pipe, ([IO.Pipes.PipeDirection]::InOut)
@@ -76,7 +77,9 @@ try {
     $out2 = (& $cli connect console '{"command":"x","args":["y"]}' -PPRoot $fake -TimeoutSeconds 20 2>$null) -join "`n"
     $out3 = (& $cli connect ping '["one"]' -PPRoot $fake 2>$null) -join "`n"
     $out4 = (& $cli connect multi '[{"id":"a","verb":"state"},{"id":"b","verb":"call","args":{"op":"get"}}]' -PPRoot $fake 2>$null) -join "`n"
-    $sent = @(Receive-Job -Job $server -Wait)
+    $out5  = (& $cli connect items '{"h":"h1","pageSize":400}' -PPRoot $fake 2>$null) -join "`n"
+    $code5 = $LASTEXITCODE
+    $sent  = @(Receive-Job -Job $server -Wait)
 }
 finally {
     Remove-Job $server -Force -ErrorAction SilentlyContinue
@@ -116,7 +119,16 @@ Assert-Match 'multi sends the second verb'       $sent[6] '"verb"\s*:\s*"call"'
 
 # Exactly seven frames: a client that re-polled a job already reported done, or skipped the poll and
 # printed 'accepted', both change this count - as would a multi that re-discovered the endpoint.
-Assert-Value 'the client sent one frame per exchange' $sent.Count '7'
+Assert-Value 'the client sent one frame per exchange' $sent.Count '8'
+
+# ---------------------------------------------------------------- a refusal is not an empty page
+# `items` refuses an out-of-range pageSize with ok:false and NO `items` key. Read off a process that
+# exited 0, that is indistinguishable from a sweep that found nothing - which is how a bad argument
+# once got read as "the asset is not loaded".
+Assert-Value 'a refused verb carries no items key'  (& { if ($out5) { if ((ConvertFrom-Json $out5).result.PSObject.Properties['items']) { 'present' } else { 'absent' } } }) 'absent'
+Assert-Value 'a refused verb keeps its code'        (& { if ($out5) { [string](ConvertFrom-Json $out5).result.code } }) 'args'
+Assert-Value 'the refusal names the cap'            (& { if ($out5) { [string](ConvertFrom-Json $out5).result.error } }) 'pageSize must be 1..200'
+Assert-Value 'a refused verb exits non-zero'        $code5 '1'
 
 # PREVALIDATION, and the server is already gone - which is the point. The whole array is checked
 # BEFORE row 1 is sent, so a bad row 2 must be refused by name even when there is no endpoint at all

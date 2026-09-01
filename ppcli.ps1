@@ -50,6 +50,8 @@ param(
     [switch] $IgnoreLogFaults,
     # `deploy` only: write into an install other than the one `ppcli-install.txt` pins.
     [switch] $Force,
+    # `deploy` only: stage the files even though that install has the game running.
+    [switch] $AllowRunning,
     # Where `index` writes the def catalog and where `plan` resolves names from. A parameter only so
     # the offline tests can point at a fixture; nothing else has a reason to move it.
     [string] $CatalogDir = (Join-Path $PSScriptRoot 'catalog')
@@ -311,7 +313,15 @@ function Invoke-Verb([string] $verb, $verbArgs, $ep) {
 # The one JSON object on stdout. Every caller that wants the answer instead of the printout uses
 # Invoke-Verb directly, so the contract lives in exactly one place.
 function Send-Verb([string] $verb, $verbArgs) {
-    (Invoke-Verb $verb $verbArgs $null) | ConvertTo-Json -Depth 32 -Compress
+    $reply = Invoke-Verb $verb $verbArgs $null
+    $reply | ConvertTo-Json -Depth 32 -Compress
+    # A REFUSAL MUST NOT EXIT 0. `items` with an out-of-range pageSize answers ok:false with no
+    # `items` key at all - and `$r.result.items` off that is $null, which reads exactly like a page
+    # that swept and found nothing. The exit code is what tells a bad argument from a real absence.
+    if (($reply.status -ne 'done') -or
+        ($null -ne $reply.result -and $null -ne $reply.result.PSObject.Properties['ok'] -and -not $reply.result.ok)) {
+        $script:AnyRefusal = $true
+    }
 }
 
 # Caller vars that name a def are normalised locally BEFORE the plan is sent; the plan JSON itself
@@ -338,7 +348,7 @@ $jobsPath = Join-Path $modDir 'ppcli-jobs.json'
 
 switch ($Command) {
     'deploy' {
-        & (Join-Path $PSScriptRoot 'deploy.ps1') -PPRoot $PPRoot -Force:$Force | ForEach-Object { Note $_ }
+        & (Join-Path $PSScriptRoot 'deploy.ps1') -PPRoot $PPRoot -Force:$Force -AllowRunning:$AllowRunning | ForEach-Object { Note $_ }
         [ordered]@{ ok = $true; deployed = (Join-Path $modDir 'PPBridge.dll') } | ConvertTo-Json -Compress
     }
     'run' {
@@ -402,7 +412,7 @@ switch ($Command) {
                 # wants rows 41-188, and the per-row `ok` says which ones to distrust.
                 $bad = ($reply.status -ne 'done') -or
                        ($null -ne $reply.result -and $null -ne $reply.result.PSObject.Properties['ok'] -and -not $reply.result.ok)
-                if ($bad) { $failed++ }
+                if ($bad) { $failed++; $script:AnyRefusal = $true }
                 $out.Add([ordered]@{ id = ($r.id ? $r.id : "m$n"); ok = (-not $bad); reply = $reply })
             }
             [ordered]@{ ok = ($failed -eq 0); count = $out.Count; failed = $failed; results = $out } |
@@ -534,7 +544,9 @@ switch ($Command) {
 # EVERY verb ends with an exit code, not just the ones that happen to run a native command. `index`
 # used to leave $LASTEXITCODE at whatever the caller's previous command set, so a wrapper's
 # `if ($LASTEXITCODE -ne 0)` read a stale value and called a good index a failure - or worse.
-exit 0
+# A verb that PRINTED a refusal exits non-zero too: the JSON says ok:false, and a caller that reads
+# one field off it would otherwise never learn the answer was a refusal and not a finding.
+exit ($script:AnyRefusal ? 1 : 0)
 }
 catch {
     # THE CONTRACT IS ONE JSON OBJECT, ALWAYS - a refusal included. A bare throw here left stdout
