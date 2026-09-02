@@ -17,7 +17,10 @@ _Empty — the three entries logged on 2026-09-01 (no screenshot channel, `deplo
 install, `items` refusal indistinguishable from an empty sweep) were fixed and verified live on
 `D:\PP-Instance2` the same day. The three logged on 2026-09-02 (a recycled PID winning the endpoint
 pick, `new` refusing a struct, an evicted handle reported as expired) were fixed and verified live
-the same day — the last two on `D:\PP-Instance3`._
+the same day — the last two on `D:\PP-Instance3`. The fourth (plan var refs did not nest, and a real
+null projected as `unresolved: … is not set`) was fixed and verified on `D:\PP-Instance3` the same
+day._
+
 
 
 <!-- Append new entries above this line. Keep them evidence-backed. -->

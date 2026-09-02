@@ -664,7 +664,10 @@ namespace Morgott.PPBridge
                     outs = new JObject();
                     foreach (KeyValuePair<string, JToken> kv in output)
                     {
+                        // A null that a step really read is projected as null - it is an ANSWER.
+                        // Only a name that is missing or mistyped comes back as "unresolved".
                         try { outs[kv.Key] = Resolve(kv.Value); }
+                        catch (NullValue) { outs[kv.Key] = JValue.CreateNull(); }
                         catch (Exception ex) { outs[kv.Key] = "unresolved: " + ex.Message; }
                     }
                 }
@@ -696,8 +699,24 @@ namespace Morgott.PPBridge
             /// Replaces every <c>${path}</c> in a token tree. Alone in a string it yields the stored
             /// TOKEN, so a number stays a number and a nested object stays an object; embedded, it is
             /// interpolated. Throws on an unknown name - the caller turns that into a failed step.
+            /// A name that IS set and holds null resolves to null: a step whose result is genuinely
+            /// null is not an authoring mistake, and reporting it as "not set" sent a caller hunting
+            /// for a typo that was not there.
+            /// References NEST: an interpolated pass that produces another <c>${...}</c> is resolved
+            /// again, so <c>${ROWS.items[${i}].h}</c> works. Bounded, or a var holding the text
+            /// "${SELF}" would loop forever.
             /// </summary>
-            private JToken Resolve(JToken t)
+            /// <summary>A reference that resolved to a REAL null, as opposed to a name nobody set.</summary>
+            private sealed class NullValue : InvalidOperationException
+            {
+                internal NullValue(string message) : base(message) { }
+            }
+
+            private JToken Resolve(JToken t) { return Resolve(t, 0); }
+
+            private const int MaxSubstitutionPasses = 8;
+
+            private JToken Resolve(JToken t, int pass)
             {
                 if (t == null) return null;
                 if (t.Type == JTokenType.String)
@@ -721,7 +740,14 @@ namespace Morgott.PPBridge
                         b.Append(v.Type == JTokenType.String ? (string)v : v.ToString(Newtonsoft.Json.Formatting.None));
                         at = m.Index + m.Length;
                     }
-                    return b.Append(s, at, s.Length - at).ToString();
+                    string done = b.Append(s, at, s.Length - at).ToString();
+                    // The inner reference has just become text; run the result through again so the
+                    // outer one sees a plain path. Nothing to do when a pass changed nothing.
+                    if (done.IndexOf("${", StringComparison.Ordinal) < 0 || done == s) return done;
+                    if (pass >= MaxSubstitutionPasses)
+                        throw new InvalidOperationException("'" + (string)t + "' still contains ${...} after " +
+                            MaxSubstitutionPasses + " substitution passes - a variable references itself");
+                    return Resolve(new JValue(done), pass + 1);
                 }
                 if (t.Type == JTokenType.Object)
                 {
@@ -760,9 +786,17 @@ namespace Morgott.PPBridge
             private JToken Lookup(string path)
             {
                 JToken v = vars.SelectToken(path, false);
-                if (v == null || v.Type == JTokenType.Null)
+                // Two different mistakes, told apart. A MISSING name is an authoring error (a typo,
+                // or a step that never ran) and keeps failing the step. A name that IS set and holds
+                // null is a real answer - "that member is null" - and gets its own exception, which
+                // `output` projects as null instead of as "unresolved". Args still refuse it: a null
+                // handed to a method quietly calls the right method with the wrong argument.
+                if (v == null)
                     throw new InvalidOperationException("${" + path + "} is not set (known: " +
                         string.Join(", ", Names()) + ")");
+                if (v.Type == JTokenType.Null)
+                    throw new NullValue("${" + path + "} IS set and its value is null - the step " +
+                        "succeeded and read a null, this is not a missing or mistyped name");
                 return v;
             }
 

@@ -842,6 +842,11 @@ everything computational is already a `call`.
   the **token** — a number stays a number, an `{"$enum":...}` projection binds straight back as that
   envelope. Embedded, it interpolates as text. An **unset** name fails the step and names itself; it
   is never quietly null.
+- **References nest.** A pass that produces another `${…}` is substituted again (8 passes, then the
+  step fails on a var that references itself), so `"${ROWS.items[${i}].h}"` picks row `i`.
+- **A real null is not an unset name.** A name that IS set and holds `null` — a step that succeeded
+  and read a null member — fails a step *arg* with "IS set and its value is null", and in `output`
+  projects as JSON `null`. Only a missing or mistyped name reads `unresolved: … is not set`.
 - **Array splice.** `"${...NAME}"` as an ELEMENT of an array expands that var's own elements into the
   surrounding array (`Plan.cs:330-334`); plain `${NAME}` is unchanged, and a spread outside an array,
   of an unset name, or of a non-array value fails the step loudly rather than guessing.
@@ -1039,7 +1044,8 @@ Three idioms in it are new and worth stealing:
   `Utl.LesserThan(spawnedSoFar, count, 0.01)` — with the literal `times` as the hard ceiling (12).
 
 > ponytail: random ring candidates rather than an indexed scan, because `repeat` has no loop variable
-> and `${LIST.items[${k}]}` is not a thing. It also spreads the squad instead of clustering it at the
+> to put in `${LIST.items[${k}]}` (the nested form itself works since 2026-09-02, there is just
+> nothing counting `k`). It also spreads the squad instead of clustering it at the
 > ring's first cell. A loop variable + `until` would be ~8 lines in `Plan.cs`; add them only if
 > deterministic placement ever matters.
 
