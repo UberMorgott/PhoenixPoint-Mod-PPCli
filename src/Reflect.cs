@@ -437,7 +437,15 @@ namespace Morgott.PPBridge
         {
             // Constructors are never inherited, so this is the one lookup with no hierarchy walk.
             List<MethodBase> ctors = type.GetConstructors(AnyDeclared).Cast<MethodBase>().ToList();
-            if (ctors.Count == 0) return Bad("member", type.FullName + " has no accessible constructor");
+            if (ctors.Count == 0)
+            {
+                // A struct's implicit parameterless constructor is not a ConstructorInfo, so a value
+                // type with no explicit ctor lists none. "new" with no args on one means the default
+                // instance - exactly what Activator.CreateInstance(Type) hands back.
+                if (type.IsValueType && (args == null || args.Count == 0))
+                    return Value(Activator.CreateInstance(type));
+                return Bad("member", type.FullName + " has no accessible constructor");
+            }
             object[] bound;
             object refusal = Pick(ctors, args, null, ".ctor", out bound);
             if (refusal != null) return refusal;

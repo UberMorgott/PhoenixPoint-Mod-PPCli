@@ -204,9 +204,25 @@ function Invoke-Jobs([string] $jobsJson) {
 
 # ---------------------------------------------------------------- pipe transport (the fast path)
 
-# A discovery file outlives a crash, so "the file exists" proves nothing. The PID does: if the
-# process is gone the file is swept here, because the next client would otherwise be sent at a pipe
-# nobody is listening on and would sit in Connect() until it timed out.
+# A discovery file outlives a crash, so "the file exists" proves nothing. Neither does a live PID:
+# Windows RECYCLES pids, so a dead game's number comes back as some unrelated process and the file
+# survives the sweep, wins the pick and every verb then hangs in Connect() until it times out.
+# The endpoint is real only if its pid is still the GAME of that install - matched by executable
+# path, the way a running install is matched before a deploy.
+function Test-EndpointAlive($ep) {
+    $p = Get-Process -Id $ep.pid -ErrorAction SilentlyContinue
+    if (-not $p -or $p.Name -ne 'PhoenixPointWin64') { return $null }
+    if ($ep.install) {
+        $exe = $null
+        try { $exe = $p.Path } catch { }
+        # No readable path (rare, another user's process) is not proof of a stale file: the name
+        # already matched, so keep it rather than sweep a working endpoint.
+        if ($exe -and ([IO.Path]::GetFullPath($exe) -ine
+                       [IO.Path]::GetFullPath((Join-Path $ep.install.TrimEnd('\', '/') 'PhoenixPointWin64.exe')))) { return $null }
+    }
+    $p
+}
+
 function Get-Endpoint {
     $dir = Join-Path $env:LOCALAPPDATA 'ppcli\endpoints'
     if (-not (Test-Path $dir)) { throw "REFUSED: no endpoints at $dir - no game with PPBridge is running. Use 'run' to cold-launch one." }
@@ -215,7 +231,13 @@ function Get-Endpoint {
     foreach ($f in Get-ChildItem -Path $dir -Filter '*.json' -ErrorAction SilentlyContinue) {
         $ep = $null
         try { $ep = Get-Content -Raw $f.FullName | ConvertFrom-Json } catch { }
-        if ($ep -and $ep.pid -and (Get-Process -Id $ep.pid -ErrorAction SilentlyContinue)) { $live += $ep; continue }
+        $proc = $null
+        if ($ep -and $ep.pid) { $proc = Test-EndpointAlive $ep }
+        if ($proc) {
+            # Newest game wins the tie below; two endpoints for one install means an older one leaked.
+            $ep | Add-Member -NotePropertyName started -NotePropertyValue $proc.StartTime -Force
+            $live += $ep; continue
+        }
         Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue
         Note "swept stale endpoint $($f.Name)"
     }
@@ -230,7 +252,10 @@ function Get-Endpoint {
     if ($mine.Count -eq 0) {
         throw ("REFUSED: no endpoint for $PPRoot. Live: " + (($live | ForEach-Object { "$($_.install) (pid $($_.pid))" }) -join ', '))
     }
-    if ($mine.Count -gt 1) { Note "$($mine.Count) endpoints for $PPRoot, using pid $($mine[0].pid)" }
+    if ($mine.Count -gt 1) {
+        $mine = @($mine | Sort-Object started -Descending)
+        Note "$($mine.Count) endpoints for $PPRoot, using the newest game (pid $($mine[0].pid))"
+    }
     $mine[0]
 }
 
