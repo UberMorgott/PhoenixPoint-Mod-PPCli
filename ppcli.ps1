@@ -392,6 +392,14 @@ switch ($Command) {
         # -NoEnumerate: without it a one-job array arrives as a scalar and a valid batch is refused.
         $parsed = ConvertFrom-Json $text -NoEnumerate       # refuse a malformed batch before launching
         if ($parsed -isnot [array]) { throw "$Arg1 must be a JSON ARRAY of {id,verb,args} objects" }
+        # The bridge reads at most 256 jobs from a file and DROPS the rest (Protocol.MaxJobs), which
+        # from here looks like a run that simply answered fewer rows - outer ok stays true. Refused
+        # before the launch instead, because a cold run costs ~17 s to find that out.
+        if ($parsed.Count -gt 256) {
+            throw ("REFUSED: $Arg1 has $($parsed.Count) jobs and a cold batch caps at 256 - the bridge would " +
+                   "drop the rest and still report ok. Split the file, or drive a running game with " +
+                   "'connect multi', which has no cap.")
+        }
         Invoke-Jobs $text | ConvertTo-Json -Depth 12 -Compress
     }
     'connect' {
