@@ -55,6 +55,12 @@ namespace Morgott.PPBridge
         private static int epoch = 1;
         private static int nextId;
 
+        // Eviction is invisible from the outside: a handle taken a minute ago is simply gone, and a
+        // bulk read that mints hundreds of handles per request is what kills the ones a later request
+        // still needs. These two say so in the refusal instead of blaming the TTL.
+        private static int evicted;
+        private static int evictedTopId;
+
         /// <summary>
         /// Invalidates every outstanding handle at once. The game half calls this on scene unload:
         /// a handle to something that lived in the old scene must come back as a named refusal, not
@@ -68,6 +74,8 @@ namespace Morgott.PPBridge
         {
             leases.Clear();
             epoch++;
+            evicted = 0;
+            evictedTopId = 0;
         }
 
         /// <summary>Leases an object and returns its handle string. Strong reference by design.</summary>
@@ -83,6 +91,8 @@ namespace Morgott.PPBridge
                 foreach (KeyValuePair<int, Lease> kv in leases)
                     if (kv.Value.Touched < when) { when = kv.Value.Touched; oldest = kv.Key; }
                 leases.Remove(oldest);
+                evicted++;
+                if (oldest > evictedTopId) evictedTopId = oldest;
             }
             int id = ++nextId;
             leases[id] = new Lease { Target = target, Touched = DateTime.UtcNow };
@@ -125,7 +135,13 @@ namespace Morgott.PPBridge
             Lease lease;
             if (!leases.TryGetValue(id, out lease))
             {
-                error = "handle '" + handle + "' expired or was released";
+                error = id <= evictedTopId
+                    ? "handle '" + handle + "' was EVICTED under pressure, not expired: the table holds " +
+                      MaxHandles + " leases at once and " + evicted + " have been dropped to make room " +
+                      "since this session started. Something is minting handles faster than it reads them " +
+                      "(a paged 'items' mints one per element) - work through one source at a time, or " +
+                      "page smaller, and re-take this handle."
+                    : "handle '" + handle + "' expired or was released";
                 return false;
             }
             // Unity null semantics: a destroyed UnityEngine.Object is a live managed reference that

@@ -1,0 +1,98 @@
+{
+  "//": "SLICE 0 (b) - can a prototype be built and SKINNED at the HomeScreen, with no mission and no save? Mirrors AddonsCharacterTester.Start (AddonsCharacterTester.cs:44-58) through `call` reflection only: instantiate the AddonsManager off its def, SetupRig into a throwaway GameObject, instantiate ONE representative bodypart and SetupAddons it, then count the SkinnedMeshRenderers that actually appeared.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\prototype-menu-load.json '{\"manager\":\"Human_AddonsManagerDef\",\"character\":\"PX_Assault_TacCharacterDef\",\"bodyPart\":\"PX_Assault_Torso_BodyPartDef\"}'",
+  "//needs": "A game at the HomeScreen (phase menu). Nothing else - the rig prefab is a direct GameObject reference on AddonsManagerDef (AddonsManagerDef.cs:12), not an Addressable.",
+  "//overload": "DefRepository has BOTH `object Instantiate(BaseDef,GameObject,Vector3?,Quaternion?,bool)` and `T Instantiate<T>(...)` with identical parameters, so passing typeArgs makes the binder report `ambiguous` and `sig` cannot separate them either. Omitting typeArgs picks the non-generic one, which does the same work minus the cast. Arity is matched exactly, so all five arguments must be passed.",
+  "//cleanup": "`finally` calls AddonsManager.Destroy() and UnityEngine.Object.Destroy on the host GameObject, so a failed or timed-out run leaves nothing in the menu scene.",
+
+  "timeoutMs": 120000,
+  "maxSteps": 60,
+
+  "vars": {
+    "manager": "Human_AddonsManagerDef",
+    "character": "PX_Assault_TacCharacterDef",
+    "bodyPart": "PX_Assault_Torso_BodyPartDef",
+    "hostName": "PPCLI_PrototypeProbe"
+  },
+
+  "steps": [
+    { "id": "phase", "verb": "state", "save": "ST" },
+
+    { "id": "host", "verb": "call", "save": "GO",
+      "args": { "op": "new", "type": "UnityEngine.GameObject", "assembly": "UnityEngine.CoreModule", "args": [ "${hostName}" ] } },
+    { "id": "host-transform", "verb": "call", "save": "T",
+      "args": { "op": "get", "target": "${GO.value.h}", "member": "transform" } },
+
+    { "id": "manager", "verb": "call", "save": "MGR",
+      "args": { "op": "invoke", "target": "@defs", "member": "Instantiate",
+                "args": [ { "$def": "${manager}" }, null, null, null, false ] } },
+    { "id": "setup-rig", "verb": "call",
+      "args": { "op": "invoke", "target": "${MGR.value.h}", "member": "SetupRig", "args": [ { "$h": "${T.value.h}" }, true ] } },
+
+    { "//": "AddonsManager.GetAllRigOnlyBones is exactly the dictionary Addon.GetEquivalentBones matches an imported mesh against (Addon.cs:1202-1231), so its size is the number a RigTarget has to agree with.",
+      "id": "rig-bones", "verb": "call", "save": "RIGBONES",
+      "args": { "op": "invoke", "target": "${MGR.value.h}", "member": "GetAllRigOnlyBones", "args": [] } },
+    { "id": "rig-bone-count", "verb": "call", "save": "RIGN",
+      "args": { "op": "invoke", "type": "System.Linq.Enumerable", "member": "Count",
+                "typeArgs": [ "UnityEngine.Transform" ], "args": [ { "$h": "${RIGBONES.value.h}" } ] } },
+    { "id": "rig-root", "verb": "call", "save": "RIGROOT",
+      "args": { "op": "get", "target": "${MGR.value.h}", "member": "RigRoot" } },
+
+    { "//": "ONE representative bodypart, instantiated the way the tester does it (:50), then wrapped in a one-element IEnumerable<Addon> for SetupAddons(IEnumerable<Addon>, bool).",
+      "id": "bodypart", "verb": "call", "save": "ITEM",
+      "args": { "op": "invoke", "target": "@defs", "member": "Instantiate",
+                "args": [ { "$def": "${bodyPart}" }, null, null, null, false ] } },
+    { "id": "one-addon", "verb": "call", "save": "SEQ",
+      "args": { "op": "invoke", "type": "System.Linq.Enumerable", "member": "Repeat",
+                "typeArgs": [ "PhoenixPoint.Common.Entities.Addons.Addon" ],
+                "args": [ { "$h": "${ITEM.value.h}" }, 1 ] } },
+    { "//": "reportErrors:false - a missing Addressable must come back as a value, not as a log line that aborts the plan.",
+      "id": "setup-addons", "verb": "call", "save": "SETUP", "onError": "continue",
+      "args": { "op": "invoke", "target": "${MGR.value.h}", "member": "SetupAddons", "args": [ { "$h": "${SEQ.value.h}" }, false ] } },
+
+    { "//": "THE ANSWER. AddonSkinDataBase.GetPrefabAsset returns null unless the addressable is already resident (AddonSkinDataBase.cs:18-29), and a null visual means no SkinnedMeshRenderer is ever created.",
+      "id": "smrs", "verb": "call", "save": "SMRS",
+      "args": { "op": "invoke", "target": "${GO.value.h}", "member": "GetComponentsInChildren",
+                "typeArgs": [ "UnityEngine.SkinnedMeshRenderer" ], "args": [ true ] } },
+    { "id": "smr-page", "verb": "items", "save": "SMRPAGE", "onError": "continue",
+      "args": { "h": "${SMRS.value.h}", "page": 0, "pageSize": 20 } },
+    { "id": "first-smr-bones", "verb": "call", "save": "SMRBONES", "onError": "continue",
+      "args": { "op": "get", "target": "${SMRPAGE.items[0].h}", "member": "bones" } },
+    { "id": "first-smr-mesh", "verb": "call", "save": "SMRMESH", "onError": "continue",
+      "args": { "op": "get", "target": "${SMRPAGE.items[0].h}", "member": "sharedMesh" } },
+
+    { "//": "What the addon itself thinks it has, whether or not a renderer appeared.",
+      "id": "item-visual-root", "verb": "call", "save": "VISROOT", "onError": "continue",
+      "args": { "op": "get", "target": "${ITEM.value.h}", "member": "VisualRoot" } },
+    { "id": "item-attached", "verb": "call", "save": "ATTACHED", "onError": "continue",
+      "args": { "op": "get", "target": "${ITEM.value.h}", "member": "IsAttachedToManager" } }
+  ],
+
+  "finally": [
+    { "id": "destroy-manager", "verb": "call", "onError": "continue",
+      "args": { "op": "invoke", "target": "${MGR.value.h}", "member": "Destroy", "args": [] } },
+    { "id": "destroy-host", "verb": "call", "onError": "continue",
+      "args": { "op": "invoke", "type": "UnityEngine.Object", "assembly": "UnityEngine.CoreModule",
+                "member": "Destroy", "args": [ { "$h": "${GO.value.h}" } ] } },
+    { "id": "release-seq", "verb": "release", "onError": "continue", "args": { "h": "${SEQ.value.h}" } },
+    { "id": "release-rigbones", "verb": "release", "onError": "continue", "args": { "h": "${RIGBONES.value.h}" } },
+    { "id": "release-smrs", "verb": "release", "onError": "continue", "args": { "h": "${SMRS.value.h}" } }
+  ],
+
+  "output": {
+    "phase": "${ST.phase}",
+    "scene": "${ST.scene}",
+    "manager": "${manager}",
+    "managerInstance": "${MGR.value.type}",
+    "rigRoot": "${RIGROOT.value.name}",
+    "rigOnlyBones": "${RIGN.value}",
+    "bodyPart": "${bodyPart}",
+    "setupAddonsReturned": "${SETUP.value}",
+    "itemAttached": "${ATTACHED.value}",
+    "itemVisualRoot": "${VISROOT.value.name}",
+    "skinnedMeshRenderers": "${SMRS.value.count}",
+    "firstSmrName": "${SMRPAGE.items[0].name}",
+    "firstSmrMesh": "${SMRMESH.value.name}",
+    "firstSmrBoneCount": "${SMRBONES.value.count}"
+  }
+}
