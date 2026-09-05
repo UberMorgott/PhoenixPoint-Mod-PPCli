@@ -37,7 +37,7 @@ All shapes are JSON objects. `?` = optional. No-argument verbs omit the JSON arg
 | `roots` | — |
 | `console` | `{command, args?:[]}` |
 | `var` | read `{name}`; set-then-read `{name,value}`; values convert through strings |
-| `screenshot` | `{path?}`; explicit path must be absolute; omitted => timestamped PNG beside bridge files |
+| `screenshot` | `{path?,force?}`; explicit path must be absolute; omitted => timestamped PNG beside bridge files. Camera.main with a `targetTexture` (upscaler) => scene written to a sibling `*.scene.png`, reply adds `scenePath`. D3D12 + `timeScale==0` refused (wedges the process) => use `0.0001` or `force:true` |
 | `call` | new `{op:"new",type,assembly?,args?:[]}`; get `{op:"get",type\|target,assembly?,member,convertTo?}`; set `{op:"set",type\|target,assembly?,member,value}`; invoke `{op:"invoke",type\|target,assembly?,member,args?:[],sig?:[],typeArgs?:[]}` |
 | `types` | `{pattern,assembly?}` |
 | `members` | `{type\|h,assembly?,filter?,page?,pageSize?}`; page 0-based; max/default page size 400 |
@@ -53,7 +53,7 @@ All shapes are JSON objects. `?` = optional. No-argument verbs omit the JSON arg
 | `status` | `{jobId}` |
 | `cancel` | `{jobId}` |
 
-`call` targets: static `type`; instance handle; `@game`, `@phoenix`, `@defs`, `@level`, `@geo`, `@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@faction`, `@selected`; def `@def:<exact-name|guid>`. Argument envelopes: `{"$h":...}`, `{"$def":...}`, `{"$type":...}`, `{"$enum":...}`, `{"$array":[...]}`, `{"$v2":[...]}`, `{"$v3":[...]}`, `{"$quat":[...]}`. Reflection supports `new|get|set|invoke`; no event subscription, by-ref/out/pointer calls; indexers via `get_Item`/`set_Item`; equal overload ties refuse.
+`call` targets: static `type`; instance handle; `@game`, `@phoenix`, `@defs`, `@level`, `@geo`, `@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@faction`, `@selected`; def `@def:<exact-name|guid>`. Argument envelopes: `{"$h":...}`, `{"$def":...}`, `{"$type":...}`, `{"$enum":...}`, `{"$array":[...]}`, `{"$v2":[...]}`, `{"$v3":[...]}`, `{"$quat":[...]}`, `{"$box":{"type":"System.Single","value":0.5}}` (boxes a primitive as a named type for a parameter declared `Object` — a bare JSON number boxes as `Double`). Reflection supports `new|get|set|invoke`; no event subscription, by-ref/out/pointer calls; indexers via `get_Item`/`set_Item`; equal overload ties refuse.
 
 ## Reply and exit contract
 

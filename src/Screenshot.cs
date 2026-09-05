@@ -37,6 +37,18 @@ namespace Morgott.PPBridge
             try { path = Resolve(a); }
             catch (Exception ex) { return Protocol.Fail(ex.Message); }
 
+            // A frozen clock under D3D12 never reaches end of frame: the process stops responding and
+            // only Stop-Process ends it (observed 2026-09-03, PID 20232, same map/seed fine on D3D11).
+            // Refused here rather than parked in the pump, because a hung game looks like a bridge bug.
+            if (Time.timeScale == 0f &&
+                SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D12 &&
+                !(a != null && a["force"] != null && (bool)a["force"]))
+            {
+                return Protocol.Fail("refusing to capture: Time.timeScale is 0 under D3D12, which wedges " +
+                    "the process at WaitForEndOfFrame. Use timeScale 0.0001 (0.0002 game seconds per real " +
+                    "second - frozen for any practical purpose), or pass \"force\":true to try anyway.");
+            }
+
             MonoBehaviour go = Host();
             if (go == null) return Protocol.Fail("no coroutine host - the mod is shutting down");
 
@@ -72,6 +84,26 @@ namespace Morgott.PPBridge
         }
 
         private sealed class Runner : MonoBehaviour { }
+
+        /// <summary>The pixels of a render texture as PNG. RenderTexture.active is restored: leaving it
+        /// pointed at someone else's target corrupts the next thing the engine draws.</summary>
+        private static byte[] Grab(RenderTexture rt)
+        {
+            RenderTexture prev = RenderTexture.active;
+            Texture2D tex = new Texture2D(rt.width, rt.height, TextureFormat.RGBA32, false);
+            try
+            {
+                RenderTexture.active = rt;
+                tex.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
+                tex.Apply();
+                return ImageConversion.EncodeToPNG(tex);
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+                UnityEngine.Object.Destroy(tex);
+            }
+        }
 
         /// <summary>Written by the coroutine and read by Tick, both on the main thread - no locking.</summary>
         private sealed class Capture : IPending
@@ -118,7 +150,31 @@ namespace Morgott.PPBridge
                     string dir = Path.GetDirectoryName(path);
                     if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                     File.WriteAllBytes(path, png);
-                    result = new { ok = true, path, width = tex.width, height = tex.height, bytes = png.Length };
+
+                    // An upscaler (DLSS/FSR) renders the scene into a camera targetTexture and blits it
+                    // to the backbuffer at PRESENT time - after this end-of-frame capture. The PNG above
+                    // then holds IMGUI over a blank field, which reads as "the game rendered nothing".
+                    // The scene really is somewhere: in that render texture. It goes beside the shot,
+                    // and the reply says so instead of leaving the caller to guess.
+                    RenderTexture rt = Camera.main == null ? null : Camera.main.targetTexture;
+                    if (rt == null)
+                    {
+                        result = new { ok = true, path, width = tex.width, height = tex.height, bytes = png.Length };
+                    }
+                    else
+                    {
+                        string scenePath = Path.ChangeExtension(path, null) + ".scene.png";
+                        byte[] scene = Grab(rt);
+                        File.WriteAllBytes(scenePath, scene);
+                        result = new
+                        {
+                            ok = true, path, width = tex.width, height = tex.height, bytes = png.Length,
+                            scenePath, sceneWidth = rt.width, sceneHeight = rt.height, sceneBytes = scene.Length,
+                            note = "Camera.main renders into targetTexture '" + rt.name + "', so the frame " +
+                                   "above carries UI over a blank scene - the 3D scene is in scenePath, at the " +
+                                   "camera's own (pre-upscale) resolution."
+                        };
+                    }
                 }
                 catch (Exception ex) { result = Protocol.Fail(ex.GetType().Name + ": " + ex.Message); }
                 // The texture is created outside the GC's Unity-object lifetime; leaking one per shot

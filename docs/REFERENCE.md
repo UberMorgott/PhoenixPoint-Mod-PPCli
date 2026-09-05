@@ -271,7 +271,7 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 | `snapshot` | `{name, timeoutMs}` | `{ok, name}` — waits for the save to actually finish |
 | `restore` | `{name}` | `{ok, issued:"load_game", note}` — issue only; load has no completion signal |
 | `plan` | `{plan:{steps,finally,vars,output}, vars}` | one request, one structured result, per-step trace |
-| `screenshot` | `{path?}` | capture at end of frame (Unity `WaitForEndOfFrame` + `ScreenCapture.CaptureScreenshotAsTexture` + `EncodeToPNG`); returns `{ok, path, width, height, bytes}`. Default output: `<ModDir>\ppcli-shot-<utc yyyyMMdd-HHmmss>-<seq>.png`. Optional `path` must be absolute (a relative path is refused: *screenshot's "path" must be an absolute path*); parent directory is created. Returns an `IPending` — the JSON response is never sent before the PNG bytes are on disk. Timeout 10 s → `code:"timeout"`; a cancelled or timed-out capture never writes the file |
+| `screenshot` | `{path?}` | capture at end of frame (Unity `WaitForEndOfFrame` + `ScreenCapture.CaptureScreenshotAsTexture` + `EncodeToPNG`); returns `{ok, path, width, height, bytes}`. Default output: `<ModDir>\ppcli-shot-<utc yyyyMMdd-HHmmss>-<seq>.png`. Optional `path` must be absolute (a relative path is refused: *screenshot's "path" must be an absolute path*); parent directory is created. Returns an `IPending` — the JSON response is never sent before the PNG bytes are on disk. Timeout 10 s → `code:"timeout"`; a cancelled or timed-out capture never writes the file. **Upscaler:** when `Camera.main` has a `targetTexture` (DLSS/FSR render there and blit at present time, after end of frame) the backbuffer PNG carries UI over a blank scene, so the render texture is written beside it and the reply adds `scenePath, sceneWidth, sceneHeight, sceneBytes, note`. **D3D12 + `timeScale == 0`:** refused (it wedges the process at `WaitForEndOfFrame`) — use `timeScale` `0.0001`, or `{"force":true}` to try anyway |
 | `status` / `cancel` | `{jobId}` | job-table questions, answered on the pipe thread |
 
 ### `connect multi` — N verbs, ONE process
@@ -371,8 +371,16 @@ and asking for both is how a def hits the 64 KB cap and comes back a refusal ins
 
 `{"$h":"h:e:i"}` handle · `{"$enum":"Player","type":"..."}` · `{"$type":"System.String"}` ·
 `{"$def":"<guid>"}` · `{"$array":[...],"type":"..."}` · `{"$v2":[x,y]}` · `{"$v3":[x,y,z]}` ·
-`{"$quat":[x,y,z,w]}`. Bare JSON works too: strings, booleans, numbers, `null`, and a bare array
-binds using the parameter's own element type. Invariant culture throughout.
+`{"$quat":[x,y,z,w]}` · `{"$box":{"type":"System.Single","value":0.5}}`. Bare JSON works too:
+strings, booleans, numbers, `null`, and a bare array binds using the parameter's own element type.
+Invariant culture throughout.
+
+**`$box` — for a parameter declared `Object`.** A JSON number cannot say which primitive it is, so a
+bare `0.5` reaches an `Object` slot boxed as `Double` and `FieldInfo.SetValue(null, 0.5)` on a
+`float` field throws `Object of type 'System.Double' cannot be converted to type 'System.Single'`.
+`$box` names the type to box as; the value is then bound by the ordinary rules for that type.
+Verified live: `Object.Equals({"$box":Single 0.5}, {"$box":Single 0.5})` → `true`, the same against a
+`Double` → `false`.
 
 **No silent conversions.** A string is never parsed into a number (`"7"` into an `int` is refused —
 it is far more often a mistake than an intention). An integer binds to a narrower integer parameter

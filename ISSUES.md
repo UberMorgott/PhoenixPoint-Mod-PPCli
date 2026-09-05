@@ -19,7 +19,10 @@ install, `items` refusal indistinguishable from an empty sweep) were fixed and v
 pick, `new` refusing a struct, an evicted handle reported as expired) were fixed and verified live
 the same day — the last two on `D:\PP-Instance3`. The fourth (plan var refs did not nest, and a real
 null projected as `unresolved: … is not set`) was fixed and verified on `D:\PP-Instance3` the same
-day._
+day. The three open on 2026-09-05 (no way to box a primitive for an `Object` parameter, `screenshot`
+wedging the process on D3D12 at `timeScale 0`, and `screenshot` losing the scene while an upscaler
+renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Instance3` under
+`-force-d3d12`, build `0b0c12fc`._
 
 
 

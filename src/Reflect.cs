@@ -739,7 +739,7 @@ namespace Morgott.PPBridge
             {
                 string tag = env.Properties().Select(p => p.Name).FirstOrDefault(n => n.Length > 1 && n[0] == '$');
                 if (tag != null) return BindEnvelope(tag, env, target, out value, out score, out error);
-                error = "a JSON object argument must be a tagged envelope ($h, $enum, $type, $def, $array, $v2, $v3, $quat)";
+                error = "a JSON object argument must be a tagged envelope ($h, $enum, $type, $def, $array, $box, $v2, $v3, $quat)";
                 return false;
             }
 
@@ -935,6 +935,34 @@ namespace Morgott.PPBridge
                     JArray items = payload as JArray;
                     if (items == null) { error = "$array needs a JSON array"; return false; }
                     return BindArray(items, target, (string)env["type"], out value, out score, out error);
+                }
+                case "$box":
+                {
+                    // The one thing a bare JSON number cannot say is WHICH primitive it is. A method
+                    // whose parameter is declared Object takes the boxed value verbatim, so
+                    // FieldInfo.SetValue(null, 0.5) reaches a float field holding a Double and throws.
+                    // This envelope names the type to box as; every numeric/enum/string rule below is
+                    // the binder's own, so "0.5" as a Single is checked exactly like a float parameter.
+                    JObject spec = payload as JObject;
+                    JToken raw = spec != null ? spec["value"] : payload;
+                    string named = spec != null ? (string)spec["type"] : (string)env["type"];
+                    string asm = spec != null ? (string)spec["assembly"] : (string)env["assembly"];
+                    if (string.IsNullOrEmpty(named) || raw == null)
+                    {
+                        error = "$box needs {\"$box\":{\"type\":\"<full type name>\",\"value\":<json>}}";
+                        return false;
+                    }
+                    Type boxAs = ResolveType(named, asm, out error);
+                    if (boxAs == null) return false;
+                    if (!target.IsAssignableFrom(boxAs))
+                    {
+                        error = "a boxed " + boxAs.FullName + " does not bind to " + target.FullName;
+                        return false;
+                    }
+                    int inner;
+                    if (!BindArg(raw, boxAs, out value, out inner, out error)) return false;
+                    score = target == boxAs ? ScoreExact : ScoreAssign;
+                    return true;
                 }
                 case "$v2": return BindVector(payload as JArray, target, 2, "UnityEngine.Vector2", out value, out score, out error);
                 case "$v3": return BindVector(payload as JArray, target, 3, "UnityEngine.Vector3", out value, out score, out error);
