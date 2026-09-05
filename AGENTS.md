@@ -37,7 +37,7 @@ All shapes are JSON objects. `?` = optional. No-argument verbs omit the JSON arg
 | `roots` | — |
 | `console` | `{command, args?:[]}` |
 | `var` | read `{name}`; set-then-read `{name,value}`; values convert through strings |
-| `screenshot` | `{path?,force?}`; explicit path must be absolute; omitted => timestamped PNG beside bridge files. Camera.main with a `targetTexture` (upscaler) => scene written to a sibling `*.scene.png`, reply adds `scenePath`. D3D12 + `timeScale==0` refused (wedges the process) => use `0.0001` or `force:true` |
+| `screenshot` | `{path?,force?}`; explicit path must be absolute; omitted => timestamped PNG beside bridge files. Camera.main with a `targetTexture` (upscaler) => scene written to a sibling `*.scene.png`, reply adds `scenePath`. D3D12 + `timeScale==0` refused (wedges the process) => use `0.0001` or `force:true`. `-Window` (client switch) grabs the game window AFTER present via `PrintWindow(PW_RENDERFULLCONTENT)` => the finished frame incl. upscaler + post-upscale passes, device pixels, `{ok,mode:"window",path,width,height,bytes}`; needs a non-minimized window |
 | `call` | new `{op:"new",type,assembly?,args?:[]}`; get `{op:"get",type\|target,assembly?,member,convertTo?}`; set `{op:"set",type\|target,assembly?,member,value}`; invoke `{op:"invoke",type\|target,assembly?,member,args?:[],sig?:[],typeArgs?:[]}` |
 | `types` | `{pattern,assembly?}` |
 | `members` | `{type\|h,assembly?,filter?,page?,pageSize?}`; page 0-based; max/default page size 400 |

@@ -52,6 +52,11 @@ param(
     [switch] $Force,
     # `deploy` only: stage the files even though that install has the game running.
     [switch] $AllowRunning,
+    # `connect screenshot` only: grab the game WINDOW from outside the process instead of the
+    # in-engine backbuffer. The engine capture runs at WaitForEndOfFrame, which is BEFORE present -
+    # an upscaler (DLSS/FSR) blits at present, and any post-upscale pass (LUT, sharpen, colour
+    # correction) lands after that, so only a window grab sees the frame the player actually sees.
+    [switch] $Window,
     # Where `index` writes the def catalog and where `plan` resolves names from. A parameter only so
     # the offline tests can point at a fixture; nothing else has a reason to move it.
     [string] $CatalogDir = (Join-Path $PSScriptRoot 'catalog')
@@ -259,6 +264,90 @@ function Get-Endpoint {
     $mine[0]
 }
 
+# The frame the PLAYER sees, which the in-engine capture cannot reach. `screenshot` runs at
+# WaitForEndOfFrame; an upscaler blits at PRESENT and a post-upscale pass (LUT, sharpen, colour
+# correction in a native shim) lands after that, so the engine's backbuffer is either blank or
+# pre-correction. PrintWindow with PW_RENDERFULLCONTENT (2) asks DWM to re-render the window's own
+# composited content, which is that finished frame - flag 0 returns a nearly empty bitmap for a
+# D3D swapchain and is not used.
+$script:WindowShotTypes = $false
+function Invoke-WindowShot($ep, $path) {
+    if (-not $script:WindowShotTypes) {
+        Add-Type -AssemblyName System.Drawing
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class PpcliWin {
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out PpcliRect r);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out PpcliRect r);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref PpcliPoint p);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    // The game is DPI-unaware, so user32 answers in VIRTUALIZED coordinates while DWM composites -
+    // and PrintWindow draws - real device pixels. DWMWA_EXTENDED_FRAME_BOUNDS (9) is the only rect
+    // in device pixels, and its ratio to the window rect is the scale everything else needs.
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attr, out PpcliRect r, int size);
+}
+[StructLayout(LayoutKind.Sequential)] public struct PpcliRect { public int Left, Top, Right, Bottom; }
+[StructLayout(LayoutKind.Sequential)] public struct PpcliPoint { public int X, Y; }
+'@
+        $script:WindowShotTypes = $true
+    }
+
+    $proc = Get-Process -Id $ep.pid -ErrorAction SilentlyContinue
+    if (-not $proc) { throw "REFUSED: pid $($ep.pid) is gone - nothing to capture" }
+    $hwnd = $proc.MainWindowHandle
+    if ($hwnd -eq [IntPtr]::Zero) { throw "REFUSED: pid $($ep.pid) has no main window (headless or still starting)" }
+    # A minimized window has nothing composited; PrintWindow would hand back a stale or empty bitmap
+    # and the caller would compare pixels against garbage.
+    if ([PpcliWin]::IsIconic($hwnd)) { throw "REFUSED: the game window is minimized - restore it before capturing" }
+
+    $wr = New-Object PpcliRect; [void][PpcliWin]::GetWindowRect($hwnd, [ref]$wr)
+    $cr = New-Object PpcliRect; [void][PpcliWin]::GetClientRect($hwnd, [ref]$cr)
+    $origin = New-Object PpcliPoint; [void][PpcliWin]::ClientToScreen($hwnd, [ref]$origin)
+    $ww = $wr.Right - $wr.Left; $wh = $wr.Bottom - $wr.Top
+    $cw = $cr.Right - $cr.Left; $ch = $cr.Bottom - $cr.Top
+    if ($ww -le 0 -or $wh -le 0 -or $cw -le 0 -or $ch -le 0) { throw "REFUSED: the game window has no drawable area (${ww}x${wh})" }
+
+    # Device pixels, not the virtualized ones user32 reports: at 150% DPI a 853x480 "client" is the
+    # 1280x720 frame the upscaler actually produced, and that is the image worth comparing.
+    $dwm = New-Object PpcliRect
+    $sx = 1.0; $sy = 1.0
+    if ([PpcliWin]::DwmGetWindowAttribute($hwnd, 9, [ref]$dwm, 16) -eq 0) {
+        $dw = $dwm.Right - $dwm.Left; $dh = $dwm.Bottom - $dwm.Top
+        if ($dw -gt 0 -and $dh -gt 0) { $sx = $dw / $ww; $sy = $dh / $wh }
+    }
+    $bw = [int][Math]::Round($ww * $sx); $bh = [int][Math]::Round($wh * $sy)
+
+    $shot = New-Object System.Drawing.Bitmap $bw, $bh
+    try {
+        $g = [System.Drawing.Graphics]::FromImage($shot)
+        $hdc = $g.GetHdc()
+        $ok = [PpcliWin]::PrintWindow($hwnd, $hdc, 2)
+        $g.ReleaseHdc($hdc); $g.Dispose()
+        if (-not $ok) { throw "PrintWindow refused the window of pid $($ep.pid)" }
+        # Only the CLIENT area is the game's frame - the title bar and border are the OS's.
+        $cx = [int][Math]::Round(($origin.X - $wr.Left) * $sx)
+        $cy = [int][Math]::Round(($origin.Y - $wr.Top) * $sy)
+        $cw = [Math]::Min([int][Math]::Round($cw * $sx), $bw - $cx)
+        $ch = [Math]::Min([int][Math]::Round($ch * $sy), $bh - $cy)
+        $crop = New-Object System.Drawing.Rectangle $cx, $cy, $cw, $ch
+        $frame = $shot.Clone($crop, $shot.PixelFormat)
+        try {
+            $dir = Split-Path -Parent $path
+            if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
+            $frame.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+        }
+        finally { $frame.Dispose() }
+    }
+    finally { $shot.Dispose() }
+
+    [ordered]@{
+        ok = $true; mode = 'window'; path = $path
+        width = $cw; height = $ch; bytes = (Get-Item $path).Length
+    }
+}
+
 # One request per connection: connect, one length-prefixed UTF-8 frame out, one back, close.
 function Invoke-Pipe($ep, $body) {
     # Depth 32, not 12: a plan is a step list whose steps carry argument envelopes, and at depth 12
@@ -450,6 +539,19 @@ switch ($Command) {
             }
             [ordered]@{ ok = ($failed -eq 0); count = $out.Count; failed = $failed; results = $out } |
                 ConvertTo-Json -Depth 32 -Compress
+        }
+        elseif ($Arg1 -eq 'screenshot' -and $Window) {
+            # Nothing is sent to the game: the pipe is used only to learn WHICH process to capture,
+            # so this works while the engine capture is refused (D3D12 + timeScale 0) as well.
+            $shotArgs = if ($Arg2) { ConvertFrom-Json $Arg2 -NoEnumerate } else { $null }
+            $path = if ($shotArgs -and $shotArgs.PSObject.Properties['path']) { $shotArgs.path } else { $null }
+            if ($path -and -not [IO.Path]::IsPathRooted($path)) { throw "screenshot's `"path`" must be an absolute path" }
+            $ep = Get-Endpoint
+            if (-not $path) {
+                $path = Join-Path $PPRoot ("Mods\PPBridge\ppcli-shot-" + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + "-window.png")
+            }
+            Note "window capture of pid $($ep.pid) (post-present, what the player sees)"
+            Invoke-WindowShot $ep $path | ConvertTo-Json -Depth 8 -Compress
         }
         else {
             $args1 = $null
