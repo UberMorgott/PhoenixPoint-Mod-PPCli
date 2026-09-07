@@ -58,4 +58,65 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   Worked around by dropping the accumulator and generating explicit indexed steps.
 - **Severity:** low. Only bites types with an `()`/`(int)`/`(ICollection)` constructor family.
 
+## 2026-09-06 — a handle cannot be passed as an ARGUMENT from the shell, and the envelope that works is undocumented
+
+- **Attempted:** `connect call '{"op":"invoke","type":"Morgott.ContentTool.Dev.FitBench","member":"ShowPrototype","args":["h:4:17","h:4:28"]}'`
+  — pass two handles that a previous `call`/`items` reply returned as arguments to a static method.
+- **Happened:** `{"ok":false,"code":"overload","error":"nothing binds for 'ShowPrototype': static String
+  ShowPrototype(PrototypeRecord record, PrototypeVariant variant) arg 0 (PrototypeRecord): a string cannot
+  bind to PrototypeRecord"}`, exit 1. A bare `h:N:M` string is never resolved back to its handle.
+- **Expected:** either a bare `h:N:M` argument resolves to the live object, or `PLAYBOOK.md` names the
+  envelope that does. `PLAYBOOK.md:343` documents only `{"$type":"..."}` for passing a TYPE, and the
+  refusal message does not name any alternative.
+- **Evidence:** live `D:\PP-Instance2`, build `3068ae67`, PID 12424, 2026-09-06. Found by trial that
+  `{"$h":"h:4:17"}` DOES work — `{"op":"invoke",...,"args":[{"$h":"h:4:17"},{"$h":"h:4:28"}]}` returned
+  `{"ok":true,"value":null}` and the prototype was really shown. Same envelope worked for an instance
+  method: `{"op":"invoke","target":"h:4:49","member":"PickTarget","args":[{"$h":"h:4:34"}]}` → `ok:true`.
+- **Severity:** low (documentation). The capability exists and works; it is only unfindable — the
+  overload refusal costs a round trip and reads like "this cannot be done from the shell".
+
+## 2026-09-06 — stderr chatter is on the INFORMATION stream, so `2>$null` does not silence it
+
+- **Attempted:** silence the per-call `pipe ppcli-<id> (pid N, build=…, ppcli/1)` banner in a polling
+  loop with `& .\ppcli.ps1 … connect call $json 2>$null`, then with `2>&1` plus a filter.
+- **Happened:** the banner still reached the transcript on every one of ~200 poll iterations; `2>$null`
+  and `2>&1`+filter both left it visible.
+- **Expected:** `2>$null` silences per-call diagnostics, per the output contract's "everything else on
+  stderr" (`PLAYBOOK.md:389`).
+- **Evidence:** live `D:\PP-Instance2`, build `3068ae67`, 2026-09-06, pwsh 7. `6>$null` (the Information
+  stream, i.e. `Write-Host`) DID silence it, which is what identifies where it is written.
+- **Severity:** low, but it is a real cost for an agent: a bounded poll loop floods the transcript, and
+  the documented redirection is the wrong one.
+
+## 2026-09-06 — `6>$null` does NOT silence the per-call banner either (correction to the entry above)
+
+- **Attempted:** the workaround the previous entry recommends — `6>$null` on the `& $ppcli … connect …`
+  call, and then on the whole enclosing `& { … } 6>$null` script block.
+- **Happened:** the `pipe ppcli-<id> (pid N, build=…, ppcli/1)` banner still reached the transcript on
+  every call, in both placements. One bounded poll loop printed it ~250 times.
+- **Expected:** either `2>$null` or `6>$null` silences it, per the output contract (`PLAYBOOK.md:389`).
+- **Evidence:** live `D:\PP-Instance2`, build `3068ae67`, PID 27480, 2026-09-06, pwsh 7 — the same
+  install and build as the entry above. Reproduced on every call of a ~40-call session. Worked around
+  by polling every 3 s instead of every 0.7 s, i.e. by making fewer calls.
+- **Severity:** low, but the documented workaround is wrong: nothing a caller can redirect suppresses
+  it, which suggests the banner is written straight to the console host rather than to a stream.
+
+## 2026-09-07 — `connect screenshot` shows the level-curtain art instead of the presented frame once a mod camera draws objects over its own blit
+
+- **Attempted:** `connect screenshot '{"path":...}'` on the geoscape with Renderforge 1.5.x live (DLSS
+  Quality) after the mod started drawing the site markers with its `DlssPresent` camera (outRT blit at
+  `BeforeForwardOpaque`, then the marker layer; earlier a separate `RenderforgeMarkerCam` at depth +2).
+- **Happened:** the main PNG carried the loading-screen curtain art (or a stale frame) with the markers
+  and the HUD composited on top; `scenePath` carried the pre-upscale scene at 1707x960. The real
+  backbuffer, read by the mod itself at `WaitForEndOfFrame` (`Texture2D.ReadPixels`, `RenderTexture.active
+  = null`), showed the correct globe + markers at the same moment.
+- **Expected:** the main PNG = what is on screen (the note in the reply says the scene is "blank" because
+  Camera.main targets a RenderTexture, but the presented frame is not blank — a second camera blits it).
+- **Evidence:** live `D:\PP-Instance2`, build `69a823ae`, PIDs 24772/34008, 2026-09-07; files
+  `v0-shot.png` / `v1-shot.png` vs the mod's `DumpScreen` dumps in the Renderforge session scratchpad;
+  write-up `Renderforge\docs\research\geoscape-dlss-2026-09-07\marker-cam\results.md` ("Dead ends" 3).
+- **Severity:** medium for graphics-mod work: the visual acceptance test silently shows a frame nobody
+  ever saw. A plain end-of-frame ReadPixels of the screen (no per-camera re-render) reproduces the
+  presented frame in every configuration tried.
+
 <!-- Append new entries above this line. Keep them evidence-backed. -->
