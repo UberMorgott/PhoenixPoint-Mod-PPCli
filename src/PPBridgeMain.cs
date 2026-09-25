@@ -14,7 +14,9 @@ using Base.Serialization;
 using Base.Utils;
 using Base.Utils.GameConsole;
 using PhoenixPoint.Common.Game;
+using PhoenixPoint.Common.Levels.Params;
 using PhoenixPoint.Common.Saves;
+using PhoenixPoint.GameSummary.Levels;
 using PhoenixPoint.Geoscape.Levels;
 using PhoenixPoint.Modding;
 using PhoenixPoint.Tactical.Levels;
@@ -192,6 +194,17 @@ namespace Morgott.PPBridge
         /// Phase is read off the level the game itself is holding: GameUtl.CurrentLevel() plus the
         /// controller component that level carries (the exact test CreatureGate.Current uses,
         /// CreatureGate.cs:542-546). A level that is not Playing is still loading or unloading.
+        ///
+        /// `menu` USED TO BE THE BUCKET FOR EVERY OTHER PLAYING LEVEL, and that lie stopped the game
+        /// process. The game-over summary is a real level (GameSummaryLevelController) run by
+        /// GameSummaryCrt, and the only level result its RunGameLevel understands is a QuitGameResult
+        /// (PhoenixGame.cs:684-712): a PlayNewGameResult handed to FinishLevel there matches none of
+        /// the three branches, RunGameLevel returns, GameSummaryCrt ends, _gameCrt is done and the log
+        /// says "====== GAME STOPPED ======". Every plan that branches on `phase == "menu"` to decide
+        /// whether it may press Play therefore has to be able to tell the HomeScreen from a summary or
+        /// a cutscene, which is what `summary` and `other` are for. The MENU level is identified by its
+        /// own params (MenuLevelParams, PhoenixGame.cs:455-470) - the same object MenuCrt reads the
+        /// Play result out of - so `menu` now means exactly "the level that accepts a new game".
         /// </summary>
         private static object State()
         {
@@ -201,7 +214,9 @@ namespace Morgott.PPBridge
             else if (!lvl.IsPlaying) phase = "loading";
             else if (lvl.GetComponent<GeoLevelController>() != null) phase = "geoscape";
             else if (lvl.GetComponent<TacticalLevelController>() != null) phase = "tactical";
-            else phase = "menu";
+            else if (lvl.GetComponent<GameSummaryLevelController>() != null) phase = "summary";
+            else if (lvl.LevelParams is MenuLevelParams) phase = "menu";
+            else phase = "other";
             return new
             {
                 ok = true,
