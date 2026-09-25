@@ -45,7 +45,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 | `items` | `{h,page?,pageSize?}`; page 0-based; default 50, max 200 |
 | `release` | `{h}` |
 | `find` | search `{query,type?,assembly?}`; enumerate `{all:true,page?,pageSize?,query?,type?,assembly?}`; enumeration default/max 200 |
-| `wait` | one of `{ready:true}`, `{phase:"tactical\|geoscape\|menu\|loading"}`, `{call:{...}}`, `{forMs:N}`; plus `not?`, `timeoutMs?`, `everyFrames?` |
+| `wait` | one of `{ready:true}`, `{phase:"tactical\|geoscape\|menu\|summary\|other\|loading"}`, `{call:{...}}`, `{forMs:N}`; plus `not?`, `timeoutMs?`, `everyFrames?` |
 | `observe` | start `{action:"start",target?:<actor instanceId int>}`; read `{action:"read",aim?:[x,y,z]}`; `{action:"stop\|mark\|status"}` |
 | `snapshot` | `{name,timeoutMs?}` |
 | `restore` | `{name}`; issue-only; follow with `wait` |
@@ -53,7 +53,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 | `status` | `{jobId}` |
 | `cancel` | `{jobId}` |
 
-`call` targets: static `type`; instance handle; `@game`, `@phoenix`, `@defs`, `@level`, `@geo`, `@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@faction`, `@selected`; def `@def:<exact-name|guid>`. Arg envelopes: `{"$h":...}`, `{"$def":...}`, `{"$type":...}`, `{"$enum":...}`, `{"$array":[...]}`, `{"$v2":[...]}`, `{"$v3":[...]}`, `{"$quat":[...]}`, `{"$box":{"type":"System.Single","value":0.5}}` (boxes primitive as named type for param declared `Object` — bare JSON number boxes as `Double`). Reflection: `new|get|set|invoke`; no event subscription, no by-ref/out/pointer calls; indexers via `get_Item`/`set_Item`; equal overload ties refused.
+`call` targets: static `type`; instance handle; `@game`, `@phoenix`, `@defs`, `@level`, `@geo`, `@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@faction`, `@selected`; def `@def:<exact-name|guid>`. Arg envelopes: `{"$h":...}`, `{"$def":...}`, `{"$type":...}`, `{"$enum":...}`, `{"$array":[...]}`, `{"$v2":[...]}`, `{"$v3":[...]}`, `{"$quat":[...]}`, `{"$box":{"type":"System.Single","value":0.5}}` (boxes primitive as named type for param declared `Object` — bare JSON number boxes as `Double`), `{"$new":{"type":"…","args":[…],"fields":{…}}}` (builds the argument; the ONLY way to pass an inlined struct like `EarthUnits` back, since it projects without a handle — `args` picks the ctor, `fields` sets fields after it). Reflection: `new|get|set|invoke`; no event subscription, no by-ref/out/pointer calls; indexers via `get_Item`/`set_Item`; equal overload ties refused.
 
 ## Reply and exit contract
 
@@ -73,7 +73,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 1. Launch with `-mods`; enable `com.morgott.PPBridge` once in in-game manager; arm marker separately.
 2. Gate every session with `connect state`; init queries can hang. `index` only after gate.
 3. Prefer one plan over repeated `connect` calls: lower latency, bounded steps/time, cross-frame waits, `finally` cleanup on success/failure/timeout/cancel.
-4. Check phase/`levelState`; wrong-phase root = `null`. Menu `phase` may precede HomeScreen `level.IsPlaying`; wait for both before next load.
+4. Check phase/`levelState`; wrong-phase root = `null`. Menu `phase` may precede HomeScreen `level.IsPlaying`; wait for both before next load. `phase:"summary"` = game-over screen, `phase:"other"` = some other playing level (intro/cutscene): NEITHER accepts a new game — leave via `@phoenix.FinishLevelAndGoToLobby(0)` first, a `PlayNewGameResult` there ends the game coroutine and the process stops.
 5. Redeploy + restart after mod edits. Never ignore `stale:true`.
 6. `restore` only issues `load_game`; no completion signal. Follow with phase/readiness waits. Mod-incompatible save may stall, not error.
 7. Client timeout cancels cross-frame work; plan runs `finally`. `cancel` can't interrupt sync reflection call already running.

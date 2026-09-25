@@ -341,7 +341,9 @@ co-op geoscape in ~2.5 min from cold.
 
 | Intent | Command |
 |---|---|
-| what is loaded right now | `.\ppcli.ps1 connect state` |
+| what is loaded right now | `.\ppcli.ps1 connect state` (`phase`: `menu` `loading` `geoscape` `tactical` `summary` `other`) |
+| leave the GAME-OVER screen (`phase:"summary"`) — do this BEFORE starting anything, a new game handed to that level stops the process | `.\ppcli.ps1 connect call '{"op":"invoke","target":"@phoenix","member":"FinishLevelAndGoToLobby","args":[0]}'` (the stock plans already branch on it) |
+| pass a STRUCT as an argument (it projects inline, so it has no handle) | `… "args":[{"$new":{"type":"PhoenixPoint.Common.Core.EarthUnits","args":[1500.0]}}]` — `fields":{…}` instead of `args` when no constructor takes it |
 | the live entrances (`@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@selected`, …) | `.\ppcli.ps1 connect roots` |
 | what screen is open RIGHT NOW (either phase) | `.\ppcli.ps1 connect roots` → `roots.viewstate.type` |
 | open a geoscape screen | `.\ppcli.ps1 connect call '{"op":"invoke","target":"@view","member":"ToResearchState","args":[]}'` |

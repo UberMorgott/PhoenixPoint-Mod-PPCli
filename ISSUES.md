@@ -141,21 +141,3 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   leaving the JSON path entirely.
 
 <!-- Append new entries above this line. Keep them evidence-backed. -->
-
-## 2026-09-25 — `start-campaign` from the GameSummary (game-over) screen stops the game process
-
-- Attempted: `.\ppcli.ps1 plan .\plans\start-campaign.json '{"difficultyIndex":1}'` on `D:\PP-Instance2` (PPBridge only, build `69a823ae`) while `connect state` answered `{"phase":"menu","scene":"GameSummaryUIScene"}` (reached after a campaign ended in `PP_Ending_Base_Lost_Cutscene`).
-- Happened: `job j60 accepted, polling`, then client `The operation has timed out.`; process PID 43436 gone; game log ends `====== GAME STOPPED ======` ~30 s after the plan was accepted. No plan reply.
-- Expected: plan leaves GameSummary to HomeScreen and starts a campaign (it works from HomeScreen and from a live geoscape).
-- Severity: medium — silent process exit, cost one relaunch.
-
-## 2026-09-25 — plan outputs report `unresolved: ${...} is not set` for values that exist
-
-- `start-campaign` (vanilla, from HomeScreen): output `"startingBase":"unresolved: ${BASE.value.name} is not set"`, `"soldiers":0,"vehicles":0` — yet right after, `@faction.StartingBase` = `UI_GS_Site (198)`, `@faction.Vehicles` count 1, and the aircraft squad had 5 soldiers.
-- `end-mission '{"outcome":"win"}'` (returning to geoscape): `"geoState":"unresolved: ${AFTERVIEW.roots.viewstate.type} is not set"` while `connect roots` immediately after returned `UIStateGeoModal`.
-- Expected: real values, or the steps wait until the geoscape is populated. Severity: low (output only, run itself fine).
-
-## 2026-09-25 — a struct returned by value cannot be passed back as an argument
-
-- `connect call '{"op":"new","type":"PhoenixPoint.Common.Core.EarthUnits","args":[1500.0]}'` returns `{"value":{"type":"...EarthUnits","Value":1500.0}}` — no `h`. So `GeoMap.GetSitesInRange(GeoSite, EarthUnits, Boolean)` is uncallable (no envelope builds an `EarthUnits`). Worked around by computing `GeoMap.Distance` per site via `connect multi`.
-- Expected: a handle for struct values (or a `{"$new":...}` arg envelope). Severity: low-medium.

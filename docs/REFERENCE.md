@@ -254,7 +254,7 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 | Verb | Input | Returns |
 |---|---|---|
 | `ping` | — | `{ok, protocol, build}` handshake |
-| `state` | — | `{ok, phase, scene, level, levelState}` |
+| `state` | — | `{ok, phase, scene, level, levelState}`; `phase` ∈ `menu` (the level that accepts a new game, or the gap between levels), `loading`, `geoscape`, `tactical`, `summary` (the game-over screen), `other` (any other playing level, e.g. the intro) |
 | `console` | `{command, args[]}` | command result or structured error |
 | `var` | `{name}` / `{name, value}` | the console's **variable** surface — `console` cannot reach it |
 | `call` | `{op, assembly, type, target, member, sig, typeArgs, args, value}` | `{ok, value}` / `{ok, void}` / `{ok, code, error}` |
@@ -371,7 +371,8 @@ and asking for both is how a def hits the 64 KB cap and comes back a refusal ins
 
 `{"$h":"h:e:i"}` handle · `{"$enum":"Player","type":"..."}` · `{"$type":"System.String"}` ·
 `{"$def":"<guid>"}` · `{"$array":[...],"type":"..."}` · `{"$v2":[x,y]}` · `{"$v3":[x,y,z]}` ·
-`{"$quat":[x,y,z,w]}` · `{"$box":{"type":"System.Single","value":0.5}}`. Bare JSON works too:
+`{"$quat":[x,y,z,w]}` · `{"$box":{"type":"System.Single","value":0.5}}` ·
+`{"$new":{"type":"…","args":[…],"fields":{…}}}`. Bare JSON works too:
 strings, booleans, numbers, `null`, and a bare array binds using the parameter's own element type.
 Invariant culture throughout.
 
@@ -381,6 +382,18 @@ bare `0.5` reaches an `Object` slot boxed as `Double` and `FieldInfo.SetValue(nu
 `$box` names the type to box as; the value is then bound by the ordinary rules for that type.
 Verified live: `Object.Equals({"$box":Single 0.5}, {"$box":Single 0.5})` → `true`, the same against a
 `Double` → `false`.
+
+**`$new` — for a value a handle cannot name.** A small value type projects INLINE (`Vector3`,
+`EarthUnits` → `{"type":"…","Value":1500}`) and an inlined struct has no handle, so `$h` cannot pass
+one back and `op:"new"` could only ever RETURN one: `GeoMap.GetSitesInRange(GeoSite, EarthUnits,
+Boolean)` was uncallable for exactly that reason. `$new` builds the argument in place through the
+same constructor path `op:"new"` uses, so anything constructible as a result is constructible as an
+argument. `args` picks the constructor (omit it, or pass `[]`, for the default value of a struct);
+`fields` sets public/private FIELDS afterwards, which is the way back for a struct whose constructor
+does not take what it holds. Verified live 2026-09-26 on `D:\PP-Instance2` (build `655dc543`, live
+geoscape): `GetSitesInRange(<base site>, {"$new":{"type":"PhoenixPoint.Common.Core.EarthUnits",
+"args":[1500.0]}}, true)` → an `InRange` iterator whose `items` are real `GeoSite`s; the same call
+with `"fields":{"Value":1500.0}` instead of `args` returned the same thing.
 
 **No silent conversions.** A string is never parsed into a number (`"7"` into an `int` is refused —
 it is far more often a mistake than an intention). An integer binds to a narrower integer parameter
@@ -766,7 +779,7 @@ or raise `-TimeoutSeconds` when a long plan is intended.
 | Form | Predicate |
 |---|---|
 | `{"ready":true}` | `TacticalLevelController.HasAnyTurnStarted` (`:237,631,715`) |
-| `{"phase":"tactical"}` | the `state` verb's own phase |
+| `{"phase":"tactical"}` | the `state` verb's own phase (`menu`/`loading`/`geoscape`/`tactical`/`summary`/`other`) |
 | `{"call":{...}}` | any `call`, truthy result, re-evaluated each poll |
 | `{"forMs":N}` | **no predicate**: yield N ms of REAL time, then succeed |
 | `+ "not": true` | the same predicate, inverted |
@@ -854,7 +867,14 @@ everything computational is already a `call`.
   step fails on a var that references itself), so `"${ROWS.items[${i}].h}"` picks row `i`.
 - **A real null is not an unset name.** A name that IS set and holds `null` — a step that succeeded
   and read a null member — fails a step *arg* with "IS set and its value is null", and in `output`
-  projects as JSON `null`. Only a missing or mistyped name reads `unresolved: … is not set`.
+  projects as JSON `null`. That holds ANYWHERE on the path, not only at the leaf:
+  `${AFTERVIEW.roots.viewstate.type}` read one frame before the geoscape view enters its first UI
+  state projects as `null`, because `roots.viewstate` is a real null. Only a missing or mistyped
+  name reads `unresolved: … is not set`.
+- **A path that walks off an existing value says WHERE.** `${ST.nope}` answers
+  `${ST.nope} - ${ST} is set (keys: ok, phase, scene, level, levelState) but has no 'nope'` — the
+  longest prefix that resolves, and what it holds. The old whole-path "is not set (known: …)" listed
+  the saved STEP names, which is the right answer only when the FIRST segment is the mistake.
 - **Array splice.** `"${...NAME}"` as an ELEMENT of an array expands that var's own elements into the
   surrounding array (`Plan.cs:330-334`); plain `${NAME}` is unchanged, and a spread outside an array,
   of an unset name, or of a non-array value fails the step loudly rather than guessing.
