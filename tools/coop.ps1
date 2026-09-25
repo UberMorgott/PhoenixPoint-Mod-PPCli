@@ -12,7 +12,8 @@ coop.ps1 - drive an N-PEER co-op session (Multiplayer mod) from the terminal.
   reconnect -Side client1|client2        press the mod's RECONNECT (ReconnectFlow.Start); older: re-JOIN
   state     connect state on every peer
   grep      -Pattern <regex> [-Side host|client1|client2|all] [-Log mp|player|both] [-Since <line>]
-            per peer: the mod log the peer names itself (default), its Player.log, or both
+            per peer: the mod log the peer names itself (default; an offline peer's file is derived
+            from its install path instead), its Player.log, or both. `sources` says which, per peer
   stop      kill ONLY the pids this script launched (pid file beside this script, gitignored)
 
 -Side takes host|client1|client2|...|all; 'client' stays the 2-peer spelling of client1 and 'both'
@@ -195,10 +196,51 @@ function MpLogPath([string]$root) {
     if ($v -is [pscustomobject]) { $v = $v.Value }
     if ($v -and (Test-Path $v)) { $v } else { $null }
 }
+# OFFLINE mapping for a peer that cannot be probed (killed, crashed, not launched yet). Needs the mod
+# log NAMED BY INSTALL: Multiplayer main 4ae4431+, multiplayer-<tag>.log where tag is the install
+# folder's name (sanitized, 24 chars) + FNV-1a 32 of the full path, lower-cased and backslashed, "x8".
+# EXACT reproduction of MultiplayerLog.InstallTag (Multiplayer2\src\Bootstrap\MultiplayerLog.cs:147-161),
+# checked against a C# copy of it. Older builds share ONE multiplayer.log, so nothing is derivable there
+# and this returns nothing rather than guessing another install's file.
+function MpInstallTag([string]$installDir) {
+    $p = $installDir.TrimEnd('\', '/')
+    if (-not $p) { return 'unknown' }
+    $sb = ''
+    foreach ($ch in ([string](($p -split '[\\/]')[-1])).ToCharArray()) {
+        if ($sb.Length -ge 24) { break }
+        $sb += if ([char]::IsLetterOrDigit($ch) -or $ch -eq '-' -or $ch -eq '_') { $ch } else { '_' }
+    }
+    $h = [uint32]2166136261
+    foreach ($ch in $p.Replace('/', '\').ToLowerInvariant().ToCharArray()) {
+        $h = [uint32]($h -bxor [uint32][int]$ch)
+        $h = [uint32](([uint64]$h * [uint64]16777619) % 4294967296)
+    }
+    $lead = if ($sb.Length -eq 0) { 'game' } else { $sb }
+    "$lead-" + $h.ToString('x8')
+}
+function MpLogOffline([string]$root) {
+    $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Multiplayer'
+    if (-not (Test-Path $dir)) { return $null }
+    $tag = MpInstallTag $root
+    $exact = Join-Path $dir "multiplayer-$tag.log"
+    if (Test-Path $exact) { return $exact }
+    # Same install launched twice writes multiplayer-<tag>-2.log …; -prev* is history, not a live run.
+    @(Get-ChildItem $dir -Filter "multiplayer-$tag-*.log" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch '-prev\d*\.log$' } | Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1 -ExpandProperty FullName)[0]
+}
+# The peer's own log, and which route named it: the live probe first, the install mapping second.
+function MpLogFor([string]$root) {
+    $p = MpLogPath $root
+    if ($p) { return [pscustomobject]@{ path = $p; via = 'live probe' } }
+    $p = MpLogOffline $root
+    if ($p) { return [pscustomobject]@{ path = $p; via = 'offline install mapping' } }
+    $null
+}
 function WaitLog([string]$root, [string]$rx, [int]$sec) {
     $dl = (Get-Date).AddSeconds($sec)
     # Both surfaces of that one peer: its Player.log and the mod log the peer names itself.
-    $files = @((LogLines $root), (MpLogPath $root)) | Where-Object { $_ }
+    $files = @((LogLines $root), (MpLogFor $root).path) | Where-Object { $_ }
     while ((Get-Date) -lt $dl) {
         foreach ($f in $files) {
             $hit = Select-String -Path $f -Pattern $rx -ErrorAction SilentlyContinue | Select-Object -Last 1
@@ -402,11 +444,15 @@ switch ($Action) {
         $rows = @(); $sources = [ordered]@{}
         foreach ($r in @(SideRoots $Side)) {
             $name = SideName $r
-            $want = @()
-            if ($Log -in 'mp', 'both') { $want += MpLogPath $r }
-            if ($Log -in 'player', 'both') { $want += LogLines $r }
-            $files = @($want | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)
-            $sources[$name] = if ($files) { $files } else { "NO LOG: peer named no multiplayer.log (not running, or mod inactive) and $(LogLines $r) does not exist" }
+            $files = @(); $how = @()
+            if ($Log -in 'mp', 'both') {
+                $mp = MpLogFor $r      # $null when neither route names a file
+                if ($mp) { $files += $mp.path; $how += "$($mp.path) [$($mp.via)]" }
+            }
+            if (($Log -in 'player', 'both') -and (Test-Path (LogLines $r))) {
+                $files += LogLines $r; $how += "$(LogLines $r) [install -logFile]"
+            }
+            $sources[$name] = if ($how) { $how } else { "NO LOG: no live probe, no install-named mod log (pre-4ae4431 builds share one multiplayer.log, which is not mappable to an install) and $(LogLines $r) does not exist" }
             foreach ($f in $files) {
                 $rows += Select-String -Path $f -Pattern $Pattern | Where-Object LineNumber -gt $Since |
                     ForEach-Object { [pscustomobject]@{ side = $name; log = (Split-Path $f -Leaf); line = $_.LineNumber; text = $_.Line } }

@@ -318,16 +318,23 @@ co-op geoscape in ~2.5 min from cold.
   install and would overwrite a mod you just deployed into the instance. Deploy into instances directly.
 - Both instances must run the SAME mods at the SAME versions: a mismatched JOIN locks READY and
   `campaign` refuses by name (details under the host's `parity mismatch` line).
-- **`grep` reads the MOD log per peer, and the peer names the file.** `MultiplayerLog.LogPath`
-  (`Multiplayer2\src\Bootstrap\MultiplayerLog.cs:36`) is asked of each running peer through `connect call`.
-  The file is NOT beside the DLL: it is `%USERPROFILE%\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Multiplayer\multiplayer.log`,
-  a directory SHARED by every install, and a second same-machine instance falls back to
-  `multiplayer-2.log`, `-3.log`, … picked by **lock order at launch, not by install folder**
-  (`MultiplayerLog.cs:79-93`) — so the peer→file mapping cannot be derived from a path, only asked.
-  `-Log player` reads the instance's own `-logFile` instead, `-Log both` reads both, and the reply's
-  `sources` map always names the file per peer; a peer that can name none is reported as `NO LOG: …`
-  rather than contributing silence. This is also the only log surface the Steam-install peer has (Steam
-  starts it without `-logFile`), and reading is never gated. `WaitLog` inside the verbs watches both files.
+- **`grep` reads the MOD log per peer, two routes.** The file is NOT beside the DLL — it lives in the
+  shared `%USERPROFILE%\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Multiplayer\`.
+  1. **Live probe (primary):** `MultiplayerLog.LogPath` (`Multiplayer2\src\Bootstrap\MultiplayerLog.cs:37`)
+     asked of the running peer through `connect call`.
+  2. **Offline mapping (fallback, killed / crashed / not launched yet):** since Multiplayer `4ae4431` the
+     log is named by INSTALL — `multiplayer-<tag>.log`, tag = install folder name (sanitized, 24 chars)
+     `+ "-" +` FNV-1a 32 of the full path, lower-cased, backslashed, trailing slash trimmed, `x8`
+     (`MultiplayerLog.cs:147-161`, reproduced exactly in `coop.ps1` `MpInstallTag`). `D:\PP-Instance2` →
+     `multiplayer-PP-Instance2-12ff897b.log`. The same install launched twice adds `-2`, `-3`, … so the
+     fallback takes the newest `multiplayer-<tag>-*.log` that is not a `-prev*` ring member.
+  **Needs `4ae4431`+ deployed.** Older builds all write one shared `multiplayer.log` / `-2` / `-3` picked
+  by lock order, which no install path can identify — there the offline route deliberately finds nothing.
+  The reply's `sources` names the file per peer AND the route (`[live probe]` / `[offline install mapping]`
+  / `[install -logFile]`); a peer neither route can name is reported as `NO LOG: …` rather than silence.
+  `-Log player` reads the instance's own `-logFile` instead, `-Log both` reads both. The mod log is also
+  the only surface the Steam-install peer has (Steam starts it without `-logFile`), and reading is never
+  gated. `WaitLog` inside the verbs watches the `Player.log` and the resolved mod log together.
 - **`campaign` presses the lobby's campaign choice first** (menu redesign, Multiplayer2 `f2e945a`): host
   CREATE → clients JOIN in order → host **NEW GAME** (`MultiplayerUI.OnLobbyChooseNewGame`,
   `MultiplayerUI.cs:1410`) → every client READY → **host READY** (its own ready is a term of the gate and
