@@ -290,6 +290,31 @@ A fresh `start-campaign` geoscape has no faction wars, no completed research and
 - Ageing is the expensive part, so pay for it once: `connect snapshot '{"name":"aged"}'` afterwards
   and `restore` it in later runs.
 
+## Two instances, one co-op session (Multiplayer mod)
+
+`tools\coop.ps1` drives a host + client pair (defaults `D:\PP-Instance2` / `D:\PP-Instance3`) through
+the mod's own lobby entry points, by reflection — no clicks. Verified 2026-09-25: both on one fresh
+co-op geoscape in ~2.5 min from cold.
+
+| Intent | Command |
+|---|---|
+| launch both instances, wait for both gates | `.\tools\coop.ps1 launch` |
+| host + join + client READY, then NEW CAMPAIGN, wait both on geoscape | `.\tools\coop.ps1 campaign` |
+| just the lobby (no campaign) | `.\tools\coop.ps1 lobby` |
+| send the squad on a scavenging mission (HOST only; the mod carries the client) | `.\ppcli.ps1 plan .\plans\launch-scavenge.json '{"siteIndex":0}' -PPRoot D:\PP-Instance2` |
+| click through outcome/event popups on one side (stops at any other screen) | `.\tools\coop.ps1 dismiss -Side client` |
+| grep both Player.logs | `.\tools\coop.ps1 grep -Pattern '\[MP\]\[return\]' -Since <line>` |
+| kill ONLY what `launch` started | `.\tools\coop.ps1 stop` |
+
+- `launch` skips the instance's `launch-instance.bat` on purpose: that bat re-syncs `Mods\` FROM the Steam
+  install and would overwrite a mod you just deployed into the instance. Deploy into instances directly.
+- Both instances must run the SAME mods at the SAME versions: a mismatched JOIN locks READY and
+  `campaign` refuses by name (details under the host's `parity mismatch` line).
+- Each instance commits ~13.5 GB. Two at once + a big neighbour exhausted the commit limit on
+  2026-09-25 (System event 2004 Resource-Exhaustion) and BOTH games froze at 0 % CPU mid-mission.
+  Check free commit before launching.
+- Client Continue on the battle summary = `connect call '{"op":"invoke","target":"@view","member":"GoToGeoscape","args":[]}' -PPRoot <client>`.
+
 ## Ask the game something
 
 | Intent | Command |

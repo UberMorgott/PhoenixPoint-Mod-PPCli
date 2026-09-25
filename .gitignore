@@ -17,3 +17,6 @@ ppcli-shot-*.png
 
 # Serena's per-project cache, written by whatever agent last navigated this repo
 .serena/
+
+# coop.ps1 launch record (pids it may kill)
+tools/coop-pids.txt

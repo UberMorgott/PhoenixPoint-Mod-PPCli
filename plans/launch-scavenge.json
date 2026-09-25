@@ -1,0 +1,50 @@
+{
+  "//": "GEOSCAPE -> TACTICAL. Create a scavenging mission on an exploration site next to the first Phoenix aircraft, teleport the aircraft there and launch it with the game's own default deployment. Same calls the native `launch_mission` console command makes (GeoSite.cs:1154-1171); the site/mission come from GeoSite.CreateScavengingMission (GeoSite.cs:576).",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\launch-scavenge.json",
+  "//needs": "A live geoscape (start-campaign.json gets there). Co-op: run it on the HOST only; the Multiplayer mod carries the launch to every client.",
+  "//site": "siteType is a GeoSiteType enum name. The site is the first land-connected site of that type from the aircraft's current site; `siteIndex` picks a later one. Any mission already on that site is replaced.",
+
+  "timeoutMs": 300000,
+  "maxSteps": 60,
+
+  "vars": {
+    "siteType": "Exploration",
+    "siteIndex": 0,
+    "waitTactical": true,
+    "tacticalTimeoutMs": 240000
+  },
+
+  "steps": [
+    { "id": "pf", "verb": "call", "save": "PF", "args": { "op": "get", "target": "@geo", "member": "PhoenixFaction" } },
+    { "id": "vehicles", "verb": "call", "save": "VS", "args": { "op": "get", "target": "${PF.value.h}", "member": "Vehicles" } },
+    { "id": "vehicle", "verb": "items", "save": "VP", "args": { "h": "${VS.value.h}", "page": 0, "pageSize": 1 } },
+    { "id": "home-site", "verb": "call", "save": "S0", "args": { "op": "get", "target": "${VP.items[0].h}", "member": "CurrentSite" } },
+    { "id": "map", "verb": "call", "save": "MAP", "args": { "op": "get", "target": "@geo", "member": "Map" } },
+    { "id": "sites", "verb": "call", "save": "SITES",
+      "args": { "op": "invoke", "target": "${MAP.value.h}", "member": "GetConnectedSitesOfType_Land",
+                "args": [ { "$h": "${S0.value.h}" }, { "$enum": "${siteType}", "type": "PhoenixPoint.Common.Core.GeoSiteType" }, false ] } },
+    { "id": "site", "verb": "items", "save": "SP", "args": { "h": "${SITES.value.h}", "page": "${siteIndex}", "pageSize": 1 } },
+    { "id": "clear-mission", "verb": "call", "args": { "op": "set", "target": "${SP.items[0].h}", "member": "ActiveMission", "value": null } },
+    { "id": "create-mission", "verb": "call",
+      "args": { "op": "invoke", "target": "${SP.items[0].h}", "member": "CreateScavengingMission", "args": [ null, null ] } },
+    { "id": "mission", "verb": "call", "save": "M", "args": { "op": "get", "target": "${SP.items[0].h}", "member": "ActiveMission" } },
+    { "id": "teleport", "verb": "call",
+      "args": { "op": "invoke", "target": "${VP.items[0].h}", "member": "TeleportToSite", "args": [ { "$h": "${SP.items[0].h}" } ] } },
+    { "id": "setup", "verb": "call", "save": "SETUP",
+      "args": { "op": "invoke", "target": "${M.value.h}", "member": "GetDefaultDeploymentSetup",
+                "args": [ { "$h": "${PF.value.h}" }, { "$h": "${VP.items[0].h}" } ] } },
+    { "id": "squad", "verb": "call", "save": "SQ",
+      "args": { "op": "new", "type": "PhoenixPoint.Geoscape.Entities.GeoSquad", "args": [ { "$h": "${SETUP.value.h}" } ] } },
+    { "id": "mission-name", "verb": "call", "save": "MDEF", "args": { "op": "get", "target": "${M.value.h}", "member": "MissionDef" } },
+    { "id": "launch", "verb": "call",
+      "args": { "op": "invoke", "target": "${M.value.h}", "member": "Launch", "args": [ { "$h": "${SQ.value.h}" } ] } },
+    { "id": "tactical", "verb": "wait", "if": "${waitTactical}",
+      "args": { "ready": true, "timeoutMs": "${tacticalTimeoutMs}", "everyFrames": 10 } }
+  ],
+
+  "output": {
+    "site": "${SP.items[0].name}",
+    "mission": "${MDEF.value.name}",
+    "vehicle": "${VP.items[0].name}"
+  }
+}
