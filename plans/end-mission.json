@@ -32,6 +32,10 @@
     { "//": "Unloading tactical and loading the geoscape is a scene change, so every handle taken above is from a dead epoch by the time this returns. Nothing below reads one.",
       "id": "left", "verb": "wait", "args": { "phase": "geoscape", "timeoutMs": 180000 } },
     { "id": "arrived", "verb": "state", "save": "AFTER" },
+    { "//": "`phase:geoscape` says the CONTROLLER exists; the view enters its first UI state a frame or two later, and a `roots` read taken in that gap reported geoState as a null (it used to read `unresolved`, which was worse - it named a step nobody mistyped). @viewstate is re-resolved live on every poll and refuses while it is null, so this waits for the screen itself rather than for a duration.",
+      "id": "geo-ui", "verb": "wait",
+      "args": { "timeoutMs": 60000, "everyFrames": 10,
+                "call": { "op": "invoke", "target": "@viewstate", "member": "GetType", "args": [] } } },
     { "id": "arrived-view", "verb": "roots", "save": "AFTERVIEW" }
   ],
 

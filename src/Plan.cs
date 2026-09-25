@@ -251,7 +251,7 @@ namespace Morgott.PPBridge
                 if (call != null) return new Waiter(call, null, every, timeout, negate);
 
                 return Bad("args", "wait needs one of {\"ready\":true} (HasAnyTurnStarted), " +
-                                   "{\"phase\":\"tactical|geoscape|menu|loading\"}, {\"call\":{...}} " +
+                                   "{\"phase\":\"tactical|geoscape|menu|summary|other|loading\"}, {\"call\":{...}} " +
                                    "or {\"forMs\":N} (yield N ms of REAL time, then succeed)");
             }
 
@@ -791,13 +791,58 @@ namespace Morgott.PPBridge
                 // null is a real answer - "that member is null" - and gets its own exception, which
                 // `output` projects as null instead of as "unresolved". Args still refuse it: a null
                 // handed to a method quietly calls the right method with the wrong argument.
-                if (v == null)
-                    throw new InvalidOperationException("${" + path + "} is not set (known: " +
-                        string.Join(", ", Names()) + ")");
-                if (v.Type == JTokenType.Null)
+                if (v != null && v.Type != JTokenType.Null) return v;
+                if (v != null)
                     throw new NullValue("${" + path + "} IS set and its value is null - the step " +
                         "succeeded and read a null, this is not a missing or mistyped name");
-                return v;
+                throw Missing(path);
+            }
+
+            /// <summary>
+            /// WHICH SEGMENT of the path failed, and why. A whole-path "is not set (known: …)" listed
+            /// the saved STEP names, which is the right answer only when the FIRST segment is the
+            /// mistake; for `${AFTERVIEW.roots.viewstate.type}` it said a name nobody mistyped was not
+            /// set, and for a value that merely was not there yet it read as a plan bug. So the longest
+            /// prefix that DOES resolve is found, and the answer says what that prefix holds. A prefix
+            /// that resolves to a real null is the same answer as a null leaf - it is a reading, not a
+            /// typo - so it throws <see cref="NullValue"/> and `output` projects it as null.
+            /// </summary>
+            private Exception Missing(string path)
+            {
+                string[] segs = path.Split('.');
+                JToken at = null;
+                string sofar = null;
+                for (int i = 0; i < segs.Length; i++)
+                {
+                    string probe = sofar == null ? segs[i] : sofar + "." + segs[i];
+                    JToken t = vars.SelectToken(probe, false);
+                    if (t != null) { at = t; sofar = probe; continue; }
+                    if (sofar == null) break;
+                    if (at.Type == JTokenType.Null)
+                        return new NullValue("${" + path + "} stops at ${" + sofar + "}, which IS set " +
+                            "and null - the step succeeded and read a null, this is not a missing or " +
+                            "mistyped name");
+                    return new InvalidOperationException("${" + path + "} - ${" + sofar + "} is set (" +
+                        Shape(at) + ") but has no '" + segs[i] + "'");
+                }
+                return new InvalidOperationException("${" + path + "} is not set (known: " +
+                    string.Join(", ", Names()) + ")");
+            }
+
+            /// <summary>What a token holds, named the way the missing-member message needs it.</summary>
+            private static string Shape(JToken t)
+            {
+                JObject o = t as JObject;
+                if (o != null)
+                {
+                    List<string> keys = new List<string>();
+                    foreach (KeyValuePair<string, JToken> kv in o) { if (keys.Count == 12) { keys.Add("..."); break; } keys.Add(kv.Key); }
+                    return "keys: " + string.Join(", ", keys.ToArray());
+                }
+                JArray a = t as JArray;
+                if (a != null) return "an array of " + a.Count;
+                return "a " + t.Type.ToString().ToLowerInvariant() + ": " +
+                       Protocol.Clip(t.ToString(Newtonsoft.Json.Formatting.None));
             }
 
             private string[] Names()
