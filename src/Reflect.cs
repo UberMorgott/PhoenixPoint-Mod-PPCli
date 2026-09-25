@@ -233,6 +233,18 @@ namespace Morgott.PPBridge
             return new { ok = false, code, error = message };
         }
 
+        /// <summary>
+        /// The `error` out of a refusal DTO, for the one caller that must report a refusal as a binding
+        /// error rather than as a reply (the <c>$new</c> envelope, nested inside overload scoring).
+        /// </summary>
+        private static string RefusalText(object refusal)
+        {
+            if (refusal == null) return null;
+            PropertyInfo p = refusal.GetType().GetProperty("error");
+            string text = p == null ? null : p.GetValue(refusal, null) as string;
+            return string.IsNullOrEmpty(text) ? "it could not be constructed" : text;
+        }
+
         // ------------------------------------------------------------------ type resolution
 
         private static readonly Dictionary<string, Type> typeCache = new Dictionary<string, Type>();
@@ -451,22 +463,56 @@ namespace Morgott.PPBridge
 
         private static object New(Type type, JArray args)
         {
+            object made;
+            object refusal = Construct(type, args, null, out made);
+            return refusal ?? Value(made);
+        }
+
+        /// <summary>
+        /// Builds one instance, and is the ONE place that does: <c>op:"new"</c> and the <c>$new</c>
+        /// argument envelope both come here, so a type constructible as a result is constructible as an
+        /// argument by the same rules.
+        ///
+        /// `fields` exists for the struct that has no constructor taking what it holds: projection
+        /// INLINES a small value type (<see cref="TryInlineStruct"/>) and an inlined struct has no
+        /// handle, so the only way to hand one back was to rebuild it. Fields are set, never properties
+        /// - the same read-fields-only discipline projection has.
+        /// </summary>
+        private static object Construct(Type type, JArray args, JObject fields, out object made)
+        {
+            made = null;
             // Constructors are never inherited, so this is the one lookup with no hierarchy walk.
             List<MethodBase> ctors = type.GetConstructors(AnyDeclared).Cast<MethodBase>().ToList();
-            if (ctors.Count == 0)
+            if (ctors.Count == 0 || (type.IsValueType && (args == null || args.Count == 0)))
             {
                 // A struct's implicit parameterless constructor is not a ConstructorInfo, so a value
                 // type with no explicit ctor lists none. "new" with no args on one means the default
                 // instance - exactly what Activator.CreateInstance(Type) hands back.
-                if (type.IsValueType && (args == null || args.Count == 0))
-                    return Value(Activator.CreateInstance(type));
-                return Bad("member", type.FullName + " has no accessible constructor");
+                if (type.IsValueType && (args == null || args.Count == 0)) made = Activator.CreateInstance(type);
+                else return Bad("member", type.FullName + " has no accessible constructor");
             }
-            object[] bound;
-            object refusal = Pick(ctors, args, null, ".ctor", out bound);
-            if (refusal != null) return refusal;
-            ConstructorInfo chosen = (ConstructorInfo)Chosen;
-            return Value(chosen.Invoke(bound));
+            else
+            {
+                object[] bound;
+                object refusal = Pick(ctors, args, null, ".ctor", out bound);
+                if (refusal != null) return refusal;
+                made = ((ConstructorInfo)Chosen).Invoke(bound);
+            }
+            if (fields == null) return null;
+            foreach (KeyValuePair<string, JToken> kv in fields)
+            {
+                FieldInfo f = Hierarchy(type, t => t.GetFields(AnyDeclared)).FirstOrDefault(x => x.Name == kv.Key);
+                if (f == null)
+                    return Bad("member", type.FullName + " has no field '" + kv.Key + "' (fields: " +
+                        string.Join(", ", Hierarchy(type, t => t.GetFields(AnyDeclared)).Select(x => x.Name).Take(12).ToArray()) + ")");
+                object v;
+                int score;
+                string error;
+                if (!BindArg(kv.Value, f.FieldType, out v, out score, out error))
+                    return Bad("args", "field '" + kv.Key + "' (" + f.FieldType.Name + "): " + error);
+                f.SetValue(made, v);
+            }
+            return null;
         }
 
         private static object Invoke(Type type, object target, bool haveTarget, string member,
@@ -739,7 +785,7 @@ namespace Morgott.PPBridge
             {
                 string tag = env.Properties().Select(p => p.Name).FirstOrDefault(n => n.Length > 1 && n[0] == '$');
                 if (tag != null) return BindEnvelope(tag, env, target, out value, out score, out error);
-                error = "a JSON object argument must be a tagged envelope ($h, $enum, $type, $def, $array, $box, $v2, $v3, $quat)";
+                error = "a JSON object argument must be a tagged envelope ($h, $enum, $type, $def, $array, $box, $new, $v2, $v3, $quat)";
                 return false;
             }
 
@@ -962,6 +1008,36 @@ namespace Morgott.PPBridge
                     int inner;
                     if (!BindArg(raw, boxAs, out value, out inner, out error)) return false;
                     score = target == boxAs ? ScoreExact : ScoreAssign;
+                    return true;
+                }
+                case "$new":
+                {
+                    // THE ANSWER TO "a struct returned by value cannot be passed back". A small value
+                    // type projects INLINE and therefore has no handle, so `$h` cannot name it and
+                    // `op:"new"` could only ever return one - GeoMap.GetSitesInRange(GeoSite,
+                    // EarthUnits, bool) was uncallable for exactly that reason. This envelope builds
+                    // the argument in place, through the same Construct the `new` op uses.
+                    JObject spec = payload as JObject;
+                    string named = spec != null ? (string)spec["type"] : (string)payload;
+                    if (string.IsNullOrEmpty(named))
+                    {
+                        error = "$new needs {\"$new\":{\"type\":\"<full type name>\",\"args\":[…]}} " +
+                                "(or \"fields\":{…}, or just {\"$new\":\"<type>\"} for the default value)";
+                        return false;
+                    }
+                    Type made = ResolveType(named, spec != null ? (string)spec["assembly"] : (string)env["assembly"], out error);
+                    if (made == null) return false;
+                    if (!target.IsAssignableFrom(made))
+                    {
+                        error = "a new " + made.FullName + " does not bind to " + target.FullName;
+                        return false;
+                    }
+                    object built;
+                    object refusal = Construct(made, spec == null ? null : spec["args"] as JArray,
+                                               spec == null ? null : spec["fields"] as JObject, out built);
+                    if (refusal != null) { error = RefusalText(refusal); return false; }
+                    value = built;
+                    score = target == made ? ScoreExact : ScoreAssign;
                     return true;
                 }
                 case "$v2": return BindVector(payload as JArray, target, 2, "UnityEngine.Vector2", out value, out score, out error);
