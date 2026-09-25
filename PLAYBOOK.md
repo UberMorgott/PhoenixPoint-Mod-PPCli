@@ -301,7 +301,11 @@ co-op geoscape in ~2.5 min from cold.
 | launch both instances, wait for both gates | `.\tools\coop.ps1 launch` |
 | host + join + client READY, then NEW CAMPAIGN, wait both on geoscape | `.\tools\coop.ps1 campaign` |
 | just the lobby (no campaign) | `.\tools\coop.ps1 lobby` |
-| send the squad on a scavenging mission (HOST only; the mod carries the client) | `.\ppcli.ps1 plan .\plans\launch-scavenge.json '{"siteIndex":0}' -PPRoot D:\PP-Instance2` |
+| send the squad on a scavenging mission and wait until BOTH are in tactical | `.\tools\coop.ps1 battle` |
+| the same by hand (HOST only; the mod carries the client) | `.\ppcli.ps1 plan .\plans\launch-scavenge.json '{"siteIndex":0}' -PPRoot D:\PP-Instance2` |
+| crash ONE side (reconnect / drop-in test) | `.\tools\coop.ps1 kill -Side client` |
+| cold launch that side back to the main menu | `.\tools\coop.ps1 relaunch -Side client` |
+| let it rejoin the running session | `.\tools\coop.ps1 reconnect -Side client` |
 | click through outcome/event popups on one side (stops at any other screen) | `.\tools\coop.ps1 dismiss -Side client` |
 | grep both Player.logs | `.\tools\coop.ps1 grep -Pattern '\[MP\]\[return\]' -Since <line>` |
 | kill ONLY what `launch` started | `.\tools\coop.ps1 stop` |
@@ -312,7 +316,17 @@ co-op geoscape in ~2.5 min from cold.
   `campaign` refuses by name (details under the host's `parity mismatch` line).
 - Each instance commits ~13.5 GB. Two at once + a big neighbour exhausted the commit limit on
   2026-09-25 (System event 2004 Resource-Exhaustion) and BOTH games froze at 0 % CPU mid-mission.
-  Check free commit before launching.
+  `launch` now REFUSES under 30 GB free commit and `relaunch` under 15 GB, read from
+  `Win32_OperatingSystem` (`TotalVirtualMemorySize` = the commit limit, `FreeVirtualMemory` = limit minus
+  commit charge, both KB). `-MinFreeCommitGB 0` overrides; `-MinFreeCommitGB <n>` moves the bar.
+- Reconnect loop: `kill -Side client` → `relaunch -Side client` → `reconnect -Side client`. `kill` matches
+  the process by install path, so it only ever kills that one instance; `relaunch` refuses a side that is
+  still running, so the kill must come first, and it keeps `stop` able to kill both afterwards.
+- `reconnect` is JOIN, not a separate button: the mod's network-game screen has CREATE SESSION / JOIN
+  SESSION / JOIN / BACK only (`NetworkGatePanel.cs:215-305`). The host recognises a returning peer by its
+  persistent playerGUID (`SessionLifecycle.StaleRejoinPeers` → `SessionManager.ResumePeer`), so re-JOINing
+  at `127.0.0.1:<port>` IS the reconnect path a human takes. It reports the client's `host ACCEPTED the
+  join` line and, when the host had paused the peer, the host's resume line.
 - Client Continue on the battle summary = `connect call '{"op":"invoke","target":"@view","member":"GoToGeoscape","args":[]}' -PPRoot <client>`.
 
 ## Ask the game something
