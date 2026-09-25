@@ -290,9 +290,9 @@ A fresh `start-campaign` geoscape has no faction wars, no completed research and
 - Ageing is the expensive part, so pay for it once: `connect snapshot '{"name":"aged"}'` afterwards
   and `restore` it in later runs.
 
-## Two instances, one co-op session (Multiplayer mod)
+## N instances, one co-op session (Multiplayer mod)
 
-`tools\coop.ps1` drives a host + client pair (defaults `D:\PP-Instance2` / `D:\PP-Instance3`) through
+`tools\coop.ps1` drives the peers (defaults `D:\PP-Instance2` host / `D:\PP-Instance3` client1) through
 the mod's own lobby entry points, by reflection — no clicks. Verified 2026-09-25: both on one fresh
 co-op geoscape in ~2.5 min from cold.
 
@@ -309,16 +309,33 @@ co-op geoscape in ~2.5 min from cold.
 | click through outcome/event popups on one side (stops at any other screen) | `.\tools\coop.ps1 dismiss -Side client` |
 | grep both Player.logs | `.\tools\coop.ps1 grep -Pattern '\[MP\]\[return\]' -Since <line>` |
 | kill ONLY what `launch` started | `.\tools\coop.ps1 stop` |
+| THREE peers (client→host→other-client relaying, which a pair never exercises) | `.\tools\coop.ps1 launch -Peers 3 -PeerRoots 'D:\PP-Instance2','D:\PP-Instance3','<third install>'` |
+| then the same session verbs, every peer addressed | `.\tools\coop.ps1 campaign -Peers 3 -PeerRoots …` · `battle` · `state` · `grep` |
+| one peer of three | `.\tools\coop.ps1 kill -Side client2 -Peers 3 -PeerRoots …` · `relaunch -Side client2` · `reconnect -Side client2` · `stop -Side client2` |
 
 - `launch` skips the instance's `launch-instance.bat` on purpose: that bat re-syncs `Mods\` FROM the Steam
   install and would overwrite a mod you just deployed into the instance. Deploy into instances directly.
 - Both instances must run the SAME mods at the SAME versions: a mismatched JOIN locks READY and
   `campaign` refuses by name (details under the host's `parity mismatch` line).
+- **Peers are DATA, not verb branches.** `-Peers <n>` (max 4) takes roots in order from `-HostRoot`,
+  `-ClientRoot`, `-Client2Root`; `-PeerRoots <ordered list, host first>` replaces the table outright and
+  `-Peers 3` without a third root REFUSES by name. Peer names are `host`, `client1`, `client2`, …; `-Side`
+  takes any of them plus `all`, and the old spellings still mean the same thing (`client` = `client1`,
+  `both` = `all`), so every command above keeps working. `launch`/`state`/`grep`/`stop` default to every
+  peer; `kill`/`relaunch`/`reconnect` demand one. Multi-peer replies report a `peers` map keyed by peer
+  name instead of the old `host`/`client` fields.
+- **The third install is NOT the Steam game you play by default.** Every lifecycle verb
+  (`launch`/`relaunch`/`kill`) REFUSES a root containing `steamapps`; `-AllowSteamInstall` is the explicit
+  opt-in, and even with it the verb refuses while a PP process from that path runs that `coop.ps1` did not
+  start (matched against `tools\coop-pids.txt`). Reads (`state`, `grep`, plain `connect`) are never gated.
+  That install has no `Player.log` of its own either (Steam starts it without `-logFile`), so `grep` and
+  the log waits cannot see it — use `state` there.
 - Each instance commits ~13.5 GB. Two at once + a big neighbour exhausted the commit limit on
   2026-09-25 (System event 2004 Resource-Exhaustion) and BOTH games froze at 0 % CPU mid-mission.
-  `launch` now REFUSES under 30 GB free commit and `relaunch` under 15 GB, read from
-  `Win32_OperatingSystem` (`TotalVirtualMemorySize` = the commit limit, `FreeVirtualMemory` = limit minus
-  commit charge, both KB). `-MinFreeCommitGB 0` overrides; `-MinFreeCommitGB <n>` moves the bar.
+  The bar is **per peer**: half of `-MinFreeCommitGB` (default 30 → 15 GB each), times the peers being
+  started — 30 GB for a pair, 45 GB for three, 15 GB for one `relaunch`. Read from `Win32_OperatingSystem`
+  (`TotalVirtualMemorySize` = the commit limit, `FreeVirtualMemory` = limit minus commit charge, both KB).
+  `-MinFreeCommitGB 0` overrides; `-MinFreeCommitGB <n>` moves the bar.
 - Reconnect loop: `kill -Side client` → `relaunch -Side client` → `reconnect -Side client`. `kill` matches
   the process by install path, so it only ever kills that one instance; `relaunch` refuses a side that is
   still running, so the kill must come first, and it keeps `stop` able to kill both afterwards.
