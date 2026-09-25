@@ -322,11 +322,19 @@ co-op geoscape in ~2.5 min from cold.
 - Reconnect loop: `kill -Side client` → `relaunch -Side client` → `reconnect -Side client`. `kill` matches
   the process by install path, so it only ever kills that one instance; `relaunch` refuses a side that is
   still running, so the kill must come first, and it keeps `stop` able to kill both afterwards.
-- `reconnect` is JOIN, not a separate button: the mod's network-game screen has CREATE SESSION / JOIN
-  SESSION / JOIN / BACK only (`NetworkGatePanel.cs:215-305`). The host recognises a returning peer by its
-  persistent playerGUID (`SessionLifecycle.StaleRejoinPeers` → `SessionManager.ResumePeer`), so re-JOINing
-  at `127.0.0.1:<port>` IS the reconnect path a human takes. It reports the client's `host ACCEPTED the
-  join` line and, when the host had paused the peer, the host's resume line.
+- `reconnect` presses the mod's own RECONNECT — the first button on the network-game screen — through
+  static `Multiplayer.UI.ReconnectFlow.Start()` (`Multiplayer2\src\Lobby\ReconnectFlow.cs:40`), which
+  replays the `LastSession.Current` record. Success = the client log's `[MP][reconnect] RECONNECT pressed`
+  then `[MP][reconnect] rejoined the session`; the reply's `via` field says which path ran.
+  The type is PROBED first (`get CanReconnect`): a build without `ReconnectFlow`, or one with no
+  last-session record, falls back to a second `OnGateJoin 127.0.0.1:<port>`, which the host still takes as
+  a reconnect (it matches the persistent playerGUID: `SessionLifecycle.StaleRejoinPeers` →
+  `SessionManager.ResumePeer`) and which logs `host ACCEPTED the join` instead.
+- T1 quit-to-menu changed: the client now sends leave(keep seat), so the host logs
+  `Peer N PAUSED: left the game.` — the seat stays and RECONNECT is what fills it again.
+- **Instance lock (both sessions that drive `D:\PP-Instance2/3`).** Before any run that touches them, write
+  `PPCLI\instances.lock` with `<session> <purpose> <start time>` and delete it when done. If the file is
+  already there, do NOT run — report who holds it. It is gitignored.
 - Client Continue on the battle summary = `connect call '{"op":"invoke","target":"@view","member":"GoToGeoscape","args":[]}' -PPRoot <client>`.
 
 ## Ask the game something

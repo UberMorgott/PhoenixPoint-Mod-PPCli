@@ -8,7 +8,7 @@ coop.ps1 - drive a TWO-INSTANCE co-op session (Multiplayer mod) from the termina
   battle    HOST runs plans\launch-scavenge.json, wait until BOTH sides are in tactical
   kill      -Side host|client   hard-kill ONE side (the crash a reconnect test needs)
   relaunch  -Side host|client   cold launch ONE side again, wait for its PPBridge gate (main menu)
-  reconnect -Side client        client JOINs the host again - the mod's own reconnect path
+  reconnect -Side client        press the mod's RECONNECT (ReconnectFlow.Start); older builds: re-JOIN
   state     connect state on both
   grep      -Pattern <regex> [-Side host|client|both] [-Since <line>]  (Player.log of each instance)
   stop      kill ONLY the pids this script launched (pid file beside this script, gitignored)
@@ -234,18 +234,35 @@ switch ($Action) {
                            freeCommitGB = $commit.freeGB } | ConvertTo-Json -Compress
     }
     'reconnect' {
-        # There is NO separate Reconnect button in the mod: the network-game screen offers CREATE SESSION
-        # / JOIN SESSION / JOIN / BACK only (Multiplayer2\src\Lobby\NetworkGatePanel.cs:215-305). A
-        # returning peer reconnects by JOINing again - the host sees a persistent playerGUID already bound
-        # to a roster entry, prunes the dead connection (SessionLifecycle.StaleRejoinPeers) and resumes the
-        # peer (SessionManager.ResumePeer). So this drives the same OnGateJoin the human presses.
+        # Presses the mod's own RECONNECT, the first button on the network-game screen: static
+        # Multiplayer.UI.ReconnectFlow.Start() (Multiplayer2\src\Lobby\ReconnectFlow.cs:40), which replays
+        # the last-session record (LastSession.Current) through MultiplayerUI.BeginReconnect.
+        # PROBED, not assumed: a build without ReconnectFlow falls back to the older path - a second
+        # OnGateJoin at the host address, which the host still treats as a reconnect (it matches the
+        # persistent playerGUID: SessionLifecycle.StaleRejoinPeers -> SessionManager.ResumePeer).
         if ($Side -ne 'client') { throw 'reconnect needs -Side client: the returning peer is a client, and a host cannot rejoin itself (relaunch the host and CREATE SESSION again)' }
-        Note "client: JOIN 127.0.0.1:$Port again (the mod's reconnect path)"
-        Invoke-Ui $ClientRoot 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
-        $accepted = WaitLog $ClientRoot 'host ACCEPTED the join' 60
+        $probe = Result (Call $ClientRoot '{"op":"get","type":"Multiplayer.UI.ReconnectFlow","assembly":"Multiplayer","member":"CanReconnect"}')
+        $can = if ($probe -and $probe.ok) { $probe.value } else { $null }
+        if ($can -is [pscustomobject]) { $can = $can.Value }
+        if ($can -is [string]) { $can = $can -eq 'True' }
+        $via = if ($null -eq $can) { 'OnGateJoin (no ReconnectFlow on this build)' }
+               elseif (-not $can) { 'OnGateJoin (ReconnectFlow present but CanReconnect false - no last-session record)' }
+               else { 'ReconnectFlow.Start' }
+        Note "client: $via"
+        if ($via -eq 'ReconnectFlow.Start') {
+            $r = Result (Call $ClientRoot '{"op":"invoke","type":"Multiplayer.UI.ReconnectFlow","assembly":"Multiplayer","member":"Start","args":[]}')
+            if (-not $r.ok) { throw "ReconnectFlow.Start on ${ClientRoot}: $($r | ConvertTo-Json -Compress)" }
+            $pressed = WaitLog $ClientRoot '\[MP\]\[reconnect\] RECONNECT pressed' 30
+            $joined = WaitLog $ClientRoot '\[MP\]\[reconnect\] rejoined the session' 120
+        } else {
+            Invoke-Ui $ClientRoot 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
+            $pressed = $null
+            $joined = WaitLog $ClientRoot 'host ACCEPTED the join' 60
+        }
         # The host's own resume edge. Best effort: a host that never paused the peer posts no notice.
         $resumed = try { WaitLog $HostRoot 'RESUMED|is back' 30 } catch { $null }
-        [pscustomobject]@{ ok = $true; side = 'client'; accepted = $accepted; hostResume = $resumed
+        [pscustomobject]@{ ok = $true; side = 'client'; via = $via; pressed = $pressed; joined = $joined
+                           hostResume = $resumed
                            client = (Pp $ClientRoot @('connect', 'state')).result.phase } | ConvertTo-Json -Compress
     }
     'dismiss' {

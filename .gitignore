@@ -20,3 +20,6 @@ ppcli-shot-*.png
 
 # coop.ps1 launch record (pids it may kill)
 tools/coop-pids.txt
+
+# Who is currently driving D:\PP-Instance2/3 (see PLAYBOOK.md "Instance lock")
+instances.lock
