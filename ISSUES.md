@@ -159,3 +159,10 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
 
 - `connect call '{"op":"new","type":"PhoenixPoint.Common.Core.EarthUnits","args":[1500.0]}'` returns `{"value":{"type":"...EarthUnits","Value":1500.0}}` — no `h`. So `GeoMap.GetSitesInRange(GeoSite, EarthUnits, Boolean)` is uncallable (no envelope builds an `EarthUnits`). Worked around by computing `GeoMap.Distance` per site via `connect multi`.
 - Expected: a handle for struct values (or a `{"$new":...}` arg envelope). Severity: low-medium.
+
+## 2026-09-26 — `tools\coop.ps1` cannot drive the reconnect scenarios (start battle, kill/relaunch ONE side)
+- Attempted: plan the field checks for Multiplayer2 reconnect + tactical join-in-progress (plan `Multiplayer2\docs\superpowers\plans\2026-09-25-reconnect.md` T1-T7).
+- Happened: `coop.ps1` has `launch`, `campaign`, `dismiss`, `grep`, `stop` only — no verb to start a battle for both peers, kill only the client (or only the host), or relaunch one side and let it rejoin via the mod's Reconnect button.
+- Expected: `coop.ps1 battle` (host launches a mission, client follows, both in tactical), `coop.ps1 kill -Side client|host`, `coop.ps1 relaunch -Side client` (cold launch that instance to main menu), and ideally `coop.ps1 reconnect -Side client` (clicks the Multiplayer2 Reconnect button inside the network screen via `call`).
+- Evidence: design review of the reconnect plan 2026-09-26; today's workaround = hand-driven `ppcli connect call` / `run`.
+- Severity: medium — blocks automated field verification of reconnect/drop-in; human two-client sessions needed otherwise.
