@@ -4,13 +4,15 @@ coop.ps1 - drive an N-PEER co-op session (Multiplayer mod) from the terminal.
 
   launch    start the peers (no Steam sync), wait until every PPBridge gate answers
   lobby     host opens a session, every client joins 127.0.0.1:<port> and readies
-  campaign  lobby + host NEW CAMPAIGN through the mod's own intercept, wait all on geoscape
+  campaign  lobby + host picks NEW GAME, every peer READYs (host too, which is what opens the native
+            new-game settings), confirm it through the mod's own intercept, wait all on geoscape
   battle    HOST runs plans\launch-scavenge.json, wait until EVERY peer is in tactical
   kill      -Side host|client1|client2   hard-kill ONE peer (the crash a reconnect test needs)
   relaunch  -Side host|client1|client2   cold launch ONE peer again, wait for its gate (main menu)
   reconnect -Side client1|client2        press the mod's RECONNECT (ReconnectFlow.Start); older: re-JOIN
   state     connect state on every peer
-  grep      -Pattern <regex> [-Side host|client1|client2|all] [-Since <line>]  (each Player.log)
+  grep      -Pattern <regex> [-Side host|client1|client2|all] [-Log mp|player|both] [-Since <line>]
+            per peer: the mod log the peer names itself (default), its Player.log, or both
   stop      kill ONLY the pids this script launched (pid file beside this script, gitignored)
 
 -Side takes host|client1|client2|...|all; 'client' stays the 2-peer spelling of client1 and 'both'
@@ -47,6 +49,8 @@ param(
     [int]$Port = 14242,
     [int]$DifficultyIndex = 1,
     [string]$Pattern = '',
+    # Which log `grep` reads per peer: the mod's own (default), the instance's Player.log, or both.
+    [ValidateSet('mp', 'player', 'both')] [string]$Log = 'mp',
     [ValidateSet('host', 'client', 'client1', 'client2', 'client3', 'both', 'all')] [string]$Side = 'all',
     [int]$Since = 0,
     [int]$SiteIndex = 0,
@@ -73,6 +77,9 @@ $perPeerCommitGB = $MinFreeCommitGB / 2
 function Note($m) { [Console]::Error.WriteLine("[coop] $m") }
 function Pp([string]$root, [string[]]$a) {
     $out = & $cli @a -PPRoot $root 2>$null 6>$null
+    # A refused verb exits 1 (e.g. no live endpoint on a peer that is not running). That is a RESULT
+    # here, not this script's exit code: probes like MpLogPath ask peers that may be down.
+    $global:LASTEXITCODE = 0
     try { return ($out | Select-Object -Last 1 | ConvertFrom-Json) } catch { return $null }
 }
 function Call([string]$root, [string]$json) { Pp $root @('connect', 'call', $json) }
@@ -172,18 +179,34 @@ function PidsRecord([int[]]$new) {
     $live = @((CoopPids) | Where-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName -eq 'PhoenixPointWin64' })
     (@($live + $new) | Select-Object -Unique) -join ',' | Set-Content $pidFile
 }
-# Only the instance's own -logFile. Unity's default LocalLow log is NOT a fallback: it belongs to
-# whichever install ran last without -logFile, so a peer coop did not launch (the owner's own game)
-# has no log here and grep/WaitLog say so instead of reporting another instance's lines as its.
+# The instance's own -logFile (engine + duplicated [MP] lines). Unity's default LocalLow Player.log is
+# NOT a fallback for it: that one belongs to whichever install ran last without -logFile.
 function LogLines([string]$root) { Join-Path $root 'Player.log' }
+# The mod's OWN log, asked of the running peer itself: Multiplayer.Util.MultiplayerLog.LogPath
+# (Multiplayer2\src\Bootstrap\MultiplayerLog.cs:36,61-93). It does NOT sit beside the DLL - it is
+# <Application.persistentDataPath>\Multiplayer\multiplayer.log, a dir SHARED by every install, and a
+# second same-machine instance falls back to multiplayer-2.log, -3.log … by LOCK ORDER at launch, not
+# by install folder (MultiplayerLog.cs:79-83). So the file cannot be derived from the peer's root:
+# only the peer can say which one is its own, and that is the only log surface a peer coop did not
+# cold-launch (the owner's own Steam game, started without -logFile) has at all.
+function MpLogPath([string]$root) {
+    $r = Result (Call $root '{"op":"get","type":"Multiplayer.Util.MultiplayerLog","assembly":"Multiplayer","member":"LogPath"}')
+    $v = if ($r -and $r.ok) { $r.value } else { $null }
+    if ($v -is [pscustomobject]) { $v = $v.Value }
+    if ($v -and (Test-Path $v)) { $v } else { $null }
+}
 function WaitLog([string]$root, [string]$rx, [int]$sec) {
     $dl = (Get-Date).AddSeconds($sec)
+    # Both surfaces of that one peer: its Player.log and the mod log the peer names itself.
+    $files = @((LogLines $root), (MpLogPath $root)) | Where-Object { $_ }
     while ((Get-Date) -lt $dl) {
-        $hit = Select-String -Path (LogLines $root) -Pattern $rx -ErrorAction SilentlyContinue | Select-Object -Last 1
-        if ($hit) { return $hit.Line }
+        foreach ($f in $files) {
+            $hit = Select-String -Path $f -Pattern $rx -ErrorAction SilentlyContinue | Select-Object -Last 1
+            if ($hit) { return $hit.Line }
+        }
         Start-Sleep 2
     }
-    throw "log timeout on ${root}: /$rx/"
+    throw "log timeout on ${root}: /$rx/ (looked in: $($files -join ', '))"
 }
 function WaitPhase([string]$root, [string]$phase, [int]$sec) {
     $dl = (Get-Date).AddSeconds($sec)
@@ -195,7 +218,11 @@ function WaitPhase([string]$root, [string]$phase, [int]$sec) {
     throw "phase '$phase' timeout on $root"
 }
 
-function Do-Lobby {
+# $chooseNewGame: the lobby's campaign choice (menu redesign, Multiplayer2 main f2e945a). The host's
+# own READY is a term of the start gate now and it REFUSES with nothing chosen
+# (MultiplayerUI.OnLobbyToggleReady, MultiplayerUI.cs:643-660), so NEW GAME
+# (MultiplayerUI.OnLobbyChooseNewGame, MultiplayerUI.cs:1410) has to be pressed BEFORE any READY.
+function Do-Lobby([bool]$chooseNewGame = $false) {
     Note "host: CREATE SESSION on $HostRoot"
     Invoke-Ui $HostRoot 'OnGateCreate' | Out-Null
     WaitLog $HostRoot '\[MP\]\[general\] transport initialized' 30 | Out-Null
@@ -211,9 +238,20 @@ function Do-Lobby {
     Start-Sleep 3
     $mm = Select-String -Path (LogLines $HostRoot) -Pattern 'parity (mismatch|update|OK)' | Select-Object -Last 1
     if ($mm -and $mm.Line -notmatch 'parity OK') { throw "parity mismatch - READY locked; align mods/versions between instances (details follow this line in host Player.log): $($mm.Line)" }
+    if ($chooseNewGame) {
+        # Before the readies: the choice RESETS every ready when it changes (MultiplayerUI.cs:1420-1426).
+        Note 'host: NEW GAME (the lobby campaign choice)'
+        Invoke-Ui $HostRoot 'OnLobbyChooseNewGame' | Out-Null
+        WaitLog $HostRoot '\[MP\]\[lobby\] campaign choice: NEW GAME' 30 | Out-Null
+    }
     foreach ($c in $clientRoots) {
         Note "$(SideName $c): READY"
         Invoke-Ui $c 'OnLobbyToggleReady' '[true]' | Out-Null
+    }
+    if ($chooseNewGame) {
+        # The host READYs like everyone else; the gate counts it (MultiplayerUI.cs:631-634).
+        Note 'host: READY'
+        Invoke-Ui $HostRoot 'OnLobbyToggleReady' '[true]' | Out-Null
     }
 }
 
@@ -242,10 +280,12 @@ switch ($Action) {
         [pscustomobject]@{ ok = $true; hostClients = (Engine $HostRoot 'IsActiveSession') } | ConvertTo-Json -Compress
     }
     'campaign' {
-        Do-Lobby
-        Start-Sleep 2
-        Note 'host: NEW CAMPAIGN (opens the native settings screen)'
-        Invoke-Ui $HostRoot 'OnLobbyNewCampaign' | Out-Null
+        # NEW GAME is chosen inside Do-Lobby, then every peer READYs (host included) and the MOD opens
+        # the native settings screen by itself - MultiplayerUI.TickNewGameRoute -> OnLobbyNewCampaign
+        # (MultiplayerUI.cs:1457-1467). Pressing NEW CAMPAIGN from here would race that auto-open.
+        Do-Lobby $true
+        Note 'host: waiting for the mod to open the native new-game settings (everyone READY)'
+        WaitLog $HostRoot '\[MP\]\[lobby\] NEW GAME: everyone is READY' 60 | Out-Null
         Start-Sleep 3
         # The native settings state (top of HomeScreenView._statesStack): confirm it. The mod's prefix
         # HOLDS that confirm and arms its 5 s countdown, whose fire re-issues it
@@ -356,12 +396,23 @@ switch ($Action) {
         [pscustomobject]$st | ConvertTo-Json -Compress -Depth 5
     }
     'grep' {
-        $rows = foreach ($r in @(SideRoots $Side)) {
+        # PER PEER: -Log mp (default) reads the mod log that peer names, player reads its -logFile,
+        # both reads each. `sources` always says which file answered for which peer - a peer with no
+        # readable log is reported by name instead of contributing silence.
+        $rows = @(); $sources = [ordered]@{}
+        foreach ($r in @(SideRoots $Side)) {
             $name = SideName $r
-            Select-String -Path (LogLines $r) -Pattern $Pattern | Where-Object LineNumber -gt $Since |
-                ForEach-Object { [pscustomobject]@{ side = $name; line = $_.LineNumber; text = $_.Line } }
+            $want = @()
+            if ($Log -in 'mp', 'both') { $want += MpLogPath $r }
+            if ($Log -in 'player', 'both') { $want += LogLines $r }
+            $files = @($want | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)
+            $sources[$name] = if ($files) { $files } else { "NO LOG: peer named no multiplayer.log (not running, or mod inactive) and $(LogLines $r) does not exist" }
+            foreach ($f in $files) {
+                $rows += Select-String -Path $f -Pattern $Pattern | Where-Object LineNumber -gt $Since |
+                    ForEach-Object { [pscustomobject]@{ side = $name; log = (Split-Path $f -Leaf); line = $_.LineNumber; text = $_.Line } }
+            }
         }
-        [pscustomobject]@{ ok = $true; count = @($rows).Count; rows = @($rows) } | ConvertTo-Json -Compress -Depth 4
+        [pscustomobject]@{ ok = $true; count = @($rows).Count; sources = $sources; rows = @($rows) } | ConvertTo-Json -Compress -Depth 4
     }
     'stop' {
         # Every coop-started peer by default; -Side <peer> stops just that one and keeps the pid file

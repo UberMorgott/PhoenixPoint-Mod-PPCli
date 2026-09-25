@@ -299,7 +299,7 @@ co-op geoscape in ~2.5 min from cold.
 | Intent | Command |
 |---|---|
 | launch both instances, wait for both gates | `.\tools\coop.ps1 launch` |
-| host + join + client READY, then NEW CAMPAIGN, wait both on geoscape | `.\tools\coop.ps1 campaign` |
+| host + join + NEW GAME + every peer READY (host too), wait both on geoscape | `.\tools\coop.ps1 campaign` |
 | just the lobby (no campaign) | `.\tools\coop.ps1 lobby` |
 | send the squad on a scavenging mission and wait until BOTH are in tactical | `.\tools\coop.ps1 battle` |
 | the same by hand (HOST only; the mod carries the client) | `.\ppcli.ps1 plan .\plans\launch-scavenge.json '{"siteIndex":0}' -PPRoot D:\PP-Instance2` |
@@ -307,7 +307,8 @@ co-op geoscape in ~2.5 min from cold.
 | cold launch that side back to the main menu | `.\tools\coop.ps1 relaunch -Side client` |
 | let it rejoin the running session | `.\tools\coop.ps1 reconnect -Side client` |
 | click through outcome/event popups on one side (stops at any other screen) | `.\tools\coop.ps1 dismiss -Side client` |
-| grep both Player.logs | `.\tools\coop.ps1 grep -Pattern '\[MP\]\[return\]' -Since <line>` |
+| grep the mod log of every peer | `.\tools\coop.ps1 grep -Pattern '\[MP\]\[return\]' -Since <line>` |
+| grep the instances' `Player.log` instead (engine errors), or both files | `.\tools\coop.ps1 grep -Pattern 'Exception' -Log player` · `-Log both` |
 | kill ONLY what `launch` started | `.\tools\coop.ps1 stop` |
 | THREE peers (client→host→other-client relaying, which a pair never exercises) | `.\tools\coop.ps1 launch -Peers 3 -PeerRoots 'D:\PP-Instance2','D:\PP-Instance3','<third install>'` |
 | then the same session verbs, every peer addressed | `.\tools\coop.ps1 campaign -Peers 3 -PeerRoots …` · `battle` · `state` · `grep` |
@@ -317,6 +318,23 @@ co-op geoscape in ~2.5 min from cold.
   install and would overwrite a mod you just deployed into the instance. Deploy into instances directly.
 - Both instances must run the SAME mods at the SAME versions: a mismatched JOIN locks READY and
   `campaign` refuses by name (details under the host's `parity mismatch` line).
+- **`grep` reads the MOD log per peer, and the peer names the file.** `MultiplayerLog.LogPath`
+  (`Multiplayer2\src\Bootstrap\MultiplayerLog.cs:36`) is asked of each running peer through `connect call`.
+  The file is NOT beside the DLL: it is `%USERPROFILE%\AppData\LocalLow\Snapshot Games Inc\Phoenix Point\Multiplayer\multiplayer.log`,
+  a directory SHARED by every install, and a second same-machine instance falls back to
+  `multiplayer-2.log`, `-3.log`, … picked by **lock order at launch, not by install folder**
+  (`MultiplayerLog.cs:79-93`) — so the peer→file mapping cannot be derived from a path, only asked.
+  `-Log player` reads the instance's own `-logFile` instead, `-Log both` reads both, and the reply's
+  `sources` map always names the file per peer; a peer that can name none is reported as `NO LOG: …`
+  rather than contributing silence. This is also the only log surface the Steam-install peer has (Steam
+  starts it without `-logFile`), and reading is never gated. `WaitLog` inside the verbs watches both files.
+- **`campaign` presses the lobby's campaign choice first** (menu redesign, Multiplayer2 `f2e945a`): host
+  CREATE → clients JOIN in order → host **NEW GAME** (`MultiplayerUI.OnLobbyChooseNewGame`,
+  `MultiplayerUI.cs:1410`) → every client READY → **host READY** (its own ready is a term of the gate and
+  it REFUSES with nothing chosen, `MultiplayerUI.cs:643-660`). The MOD then opens the native new-game
+  settings by itself (`TickNewGameRoute`, `MultiplayerUI.cs:1457-1467`, log line
+  `[MP][lobby] NEW GAME: everyone is READY`) and `campaign` only confirms it — pressing NEW CAMPAIGN by
+  hand would race that auto-open. `lobby` still stops at the clients' READY and chooses nothing.
 - **Peers are DATA, not verb branches.** `-Peers <n>` (max 4) takes roots in order from `-HostRoot`,
   `-ClientRoot`, `-Client2Root`; `-PeerRoots <ordered list, host first>` replaces the table outright and
   `-Peers 3` without a third root REFUSES by name. Peer names are `host`, `client1`, `client2`, …; `-Side`
