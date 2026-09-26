@@ -82,5 +82,6 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 10. One install, one driver. Handles die on scene unload/process restart. Release early via `release` if useful.
 11. `ok:false`, failed trace assertion, `status:"timeout"`, `stale:true` = failure. Never infer success from visible game state.
 12. Disarm when done: delete `Mods\PPBridge\ppcli-enabled`; endpoint stops after periodic check, parked plan still gets cleanup; relaunch needed to re-arm.
+13. Co-op `tools\coop.ps1 launch|relaunch -Lite` = quarter-screen tiled windows + VeryLow preset, shadows off. Unity `-screen-*` args alone useless: game re-applies profile `Options_ScreenWidth/Height/Mode` at boot (`OptionsManager.InitVideoOptions`), so `-Lite` edits each peer's profile `Options.jopt` (id = Goldberg `force_steamid.txt`, else Steam `ActiveUser`) + snapshots shared HKCU PlayerPrefs (one key for ALL installs); originals backed up once in `tools\coop-lite\`, put back by `stop` / `restore` after process exit. After `kill` without `relaunch` => `coop.ps1 restore`. A non-`-Lite` start of a still-backed install restores first.
 
 Next: [`PLAYBOOK.md`](PLAYBOOK.md) = intent -> command; [`docs/REFERENCE.md`](docs/REFERENCE.md) = deep protocol/plan/reflection/security reference; [`ISSUES.md`](ISSUES.md) = defect inbox—log hits there; don't derail current task.

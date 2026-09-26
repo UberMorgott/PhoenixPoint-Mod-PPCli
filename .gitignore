@@ -23,3 +23,6 @@ tools/coop-pids.txt
 
 # Who is currently driving D:\PP-Instance2/3 (see PLAYBOOK.md "Instance lock")
 instances.lock
+
+# coop.ps1 -Lite backups (originals of the profile/registry values it changed; stop/restore consume them)
+tools/coop-lite/

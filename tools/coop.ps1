@@ -36,9 +36,15 @@ It replicates the rest: Goldberg must already be active, SteamAppId env, MULTIPL
 launch/relaunch also gate on free COMMIT (not RAM): each instance commits ~13.5 GB in co-op tactical
 and exhausting the commit limit froze both games mid-mission on 2026-09-25. The bar is per peer -
 half of -MinFreeCommitGB, times the peers actually being started. -MinFreeCommitGB 0 skips.
+
+-Lite (opt-in, launch/relaunch): each peer windowed in its own quarter of the primary work area (2x2,
+host top-left, client1 top-right, client2 bottom-left) at the game's Very Low preset, shadows off.
+Written into each peer's profile Options.jopt (the game re-applies those over Unity's -screen-* args),
+originals backed up once and put back by `stop` (or `restore`) after the process is gone; Unity's
+shared screen PlayerPrefs likewise. -WindowW/-WindowH override the client size. Details: coop-lite.ps1.
 #>
 param(
-    [Parameter(Position = 0, Mandatory)] [ValidateSet('launch', 'lobby', 'campaign', 'battle', 'kill', 'relaunch', 'reconnect', 'dismiss', 'state', 'grep', 'stop')] [string]$Action,
+    [Parameter(Position = 0, Mandatory)] [ValidateSet('launch', 'lobby', 'campaign', 'battle', 'kill', 'relaunch', 'reconnect', 'dismiss', 'state', 'grep', 'stop', 'restore')] [string]$Action,
     [string]$HostRoot = 'D:\PP-Instance2',
     [string]$ClientRoot = 'D:\PP-Instance3',
     # Third peer: the owner's own Steam game is the intended install, hence -AllowSteamInstall.
@@ -58,10 +64,16 @@ param(
     # Free commit `launch` demands for a PAIR; the real bar is half of it per peer started.
     [double]$MinFreeCommitGB = 30,
     [int]$TimeoutSeconds = 300,
-    [switch]$Windowed = $true
+    [switch]$Windowed = $true,
+    # Opt-in light peers: quarter-screen tiled windows + Very Low graphics, restored by stop/restore.
+    [switch]$Lite,
+    # Client size under -Lite; 0 = whatever fits the peer's quarter tile of the primary work area.
+    [int]$WindowW = 0,
+    [int]$WindowH = 0
 )
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
+. (Join-Path $here 'coop-lite.ps1')
 $cli = Join-Path (Split-Path $here -Parent) 'ppcli.ps1'
 $pidFile = Join-Path $here 'coop-pids.txt'
 # The peer table: index 0 is the host, the rest are client1..clientN. Every verb reads it, so a third
@@ -171,8 +183,43 @@ function StartSide([string]$r) {
     $env:SteamClientLaunch = $null; $env:SteamAppId = '839770'; $env:SteamGameId = '839770'; $env:MULTIPLAYER_DIAG = '1'
     if (Test-Path "$r\Player.log") { Move-Item "$r\Player.log" "$r\Player-prev.log" -Force }
     $a = @('-mods', '-logFile', "`"$r\Player.log`"")
-    if ($Windowed) { $a += '-screen-fullscreen', '0', '-screen-width', '1280', '-screen-height', '720' }
+    if ($Lite) {
+        # The profile is what the game applies (coop-lite.ps1 header); the Unity args only size the
+        # first frames before it does. Registry snapshot first: it is shared by every install.
+        $t = LiteTile ([array]::IndexOf($peerRoots, $r))
+        $w = if ($WindowW -gt 0) { $WindowW } else { $t.w }
+        $h = if ($WindowH -gt 0) { $WindowH } else { $t.h }
+        LiteRegSnapshot
+        $jopt = LiteApply $r $w $h
+        Note "lite: $(SideName $r) ${w}x$h Very Low -> $jopt (originals in $(LiteBackupPath $r))"
+        $a += '-screen-fullscreen', '0', '-screen-width', "$w", '-screen-height', "$h"
+    } else {
+        # Only ever true after a -Lite run that was not stopped/restored: a plain start plays the
+        # owner's own settings again, not the leftover lite ones.
+        if (LiteRestore $r) { Note "lite: restored $(SideName $r)'s own video/graphics options before a normal start" }
+        if ($Windowed) { $a += '-screen-fullscreen', '0', '-screen-width', '1280', '-screen-height', '720' }
+    }
     (Start-Process -FilePath "$r\PhoenixPointWin64.exe" -WorkingDirectory $r -ArgumentList $a -PassThru).Id
+}
+# -Lite: move the peer's window into its tile. After the gate, because the game re-applies its own
+# resolution (InitVideoOptions) during boot, long before PPBridge answers.
+function LitePlace([string]$r, [int]$procId) {
+    $t = LiteTile ([array]::IndexOf($peerRoots, $r))
+    $got = LiteMove $procId $t.x $t.y
+    if (-not $got) { Note "lite: $(SideName $r) pid $procId has no visible Unity window - not tiled" }
+    $got
+}
+# -Lite undo for every install in $roots whose game is gone; the shared registry snapshot only once no
+# install is still backed up and no coop-started game runs. Returns what was restored.
+function LiteRestoreIdle([string[]]$roots) {
+    $done = @()
+    foreach ($r in $roots) {
+        if (SideProcs $r) { Note "lite: $r still running - its options stay lite until it exits (then: restore)"; continue }
+        if (LiteRestore $r) { $done += $(if ($r -in $peerRoots) { SideName $r } else { $r }) }
+    }
+    $alive = @((CoopPids) | Where-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName -eq 'PhoenixPointWin64' })
+    if (-not (LiteBackedRoots) -and -not $alive -and (LiteRegRestore)) { $done += 'registry' }
+    $done
 }
 # Keep the pid file a superset of what is still ours: dead pids drop, the new one joins, so `stop`
 # after a `relaunch` still kills both sides.
@@ -314,8 +361,13 @@ switch ($Action) {
         Note "launched pids $($pids -join ',')"
         $phases = [ordered]@{}
         foreach ($r in $roots) { $phases[(SideName $r)] = (WaitGate $r $TimeoutSeconds).phase }
-        [pscustomobject]@{ ok = $true; pids = $pids; peers = $phases
-                           freeCommitGB = $commit.freeGB } | ConvertTo-Json -Compress
+        $out = [ordered]@{ ok = $true; pids = $pids; peers = $phases; freeCommitGB = $commit.freeGB }
+        if ($Lite) {
+            $win = [ordered]@{}
+            for ($i = 0; $i -lt $roots.Count; $i++) { $win[(SideName $roots[$i])] = LitePlace $roots[$i] $pids[$i] }
+            $out.windows = $win
+        }
+        [pscustomobject]$out | ConvertTo-Json -Compress
     }
     'lobby' {
         Do-Lobby
@@ -377,8 +429,10 @@ switch ($Action) {
         PidsRecord @($newPid)
         Note "relaunched $Side as pid $newPid - waiting for its PPBridge gate"
         $s = WaitGate $root $TimeoutSeconds
-        [pscustomobject]@{ ok = $true; side = $Side; pid = $newPid; phase = $s.phase; scene = $s.scene
-                           freeCommitGB = $commit.freeGB } | ConvertTo-Json -Compress
+        $out = [ordered]@{ ok = $true; side = $Side; pid = $newPid; phase = $s.phase; scene = $s.scene
+                           freeCommitGB = $commit.freeGB }
+        if ($Lite) { $out.window = LitePlace $root $newPid }
+        [pscustomobject]$out | ConvertTo-Json -Compress
     }
     'reconnect' {
         # Presses the mod's own RECONNECT, the first button on the network-game screen: static
@@ -476,6 +530,22 @@ switch ($Action) {
             } else { $kept += $p }
         }
         if ($kept) { $kept -join ',' | Set-Content $pidFile } else { Remove-Item $pidFile }
-        [pscustomobject]@{ ok = $true; stopped = $stopped; kept = $kept } | ConvertTo-Json -Compress
+        $out = [ordered]@{ ok = $true; stopped = $stopped; kept = $kept }
+        # -Lite undo, only when a -Lite run left backups: the processes must be GONE first, since Unity
+        # writes its PlayerPrefs on exit and the game may save its options.
+        $backed = @(LiteBackedRoots | Where-Object { $everyPeer -or $_ -in $roots })
+        if ($backed -or ($everyPeer -and (Test-Path (Join-Path $script:LiteDir 'registry.json')))) {
+            if ($stopped) { Wait-Process -Id $stopped -Timeout 30 -ErrorAction SilentlyContinue }
+            $out.liteRestored = @(LiteRestoreIdle $backed)
+        }
+        [pscustomobject]$out | ConvertTo-Json -Compress
+    }
+    'restore' {
+        # Put back what -Lite changed, for every backed-up install that is not running (after a kill,
+        # a crash, or a stop that ran while a game still exited). Never touches a running game's profile.
+        $backed = @(LiteBackedRoots)
+        $restored = @(LiteRestoreIdle $backed)
+        [pscustomobject]@{ ok = $true; restored = $restored; pending = @(LiteBackedRoots)
+                           registryPending = (Test-Path (Join-Path $script:LiteDir 'registry.json')) } | ConvertTo-Json -Compress
     }
 }

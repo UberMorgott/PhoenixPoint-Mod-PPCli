@@ -312,6 +312,8 @@ co-op geoscape in ~2.5 min from cold.
 | kill ONLY what `launch` started | `.\tools\coop.ps1 stop` |
 | THREE peers (client→host→other-client relaying, which a pair never exercises) | `.\tools\coop.ps1 launch -Peers 3 -PeerRoots 'D:\PP-Instance2','D:\PP-Instance3','<third install>'` |
 | then the same session verbs, every peer addressed | `.\tools\coop.ps1 campaign -Peers 3 -PeerRoots …` · `battle` · `state` · `grep` |
+| LIGHT peers: each in its own quarter-screen window (2x2 tiles), Very Low graphics | `.\tools\coop.ps1 launch -Lite …` · `relaunch -Side client1 -Lite` · explicit size `-WindowW 960 -WindowH 540` |
+| undo what `-Lite` changed (after `kill`, a crash, or a game still exiting at `stop`) | `.\tools\coop.ps1 restore` |
 | one peer of three | `.\tools\coop.ps1 kill -Side client2 -Peers 3 -PeerRoots …` · `relaunch -Side client2` · `reconnect -Side client2` · `stop -Side client2` |
 
 - `launch` skips the instance's `launch-instance.bat` on purpose: that bat re-syncs `Mods\` FROM the Steam
@@ -361,6 +363,27 @@ co-op geoscape in ~2.5 min from cold.
   started — 30 GB for a pair, 45 GB for three, 15 GB for one `relaunch`. Read from `Win32_OperatingSystem`
   (`TotalVirtualMemorySize` = the commit limit, `FreeVirtualMemory` = limit minus commit charge, both KB).
   `-MinFreeCommitGB 0` overrides; `-MinFreeCommitGB <n>` moves the bar.
+- **`-Lite` (opt-in; without it nothing below happens).** Unity's `-screen-width/-height/-fullscreen`
+  alone do NOT stick: after boot the game re-applies its profile's `Options_ScreenWidth/Height/Mode`
+  (`OptionsManager.InitVideoOptions` → `Screen.SetResolution`, decompiled `OptionsManager.cs:494-504`) —
+  default runs with `-screen-width 1280` still log `res is 2560x1440`. So `-Lite` writes into each peer's
+  profile `Options.jopt` (`LocalLow\…\Steam\<id>\`, id = Goldberg `force_steamid.txt`: Instance2 `…592`,
+  Instance3 `…593`; Steam install = Steam `ActiveUser` → `…591`, the owner's): windowed at the tile's
+  client size, the game's VeryLow preset (index 0, binding `Very Low`, read live) through the override
+  path (`Options_HasGraphicsOverride=true`, also skips the first-run benchmark), shadows off, VSync off.
+  Tile = quarter of the primary work area in PHYSICAL pixels (2560x1368 here → client 1258x628 after the
+  frame); host top-left, client1 top-right, client2 bottom-left; window moved (never resized) once the
+  gate answers. Reply gains `windows` / `window` (`x,y WxH` outer rect).
+  **Undo:** before the first edit the ORIGINAL values of exactly those keys are saved in
+  `tools\coop-lite\<install>.json` (gitignored; a second `-Lite` launch never overwrites it), and Unity's
+  screen/quality PlayerPrefs in `registry.json` — `HKCU\Software\Snapshot Games Inc\Phoenix Point` is ONE
+  key for every install of the product, written on exit. `stop` waits for the stopped processes to exit,
+  splices the originals back into the CURRENT file (anything else the game saved stays), and restores the
+  registry once no install is backed up and no coop-started game runs. `restore` does the same on demand
+  (after `kill`, or a game that outlived `stop`) and lists what is still pending; a running install is
+  never touched. A plain (non-`-Lite`) `launch`/`relaunch` of a still-backed install restores it first.
+  Offline test: `pwsh -NoProfile -File .\tests\coop-lite.tests.ps1` (+ `-Falsify`).
+  Unmeasured yet: how much commit/RAM and launch time `-Lite` actually saves — the commit gate is unchanged.
 - Reconnect loop: `kill -Side client` → `relaunch -Side client` → `reconnect -Side client`. `kill` matches
   the process by install path, so it only ever kills that one instance; `relaunch` refuses a side that is
   still running, so the kill must come first, and it keeps `stop` able to kill both afterwards.
