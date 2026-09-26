@@ -35,7 +35,8 @@ It replicates the rest: Goldberg must already be active, SteamAppId env, MULTIPL
 
 launch/relaunch also gate on free COMMIT (not RAM): each instance commits ~13.5 GB in co-op tactical
 and exhausting the commit limit froze both games mid-mission on 2026-09-25. The bar is per peer -
-half of -MinFreeCommitGB, times the peers actually being started. -MinFreeCommitGB 0 skips.
+half of -MinFreeCommitGB, times the peers actually being started. -MinFreeCommitGB 0 skips. Under
+-Lite the default bar is 8 GB per peer (measured ~5.35 GB in battle); an explicit -MinFreeCommitGB wins.
 
 -Lite (opt-in, launch/relaunch): each peer windowed in its own quarter of the primary work area (2x2,
 host top-left, client1 top-right, client2 bottom-left) at the game's Very Low preset, shadows off.
@@ -84,8 +85,9 @@ $peerNames = @(0..($peerRoots.Count - 1) | ForEach-Object { if ($_ -eq 0) { 'hos
 $HostRoot = $peerRoots[0]
 $clientRoots = @($peerRoots | Select-Object -Skip 1)
 $ClientRoot = if ($clientRoots.Count) { $clientRoots[0] } else { $null }
-# Free commit one peer needs; `launch` multiplies it by the peers it is actually starting.
-$perPeerCommitGB = $MinFreeCommitGB / 2
+# Free commit one peer needs; `launch` multiplies it by the peers it is actually starting. -Lite peers
+# commit far less (coop-lite.ps1 $LiteCommitGBPerPeer) - unless -MinFreeCommitGB is passed explicitly.
+$perPeerCommitGB = if ($Lite -and -not $PSBoundParameters.ContainsKey('MinFreeCommitGB')) { $script:LiteCommitGBPerPeer } else { $MinFreeCommitGB / 2 }
 
 function Note($m) { [Console]::Error.WriteLine("[coop] $m") }
 function Pp([string]$root, [string[]]$a) {
@@ -150,7 +152,7 @@ function CommitGate([double]$needGB) {
     $c = FreeCommit
     if ($c.freeGB -lt $needGB) {
         throw ("REFUSED: $($c.freeGB) GB free commit of a $($c.limitGB) GB limit, need $needGB GB " +
-               '(each instance commits ~13.5 GB in co-op tactical; exhausting the limit freezes both ' +
+               "(each instance commits ~$(if ($Lite) { '5.4 GB under -Lite' } else { '13.5 GB' }) in co-op tactical; exhausting the limit freezes both " +
                'games at 0% CPU). Close something, or pass -MinFreeCommitGB 0 to override.')
     }
     Note "free commit $($c.freeGB) GB of $($c.limitGB) GB limit (needed $needGB)"
@@ -535,7 +537,10 @@ switch ($Action) {
         # writes its PlayerPrefs on exit and the game may save its options.
         $backed = @(LiteBackedRoots | Where-Object { $everyPeer -or $_ -in $roots })
         if ($backed -or ($everyPeer -and (Test-Path (Join-Path $script:LiteDir 'registry.json')))) {
-            if ($stopped) { Wait-Process -Id $stopped -Timeout 30 -ErrorAction SilentlyContinue }
+            if ($stopped) {
+                $left = @(LiteWaitExit $stopped 90)
+                if ($left.Count) { Note "lite: pid $($left -join ',') still listed 90 s after the kill" }
+            }
             $out.liteRestored = @(LiteRestoreIdle $backed)
         }
         [pscustomobject]$out | ConvertTo-Json -Compress

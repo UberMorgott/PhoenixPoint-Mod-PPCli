@@ -362,7 +362,9 @@ co-op geoscape in ~2.5 min from cold.
   The bar is **per peer**: half of `-MinFreeCommitGB` (default 30 → 15 GB each), times the peers being
   started — 30 GB for a pair, 45 GB for three, 15 GB for one `relaunch`. Read from `Win32_OperatingSystem`
   (`TotalVirtualMemorySize` = the commit limit, `FreeVirtualMemory` = limit minus commit charge, both KB).
-  `-MinFreeCommitGB 0` overrides; `-MinFreeCommitGB <n>` moves the bar.
+  `-MinFreeCommitGB 0` overrides; `-MinFreeCommitGB <n>` moves the bar. **Under `-Lite`** the default bar
+  is 8 GB per peer (16 pair / 24 three / 8 relaunch): field run 10 measured 5.33–5.37 GB private per lite
+  peer in battle. An explicit `-MinFreeCommitGB` still wins.
 - **`-Lite` (opt-in; without it nothing below happens).** Unity's `-screen-width/-height/-fullscreen`
   alone do NOT stick: after boot the game re-applies its profile's `Options_ScreenWidth/Height/Mode`
   (`OptionsManager.InitVideoOptions` → `Screen.SetResolution`, decompiled `OptionsManager.cs:494-504`) —
@@ -377,13 +379,15 @@ co-op geoscape in ~2.5 min from cold.
   **Undo:** before the first edit the ORIGINAL values of exactly those keys are saved in
   `tools\coop-lite\<install>.json` (gitignored; a second `-Lite` launch never overwrites it), and Unity's
   screen/quality PlayerPrefs in `registry.json` — `HKCU\Software\Snapshot Games Inc\Phoenix Point` is ONE
-  key for every install of the product, written on exit. `stop` waits for the stopped processes to exit,
+  key for every install of the product, written on exit. `stop` waits (≤90 s) until the killed processes
+  are gone from the process LIST — not `Wait-Process`, which calls a killed game "not found" while its
+  multi-GB teardown still lists it, so the old `stop` restored nothing (fixed 2026-09-26) — then
   splices the originals back into the CURRENT file (anything else the game saved stays), and restores the
   registry once no install is backed up and no coop-started game runs. `restore` does the same on demand
   (after `kill`, or a game that outlived `stop`) and lists what is still pending; a running install is
   never touched. A plain (non-`-Lite`) `launch`/`relaunch` of a still-backed install restores it first.
   Offline test: `pwsh -NoProfile -File .\tests\coop-lite.tests.ps1` (+ `-Falsify`).
-  Unmeasured yet: how much commit/RAM and launch time `-Lite` actually saves — the commit gate is unchanged.
+  Measured (field run 10): ~5.35 GB private per peer in battle vs ~13.5 GB full; launch time unmeasured.
 - Reconnect loop: `kill -Side client` → `relaunch -Side client` → `reconnect -Side client`. `kill` matches
   the process by install path, so it only ever kills that one instance; `relaunch` refuses a side that is
   still running, so the kill must come first, and it keeps `stop` able to kill both afterwards.

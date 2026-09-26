@@ -135,6 +135,26 @@ function LiteRestore([string]$root) {
     Remove-Item $bak
     $true
 }
+# Free commit ONE -Lite peer needs (coop.ps1's per-peer bar under -Lite unless -MinFreeCommitGB is
+# passed). Field run 10 (2026-09-26, three peers in tactical battle) measured 5.33-5.37 GB private bytes
+# per lite peer vs ~13.5 GB at full settings; 8 GB keeps headroom -> 24 GB for three, 16 for a pair.
+$script:LiteCommitGBPerPeer = 8
+
+# Block until none of $ids is still LISTED by the process enumeration (the view SideProcs has), or $sec
+# passes; returns the ids still listed. NOT Wait-Process: it resolves each id via GetProcessById, which
+# calls a killed process "not found" as soon as its exit code is set, while a multi-GB game is still
+# being torn down and Get-Process still lists it - Wait-Process returned in ms and `stop` skipped every
+# restore as "still running" (ISSUES.md 2026-09-26). $listed is injectable for the offline test.
+function LiteWaitExit([int[]]$ids, [int]$sec = 60,
+                      [scriptblock]$listed = { param($want) @(Get-Process -ErrorAction SilentlyContinue | Where-Object Id -in $want | ForEach-Object Id) }) {
+    $dl = (Get-Date).AddSeconds($sec)
+    while ($true) {
+        $left = @(& $listed $ids)
+        if (-not $left.Count -or (Get-Date) -ge $dl) { return , $left }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 function LiteBackedRoots {
     if (-not (Test-Path $script:LiteDir)) { return @() }
     @(Get-ChildItem $script:LiteDir -Filter '*.json' | Where-Object Name -ne 'registry.json' |

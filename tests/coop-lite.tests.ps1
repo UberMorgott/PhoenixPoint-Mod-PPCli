@@ -125,6 +125,23 @@ Assert-Value 'registry width is back' ((Get-ItemProperty $regKey).'Screenmanager
 Assert-Value 'a screen value that did not exist before is removed' ([bool]((Get-Item $regKey).Property -contains 'UnityGraphicsQuality_h1669003810')) 'False'
 Assert-Value 'a value outside the screen/quality set is left alone' ((Get-ItemProperty $regKey).'I2 Language_h3293684300') '9'
 
+# `stop` must wait until a killed game is gone from the process LIST (what the restore checks), not
+# until Wait-Process calls it exited - field run 10 restored nothing because of that gap.
+$script:calls = 0
+$left = LiteWaitExit @(4242) 10 { param($want) $script:calls++; if ($script:calls -le 2) { $want } else { @() } }
+Assert-Value 'stop waits while a killed game is still listed, then reports none left' "$($left.Count) after $($script:calls) polls" '0 after 3 polls'
+$left = LiteWaitExit @(4242, 4343) 1 { param($want) $want }
+Assert-Value 'a game still listed at the deadline is reported, not waited on forever' ($left -join ',') '4242,4343'
+$child = Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 120' -PassThru -WindowStyle Hidden
+Start-Sleep -Milliseconds 500
+Stop-Process -Id $child.Id -Force
+$left = LiteWaitExit @($child.Id) 30
+Assert-Value 'a real killed process: nothing reported left' $left.Count '0'
+Assert-Value 'a real killed process: Get-Process no longer lists it when the wait returns' @(Get-Process -ErrorAction SilentlyContinue | Where-Object Id -eq $child.Id).Count '0'
+
+# The -Lite commit bar: three lite peers need what field run 10 had to pass by hand (-MinFreeCommitGB 24).
+Assert-Value 'the lite commit bar for three peers' (3 * $script:LiteCommitGBPerPeer) '24'
+
 # A profile that never saved its video options cannot be edited in place: refused by name.
 [IO.File]::WriteAllText($jopt, '{"Version":1,"Contents":{"Objects":[{"ObjectID":1,"TopLevel":true,"ObjectValue":{"#Type":2,"CollectionValues":[]}}]}}')
 Assert-Refusal 'a profile without the keys is refused, naming the fix' 'open the game''s Options once' { LiteApply $install 1 1 }
