@@ -380,9 +380,25 @@ switch ($Action) {
             $running = SideProcs $r
             if ($running) { throw "REFUSED: $r already running (pid $($running.Id -join ','))" }
             if (-not (Test-Path "$r\Mods\PPBridge\ppcli-enabled")) { throw "REFUSED: $r\Mods\PPBridge\ppcli-enabled missing (arm PPBridge first)" }
+            # -Lite: every profile must be editable too (LiteCheck writes nothing), or a bad second
+            # profile refuses only after the first peer already runs with lite options applied.
+            if ($Lite) { $null = LiteCheck $r }
         }
-        $pids = @(foreach ($r in $roots) { StartSide $r })
-        PidsRecord $pids
+        # Each pid is recorded the moment its game starts, so `stop` can always reach it. A start that
+        # fails part-way rolls back: the peers already started are stopped (verified entries only) and
+        # -Lite's profile/registry edits restored, instead of leaving a half-launched session behind.
+        $pids = @()
+        try {
+            foreach ($r in $roots) { $id = StartSide $r; $pids += $id; PidsRecord @($id) }
+        } catch {
+            $why = $_.Exception.Message
+            $mine = @(CoopEntries | Where-Object { $_.pid -in $pids } | Where-Object { PidEntryProcess $_ })
+            foreach ($e in $mine) { Stop-Process -Id $e.pid -Force; Note "rollback: stopped $($e.pid) ($($e.path))" }
+            if ($mine) { $left = LiteWaitExit @($mine.pid) 90; if ($left.Count) { Note "rollback: pid $($left -join ',') still listed 90 s after the kill" } }
+            PidsRecord @()
+            $restored = if ($Lite) { @(LiteRestoreIdle $roots) } else { @() }
+            throw "launch rolled back (stopped: $(@($mine.pid) -join ',' ); lite restored: $($restored -join ',')): $why"
+        }
         Note "launched pids $($pids -join ',')"
         $phases = [ordered]@{}
         foreach ($r in $roots) { $phases[(SideName $r)] = (WaitGate $r $TimeoutSeconds).phase }
@@ -579,7 +595,7 @@ switch ($Action) {
         $backed = @(LiteBackedRoots | Where-Object { $everyPeer -or $_ -in $roots })
         if ($backed -or ($everyPeer -and (Test-Path (Join-Path $script:LiteDir 'registry.json')))) {
             if ($stopped) {
-                $left = @(LiteWaitExit $stopped 90)
+                $left = LiteWaitExit $stopped 90
                 if ($left.Count) { Note "lite: pid $($left -join ',') still listed 90 s after the kill" }
             }
             $out.liteRestored = @(LiteRestoreIdle $backed)

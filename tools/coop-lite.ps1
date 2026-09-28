@@ -110,10 +110,17 @@ function JoptWrite([string]$path, $values) {
 function LiteBackupPath([string]$root) {
     Join-Path $script:LiteDir (($root.TrimEnd('\', '/') -replace '[^A-Za-z0-9]+', '_') + '.json')
 }
-# Lite values into the install's profile; the originals are saved first, once.
-function LiteApply([string]$root, [int]$w, [int]$h) {
+# Everything LiteApply would refuse, writing nothing: `launch -Lite` runs it for EVERY peer before it
+# starts any, so a bad second profile never leaves the first peer running. Returns the profile path.
+function LiteCheck([string]$root) {
     $jopt = LiteProfileJopt $root
     if (-not (Test-Path $jopt)) { throw "REFUSED (-Lite): $jopt missing - launch that install once normally first" }
+    $null = JoptSpans ([IO.File]::ReadAllText($jopt)) @((LiteValues 1 1).Keys)
+    $jopt
+}
+# Lite values into the install's profile; the originals are saved first, once.
+function LiteApply([string]$root, [int]$w, [int]$h) {
+    $jopt = LiteCheck $root
     $vals = LiteValues $w $h
     $bak = LiteBackupPath $root
     if (-not (Test-Path $bak)) {
