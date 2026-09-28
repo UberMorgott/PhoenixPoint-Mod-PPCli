@@ -21,7 +21,8 @@ namespace Morgott.PPBridge
     ///   - a control's identity inside a frame = (label, i): i = how many controls with the same label
     ///     came before it in that event pass. Stable frame to frame for the same UI.
     ///   - list/resolve read ONE complete Repaint pass (the frame before the current Update).
-    ///   - press mode "post" (DEFAULT, EXPERIMENTAL until live-proven): the Repaint row also carries the
+    ///   - press mode "post" (OPT-IN, EXPERIMENTAL: live 0.3.1 run got code:"noevent" even with the game
+    ///     focused - Unity did not turn the posted WM_LBUTTONDOWN into a MouseDown): the Repaint row also carries the
     ///     control's centre in GUI-screen space (GUIUtility.GUIToScreenPoint, Y down from the window top,
     ///     no flip). The press converts it to client pixels (<see cref="ToClient"/>), PostMessages
     ///     WM_MOUSEMOVE + WM_LBUTTONDOWN to the game's own window (never SendInput, never the real
@@ -30,7 +31,7 @@ namespace Morgott.PPBridge
     ///     MouseUp made DoControl return the click. The patch only observes there - the body runs where a
     ///     human click runs it, between Layout passes, so a button that restructures the layout is safe.
     ///     Any down that was posted gets its up, also on timeout/cancel/scene unload.
-    ///   - press mode "force" (opt-in, the 0.3.0 behaviour): forces DoControl's return on a Repaint
+    ///   - press mode "force" (DEFAULT, the 0.3.0 behaviour): forces DoControl's return on a Repaint
     ///     pass. A button body that adds/removes later GUILayout controls then breaks that Repaint
     ///     ("Getting control N's position in a group with only N controls") - it can close the panel.
     ///   - force fires ONLY on a SAFE pass (<see cref="SafePass"/>): Repaint or MouseMove, and only while
@@ -264,11 +265,14 @@ namespace Morgott.PPBridge
                     if (err == null && index < 0) err = "index must be >= 0";
                 }
             }
-            bool post = true, diag = false;
+            // Default "force": "post" is opt-in until live-proven - on the 0.3.1 live run (D:\PP-Instance3,
+            // game FOREGROUND, borderless 2560x1440) Unity delivered no MouseDown for a posted
+            // WM_LBUTTONDOWN (code:"noevent", diag evs {}).
+            bool post = false, diag = false;
             if (err == null && press != null && press["mode"] != null && press["mode"].Type != JTokenType.Null)
             {
                 JToken mt = press["mode"];
-                if (mt.Type != JTokenType.String || ((string)mt != "post" && (string)mt != "force")) err = "press.mode must be \"post\" (default) or \"force\"";
+                if (mt.Type != JTokenType.String || ((string)mt != "post" && (string)mt != "force")) err = "press.mode must be \"force\" (default) or \"post\"";
                 else post = (string)mt == "post";
             }
             if (err == null && a != null && a["diag"] != null && a["diag"].Type != JTokenType.Null)

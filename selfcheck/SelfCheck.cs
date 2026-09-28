@@ -1083,6 +1083,10 @@ namespace Morgott.PPBridge
             Check("imgui-press-fires-once", ok.Contains("\"ok\":true") && ok.Contains("\"fired\":true") && forced.Count == 1 && forced[0] == "Repaint:Run bench#2", ok + " " + string.Join(",", forced));
             Check("imgui-press-unpatches", !ImGuiTap.Active && disarms == arms, "arms=" + arms + " disarms=" + disarms);
             forced.Clear();
+            // no mode = "force" (post is opt-in until live-proven).
+            string dm = ImRun("{'press':{'label':'Run bench','index':1}}", ui, null, null, forced);
+            Check("imgui-press-default-force", dm.Contains("\"fired\":true") && dm.Contains("\"mode\":\"force\"") && forced.Count == 1, dm + " " + string.Join(",", forced));
+            forced.Clear();
             string ev = ImRun("{'press':{'label':'Stop','owner':'benchui','mode':'force'}}", ui, null, "MouseMove", forced);
             Check("imgui-press-input-event-first", ev.Contains("\"ev\":\"MouseMove\"") && forced.Count == 1 && forced[0] == "MouseMove:Stop#1", ev + " " + string.Join(",", forced));
             // P1 double action: a real MouseDown/MouseUp pass is never forced (the native MouseUp would
@@ -1240,7 +1244,10 @@ namespace Morgott.PPBridge
         private static string ImPostRun(string json, ImSim sim, int cancelAt = -1, int unloadAt = -1, int frames = 80)
         {
             ImGuiTap.PostMsg = sim.Post;
-            object r = Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse(json) });
+            // "post" is opt-in since the 0.3.1 live run (default = "force"): every post-mode case asks for it.
+            JObject args = JObject.Parse(json);
+            if (args["press"] is JObject pj && pj["mode"] == null) pj["mode"] = "post";
+            object r = Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = args });
             IPending p = r as IPending;
             if (p == null) return Protocol.Compact(r);
             for (int f = 0; f < frames; f++)
