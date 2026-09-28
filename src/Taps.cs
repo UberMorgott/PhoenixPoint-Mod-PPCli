@@ -10,6 +10,15 @@ using Newtonsoft.Json.Linq;
 
 namespace Morgott.PPBridge
 {
+    /// <summary>Thrown by a wait probe when polling on can never become a truthful answer (the ring
+    /// overwrote rows it had not scanned, the seq space restarted, the regex blew its budget). The
+    /// Waiter ends at once with this code instead of burning the rest of its timeout.</summary>
+    internal sealed class WaitFatal : Exception
+    {
+        internal readonly string Code;
+        internal WaitFatal(string code, string message) : base(message) { Code = code; }
+    }
+
     /// <summary>
     /// A bounded, sequence-numbered ring: the shared shape behind <c>log</c> and <c>events</c>. Every
     /// row gets the next seq (1, 2, ...); a reader keeps the `next` it was handed and asks for
@@ -105,6 +114,17 @@ namespace Morgott.PPBridge
                 : null;
         }
 
+        /// <summary>A wait poll's two truth checks: a since from the future (seq space restarted) is
+        /// code:"cursor" like a read; rows overwritten before they were scanned is code:"dropped" -
+        /// a plain timeout would claim the row never came.</summary>
+        internal static void WaitGuard(long since, long newest, long lost, string what)
+        {
+            if (since > newest)
+                throw new WaitFatal("cursor", "since " + since + " is ahead of the newest " + what + " seq " + newest + " - the game restarted or the ring was cleared; wait again with since:0 or no since");
+            if (lost > 0)
+                throw new WaitFatal("dropped", lost + " " + what + " row(s) after seq " + since + " were overwritten before this poll scanned them - the awaited row may have been among them; poll more often (everyFrames) or read with a narrower source");
+        }
+
         internal static bool TryRegex(string pattern, out Regex rx, out object refusal)
         {
             rx = null; refusal = null;
@@ -120,12 +140,43 @@ namespace Morgott.PPBridge
             }
         }
 
-        /// <summary>A regex that runs away is a non-match, not a hung main thread.</summary>
-        internal static bool IsMatch(Regex rx, string text)
+        /// <summary>Wall-clock budget for ALL the regex work of one request (a read, or one wait
+        /// poll). The per-row 50 ms timeout alone let 1000 rows cost ~50 s of one frame.</summary>
+        internal const int RegexBudgetMs = 100;
+
+        /// <summary>
+        /// One request's regex scan. A row whose match times out, or a scan past
+        /// <see cref="RegexBudgetMs"/>, stops the scan and sets <see cref="Failure"/>: the caller
+        /// refuses (code:"regex") rather than answer from a silently partial scan.
+        /// </summary>
+        internal sealed class Scan
         {
-            if (rx == null) return true;
-            try { return rx.IsMatch(text ?? ""); }
-            catch (RegexMatchTimeoutException) { return false; }
+            private readonly Regex rx;
+            private readonly System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            internal string Failure;
+            internal int Tested;
+
+            internal Scan(Regex rx) { this.rx = rx; }
+
+            internal bool Match(string text)
+            {
+                if (rx == null) return true;
+                if (Failure != null) return false;
+                if (sw.ElapsedMilliseconds > RegexBudgetMs)
+                {
+                    Failure = "match regex spent the " + RegexBudgetMs + " ms request budget after " + Tested + " rows - simplify the pattern or narrow with since/level/sub";
+                    return false;
+                }
+                Tested++;
+                try { return rx.IsMatch(text ?? ""); }
+                catch (RegexMatchTimeoutException)
+                {
+                    Failure = "match regex timed out on one row (row " + Tested + ") - the pattern backtracks catastrophically; simplify it";
+                    return false;
+                }
+            }
+
+            internal object Refusal() { return Bad("regex", Failure); }
         }
 
         internal static int Bytes(object row)
@@ -233,9 +284,9 @@ namespace Morgott.PPBridge
             long since; bool haveSince; int size, bytes;
             object bad = TapPage.Args(a, out since, out haveSince, out size, out bytes);
             if (bad != null) return bad;
-            string level = a == null ? null : (string)a["level"];
-            if (level != null && level != "log" && level != "all" && level != "warning" && level != "error")
-                return TapPage.Bad("args", "level must be log|warning|error (minimum severity)");
+            string level;
+            object badLevel = LevelArg(a, out level);
+            if (badLevel != null) return badLevel;
             Regex rx; object refusal;
             if (!TapPage.TryRegex(a == null ? null : (string)a["match"], out rx, out refusal)) return refusal;
             bool stack = a != null && Plan.Truthy(a["stack"]);
@@ -250,9 +301,11 @@ namespace Morgott.PPBridge
             if (ahead != null) return ahead;
             if (!haveSince) lost = 0;
 
+            TapPage.Scan scan = new TapPage.Scan(rx);
             List<KeyValuePair<long, Row>> hits = new List<KeyValuePair<long, Row>>();
             foreach (KeyValuePair<long, Row> kv in all)
-                if (LevelOk(kv.Value.Level, level) && TapPage.IsMatch(rx, kv.Value.Msg)) hits.Add(kv);
+                if (LevelOk(kv.Value.Level, level) && scan.Match(kv.Value.Msg)) hits.Add(kv);
+            if (scan.Failure != null) return scan.Refusal();
 
             // No `since` = the TAIL: the newest page, and `next` = newest so the next poll is a delta.
             // With `since` = oldest-first after it; a full page stops at its last row.
@@ -262,7 +315,7 @@ namespace Morgott.PPBridge
             bool more = false;
             for (int i = start; i < hits.Count; i++)
             {
-                object row = Project(hits[i].Key, hits[i].Value, stack, clip);
+                Dictionary<string, object> row = Project(hits[i].Key, hits[i].Value, stack, clip);
                 int cost = TapPage.Bytes(row);
                 if (rows.Count >= size || (rows.Count > 0 && used + cost > bytes))
                 {
@@ -270,13 +323,38 @@ namespace Morgott.PPBridge
                     next = hits[i - 1].Key;
                     break;
                 }
+                // ONE row alone over the page: cut to fit and say so, never let it past the budget.
+                if (used + cost > bytes) { Fit(row, bytes - used); cost = TapPage.Bytes(row); }
                 used += cost;
                 rows.Add(row);
             }
             return TapPage.Reply(rows, next, more, lost);
         }
 
-        internal static object Project(long seq, Row r, bool stack, int clip)
+        /// <summary>Shrinks a row to fit <paramref name="room"/> bytes: stack dropped, message cut, `clipped:true`.</summary>
+        private static void Fit(Dictionary<string, object> row, long room)
+        {
+            row.Remove("st");
+            row["clipped"] = true;
+            string m = (string)row["m"];
+            row["m"] = "";
+            long rest = room - TapPage.Bytes(row) - 2;
+            bool cut;
+            row["m"] = ConsolePager.ClipJson(m, Math.Max(16, rest), out cut);
+        }
+
+        internal static object LevelArg(JObject a, out string level)
+        {
+            JToken t = a == null ? null : a["level"];
+            level = null;
+            if (t == null || t.Type == JTokenType.Null) return null;
+            level = t.Type == JTokenType.String ? (string)t : null;
+            if (level != "log" && level != "all" && level != "warning" && level != "error")
+                return TapPage.Bad("args", "level must be log|warning|error (minimum severity)");
+            return null;
+        }
+
+        internal static Dictionary<string, object> Project(long seq, Row r, bool stack, int clip)
         {
             Dictionary<string, object> d = new Dictionary<string, object>
             {
@@ -293,13 +371,17 @@ namespace Morgott.PPBridge
         {
             long lost, newest;
             List<KeyValuePair<long, Row>> rows = Ring.After(since, out lost, out newest);
+            long from = since;
+            TapPage.WaitGuard(since, newest, 0, "log");
+            TapPage.Scan scan = new TapPage.Scan(rx);
             foreach (KeyValuePair<long, Row> kv in rows)
             {
+                bool hit = LevelOk(kv.Value.Level, level) && scan.Match(kv.Value.Msg);
+                if (scan.Failure != null) throw new WaitFatal("regex", scan.Failure);
                 since = kv.Key;
-                if (LevelOk(kv.Value.Level, level) && TapPage.IsMatch(rx, kv.Value.Msg))
-                    return JToken.FromObject(Project(kv.Key, kv.Value, false, DefaultClip));
+                if (hit) return JToken.FromObject(Project(kv.Key, kv.Value, false, DefaultClip));
             }
-            if (newest < since) since = newest;
+            TapPage.WaitGuard(from, newest, lost, "log");
             return null;
         }
 
@@ -331,8 +413,23 @@ namespace Morgott.PPBridge
             internal EventInfo Event;
             internal Delegate Handler;
             internal bool Handles;
+            /// <summary>Interlocked: an event may fire on several threads at once.</summary>
             internal int Fired;
+            /// <summary>Set when RemoveEventHandler threw: the handler is STILL attached, so the sub
+            /// stays in the registry (listed, retryable by unsubscribe/shutdown).</summary>
+            internal string RemoveError;
         }
+
+        /// <summary>At most this many args of one firing are recorded (the rest counted).</summary>
+        internal const int MaxArgs = 8;
+        /// <summary>One projected arg bigger than this is replaced by its type + size.</summary>
+        internal const int MaxArgBytes = 1024;
+
+        /// <summary>The Unity main thread's id, set by the game half at enable. A firing on any
+        /// other thread records only thread-safe scalars: projecting a game object there reads
+        /// Unity state off-main and (handles:true) writes the handle table unlocked. -1 = unknown
+        /// (offline): the current thread counts as main.</summary>
+        internal static int MainThreadId = -1;
 
         internal struct Row
         {
@@ -454,18 +551,43 @@ namespace Morgott.PPBridge
         {
             try
             {
-                sub.Fired++;
+                System.Threading.Interlocked.Increment(ref sub.Fired);
+                bool main = MainThreadId < 0 || System.Threading.Thread.CurrentThread.ManagedThreadId == MainThreadId;
                 JArray projected = new JArray();
-                foreach (object o in args)
+                for (int i = 0; i < args.Length && i < MaxArgs; i++)
                 {
-                    object p;
-                    try { p = sub.Handles ? Reflect.Project(o) : Reflect.Brief(o); }
+                    object o = args[i];
+                    JToken p;
+                    try
+                    {
+                        if (!main) p = OffMain(o);
+                        else
+                        {
+                            object v = sub.Handles ? Reflect.Project(o) : Reflect.Brief(o);
+                            p = v == null ? JValue.CreateNull() : JToken.FromObject(v);
+                        }
+                    }
                     catch (Exception ex) { p = "<" + ex.GetType().Name + ">"; }
-                    projected.Add(p == null ? JValue.CreateNull() : JToken.FromObject(p));
+                    int b = Encoding.UTF8.GetByteCount(p.ToString(Formatting.None));
+                    if (b > MaxArgBytes) p = new JObject { { "$clipped", o == null ? "null" : o.GetType().Name }, { "bytes", b } };
+                    projected.Add(p);
                 }
+                if (args.Length > MaxArgs) projected.Add(new JObject { { "$moreArgs", args.Length - MaxArgs } });
                 Ring.Add(new Row { Sub = sub.Id, Args = projected });
             }
             catch (Exception) { }
+        }
+
+        /// <summary>Off the main thread only immutable scalars are read; anything else is named by
+        /// its runtime type (a managed GetType, no Unity call).</summary>
+        private static JToken OffMain(object o)
+        {
+            if (o == null) return JValue.CreateNull();
+            if (o is string) return Protocol.Clip((string)o);
+            if (o is bool || o is int || o is long || o is float || o is double || o is short || o is byte || o is uint || o is ulong || o is decimal)
+                return JToken.FromObject(o);
+            if (o is Enum) return o.ToString();
+            return new JObject { { "$offMain", o.GetType().Name } };
         }
 
         private static object Unsubscribe(JToken which)
@@ -484,19 +606,38 @@ namespace Morgott.PPBridge
                 }
                 else return TapPage.Bad("args", "unsubscribe takes a sub id or \"all\"");
             }
-            foreach (Sub s in gone) Drop(s, "unsubscribed");
-            return new { ok = true, removed = gone.Count };
+            int removed = 0;
+            List<object> failed = new List<object>();
+            foreach (Sub s in gone)
+            {
+                string err = Drop(s, "unsubscribed");
+                if (err == null) removed++; else failed.Add(new { sub = s.Id, error = err });
+            }
+            if (failed.Count == 0) return new { ok = true, removed };
+            return new { ok = false, code = "threw", error = failed.Count + " handler(s) could not be removed and are STILL attached (kept in the registry; retry unsubscribe)", removed, failed };
         }
 
-        internal static void Drop(Sub s, string reason)
+        /// <summary>Detaches the handler FIRST; only a detach that worked ends the sub. A throwing
+        /// remove accessor leaves the handler attached, so the sub stays registered (RemoveError
+        /// set, shown by list) - dropping it would lose the only reference that can ever retry.
+        /// Returns null on success, else the error.</summary>
+        internal static string Drop(Sub s, string reason)
         {
+            lock (subs) if (!subs.Contains(s)) return null;
+            try { s.Event.RemoveEventHandler(s.Target, s.Handler); }
+            catch (Exception ex)
+            {
+                Exception inner = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
+                s.RemoveError = inner.GetType().Name + ": " + Protocol.Clip(inner.Message);
+                return s.RemoveError;
+            }
             lock (subs)
             {
-                if (!subs.Remove(s)) return;
+                if (!subs.Remove(s)) return null;
                 if (ended.Count >= 64) ended.Clear();
                 ended[s.Id] = reason;
             }
-            try { s.Event.RemoveEventHandler(s.Target, s.Handler); } catch (Exception) { }
+            return null;
         }
 
         /// <summary>Game half, on scene unload: drops every sub whose target <paramref name="gone"/>
@@ -535,7 +676,16 @@ namespace Morgott.PPBridge
             List<object> rows = new List<object>();
             lock (subs)
                 foreach (Sub s in subs)
-                    rows.Add(new { sub = s.Id, @event = s.Event.Name, on = Reflect.ShortName(s.Target == null ? s.Event.DeclaringType : s.Target.GetType()), fired = s.Fired });
+                {
+                    Dictionary<string, object> r = new Dictionary<string, object>
+                    {
+                        { "sub", s.Id }, { "event", s.Event.Name },
+                        { "on", Reflect.ShortName(s.Target == null ? s.Event.DeclaringType : s.Target.GetType()) },
+                        { "fired", System.Threading.Thread.VolatileRead(ref s.Fired) }
+                    };
+                    if (s.RemoveError != null) r["removeError"] = s.RemoveError;
+                    rows.Add(r);
+                }
             return new { ok = true, subs = rows, next = Ring.Last };
         }
 
@@ -556,10 +706,12 @@ namespace Morgott.PPBridge
             if (ahead != null) return ahead;
             if (!haveSince) lost = 0;
 
+            TapPage.Scan scan = new TapPage.Scan(rx);
             List<KeyValuePair<long, Row>> hits = new List<KeyValuePair<long, Row>>();
             foreach (KeyValuePair<long, Row> kv in all)
-                if ((subId == 0 || kv.Value.Sub == subId) && (rx == null || TapPage.IsMatch(rx, kv.Value.Args.ToString(Formatting.None))))
+                if ((subId == 0 || kv.Value.Sub == subId) && (rx == null || scan.Match(kv.Value.Args.ToString(Formatting.None))))
                     hits.Add(kv);
+            if (scan.Failure != null) return scan.Refusal();
 
             int start = haveSince ? 0 : Math.Max(0, hits.Count - size);
             List<object> rows = new List<object>();
@@ -567,13 +719,20 @@ namespace Morgott.PPBridge
             bool more = false;
             for (int i = start; i < hits.Count; i++)
             {
-                object row = Project(hits[i].Key, hits[i].Value);
+                Dictionary<string, object> row = Project(hits[i].Key, hits[i].Value);
                 int cost = TapPage.Bytes(row);
                 if (rows.Count >= size || (rows.Count > 0 && used + cost > bytes))
                 {
                     more = true;
                     next = hits[i - 1].Key;
                     break;
+                }
+                // ONE row alone over the page: args dropped, the row says how big it was.
+                if (used + cost > bytes)
+                {
+                    row.Remove("a");
+                    row["clipped"] = cost;
+                    cost = TapPage.Bytes(row);
                 }
                 used += cost;
                 rows.Add(row);
@@ -587,7 +746,7 @@ namespace Morgott.PPBridge
             return d;
         }
 
-        internal static object Project(long seq, Row r)
+        internal static Dictionary<string, object> Project(long seq, Row r)
         {
             return new Dictionary<string, object> { { "s", seq }, { "sub", r.Sub }, { "a", r.Args } };
         }
@@ -598,13 +757,17 @@ namespace Morgott.PPBridge
         {
             long lost, newest;
             List<KeyValuePair<long, Row>> rows = Ring.After(since, out lost, out newest);
+            long from = since;
+            TapPage.WaitGuard(since, newest, 0, "event");
+            TapPage.Scan scan = new TapPage.Scan(rx);
             foreach (KeyValuePair<long, Row> kv in rows)
             {
+                bool hit = kv.Value.Sub == subId && (rx == null || scan.Match(kv.Value.Args.ToString(Formatting.None)));
+                if (scan.Failure != null) throw new WaitFatal("regex", scan.Failure);
                 since = kv.Key;
-                if (kv.Value.Sub == subId && (rx == null || TapPage.IsMatch(rx, kv.Value.Args.ToString(Formatting.None))))
-                    return JToken.FromObject(Project(kv.Key, kv.Value));
+                if (hit) return JToken.FromObject(Project(kv.Key, kv.Value));
             }
-            if (newest < since) since = newest;
+            TapPage.WaitGuard(from, newest, lost, "event");
             return null;
         }
 
