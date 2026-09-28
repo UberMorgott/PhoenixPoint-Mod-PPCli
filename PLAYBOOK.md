@@ -547,8 +547,11 @@ Stop polling state to learn what happened: read the delta. Every reply carries `
 ## Press a mod's OnGUI button — `imgui`
 
 For IMGUI panels (`OnGUI` + `GUILayout.Button`/`Toggle`, e.g. ContentTool's bench). Not the game's
-own uGUI screens. Presses in-process: no mouse, no focus stolen. EXPERIMENTAL — offline-tested only;
-confirm the effect (log/state) after `fired:true`. Detail: REFERENCE § `imgui`.
+own uGUI screens. Default press = a real click posted into the game's own window (PostMessage: the
+real cursor and focus are not touched), confirmed by the real MouseDown/MouseUp. EXPERIMENTAL — offline-tested
+only; confirm the effect (log/state) after `fired:true`. `code:"noevent"` = Unity dropped the posted
+click (window unfocused?); `code:"missed"` = coordinates off → rerun with `"diag":true`. `"mode":"force"`
+= old forced press: it CAN crash a button that rebuilds the layout (ContentTool bench closed). Detail: REFERENCE § `imgui`.
 
 | Intent | Command |
 |---|---|

@@ -121,6 +121,7 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
 - **Expected:** a press lands the way a real click does (MouseDown/MouseUp event, then Layout + Repaint rebuild), so a button that changes later controls can't break the Repaint pass. AGENTS trap 14 names one `ArgumentException`, but here it is fatal to the panel under test.
 - **Workaround:** select via the mod's own console path (`ct_bench unit <TacCharacterDef>`) or `call set` of the field, then press only buttons whose click doesn't restructure the list.
 - **Severity:** medium (a press that closes the panel under test).
+- **Status: fix pending live** (commit e387cd9, offline-tested). `imgui` press default is now `mode:"post"`: PostMessage WM_MOUSEMOVE+WM_LBUTTONDOWN to the game's own window, confirm a real MouseDown grabbed the control, WM_LBUTTONUP on a later frame, `fired` only on the real MouseUp click → body runs between Layout passes, like a human click. Forced press kept as `mode:"force"`. Open until a live run: re-run the Phoenix Assault press with `"diag":true` → expect `fired:true`, `mode:"post"`, bench stays open, no `ArgumentException` in Player.log. `noevent` = Unity drops posted input while unfocused (then this approach needs another lever).
 
 <!-- Append new entries above this line. Keep them evidence-backed. -->
 

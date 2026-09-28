@@ -40,7 +40,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 | `wait` | `{ready}` `{phase}` `{call}` `{forMs}` `{log:"rx",level?,since?}` `{event:{sub\|target+event,match?,since?}}` + `not?,timeoutMs?,everyFrames?` |
 | `log` | `{since?,level?,match?,pageSize?,pageBytes?,clip?,stack?}` → `{rows?:[{s,l,m}],next,hasMore?,dropped?}`; pass `next` as `since` |
 | `events` | `{subscribe:{target\|type,event}}` → `{sub,next}`; `{since?,sub?,match?}` → `{rows?:[{s,sub,a}],next,ended?}`; `{unsubscribe}` `{list:true}` |
-| `imgui` | `{list:true,owner?,match?}` → `{total,rows:[{l,i?,k?,on?,dis?,o,r}]}`; `{press:{label,owner?,index?},waitFrames?}` → `{fired:true,ev}` / `code:"ambiguous\|notfound\|disabled\|notfired\|scene\|busy"`; fires only on Repaint/MouseMove, bound to owner. EXPERIMENTAL |
+| `imgui` | `{list:true,owner?,match?}` → `{total,rows:[{l,i?,k?,on?,dis?,o,r}]}`; `{press:{label,owner?,index?,mode?},waitFrames?,diag?}` → `{fired:true,mode,ev}` / `code:"ambiguous\|notfound\|disabled\|nohwnd\|offscreen\|noevent\|missed\|notfired\|scene\|busy"`; mode `post` (default) = PostMessage'd real click confirmed by real MouseDown/MouseUp; `force` = forced on Repaint/MouseMove. Bound to owner. EXPERIMENTAL (post not live-proven) |
 | `act` | `{squad:true\|"all"}` → `{turn:{n,f,mine},actors}`; `{list:{actor?,ability?,src?,targets?,all?}}` → `{actor,turn,abilities:[{i,def,t,src?,dis?,tk,ap?}]}` (`targets:true` needs `ability`, capped); `{use:{actor?,ability,src?,target?:{actor}\|{pos:[x,y,z]}},waitMs?(20000)}` → settles → `{exec,ap:[b,a],hp?,dead?,pos?}`; `{endTurn:true}`. Codes `turn busy disabled(+dis) notarget targetKind noability noactor ambiguous(+candidates) scene cap timeout(+settle) cancelled threw stale`; timeout/cancel = `issued:true`, not undone. 0.3.1 offline-tested |
 | `observe` | `{action:"start",target?}` / `read {aim?,page?,pageSize?(10/200)}` / `stop\|mark\|status` |
 | `snapshot` / `restore` | `{name,timeoutMs?}` / `{name}` (issue-only → follow with `wait`) |
@@ -77,7 +77,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 11. `ok:false`, failed assertion, `timeout`, `stale:true` = failure; never infer success from visuals.
 12. Disarm when done: delete `ppcli-enabled`.
 13. Co-op `-Lite`/`stop`/`restore` details → REFERENCE § "Full verb envelopes" (Client).
-14. `imgui` press in Repaint may log one GUILayout `ArgumentException` if the button body changes later controls; not a failure of the press.
+14. `imgui` `mode:"force"` runs the body mid-Repaint: a button that adds/removes later GUILayout controls throws `ArgumentException: Getting control N's position...` and can CLOSE the host panel (ContentTool bench, live 2026-09-28). Use default `post`; `force` only for buttons that leave the layout alone. `post` `noevent`/`missed` → rerun with `diag:true`.
 15. `act use`/`endTurn` (also inside `multi`/`batch`/`plan`) against a Steam-library install (the one the user plays) → client refuses unless `-AllowMutate`. `NewTurnEvent` also fires for AI turns → re-check `act {squad:true}` `turn.mine`.
 16. `connect` wait + mod exception in log: client pings the main thread; answers → job continues, reply gets `logFaults[]`; silent → DEAD RUN. Cold `run`/`batch` still fast-fail on any mod frame.
 
