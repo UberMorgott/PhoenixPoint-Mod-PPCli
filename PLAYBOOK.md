@@ -335,12 +335,14 @@ co-op geoscape in ~2.5 min from cold.
 | launch both instances, wait for both gates | `.\tools\coop.ps1 launch` |
 | host + join + NEW GAME + every peer READY (host too), wait both on geoscape | `.\tools\coop.ps1 campaign` |
 | just the lobby (no campaign) | `.\tools\coop.ps1 lobby` |
+| join through the VPS relay (Multiplayer2 `tools\vps-relay.ps1 -Action start -Clients N` first; clientN → its own tunnel port, refused if a tunnel is down) | `.\tools\coop.ps1 campaign -Peers 3 -Relay` |
+| join explicit addresses (one = every client, else one per client, client1 first) | `.\tools\coop.ps1 lobby -JoinAddress 127.0.0.1:34242,127.0.0.1:34243` |
 | send the squad on a scavenging mission and wait until BOTH are in tactical | `.\tools\coop.ps1 battle` |
 | the same by hand (HOST only; the mod carries the client) | `.\ppcli.ps1 plan .\plans\launch-scavenge.json '{"siteIndex":0}' -PPRoot D:\PP-Instance2` |
 | crash ONE side (reconnect / drop-in test) | `.\tools\coop.ps1 kill -Side client` |
 | cold launch that side back to the main menu | `.\tools\coop.ps1 relaunch -Side client` |
-| let it rejoin the running session | `.\tools\coop.ps1 reconnect -Side client` |
-| click through outcome/event popups on one side (stops at any other screen) | `.\tools\coop.ps1 dismiss -Side client` |
+| let it rejoin the running session (waits for the settled main menu first: phase menu + HomeScreen Playing + MultiplayerUI + mod menu button, 3 polls in a row; `-MenuReadySeconds`, default 120) | `.\tools\coop.ps1 reconnect -Side client` |
+| click through outcome/event popups on one side, skip a geoscape cutscene (native `UIStateGeoCutscene.OnCancel`; stops at any other screen) | `.\tools\coop.ps1 dismiss -Side client` |
 | grep the mod log of every peer | `.\tools\coop.ps1 grep -Pattern '\[MP\]\[return\]' -Since <line>` |
 | grep the instances' `Player.log` instead (engine errors), or both files | `.\tools\coop.ps1 grep -Pattern 'Exception' -Log player` · `-Log both` |
 | kill ONLY what `launch` started | `.\tools\coop.ps1 stop` |
@@ -437,7 +439,7 @@ co-op geoscape in ~2.5 min from cold.
   replays the `LastSession.Current` record. Success = the client log's `[MP][reconnect] RECONNECT pressed`
   then `[MP][reconnect] rejoined the session`; the reply's `via` field says which path ran.
   The type is PROBED first (`get CanReconnect`): a build without `ReconnectFlow`, or one with no
-  last-session record, falls back to a second `OnGateJoin 127.0.0.1:<port>`, which the host still takes as
+  last-session record, falls back to a second `OnGateJoin` at that client's address (`127.0.0.1:<port>`, `-JoinAddress` or `-Relay`), which the host still takes as
   a reconnect (it matches the persistent playerGUID: `SessionLifecycle.StaleRejoinPeers` →
   `SessionManager.ResumePeer`) and which logs `host ACCEPTED the join` instead.
 - T1 quit-to-menu changed: the client now sends leave(keep seat), so the host logs

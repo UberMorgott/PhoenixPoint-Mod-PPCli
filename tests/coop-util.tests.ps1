@@ -90,6 +90,50 @@ Assert-Value 'the same pid with another start time is NOT ours' ([bool](PidEntry
 Assert-Value 'the same pid with another exe is NOT ours' ([bool](PidEntryProcess ([pscustomobject]@{ pid = $e.pid; start = $e.start; path = 'D:\Steam\steamapps\common\Phoenix Point\PhoenixPointWin64.exe'; legacy = $false }) 'pwsh')) 'False'
 Assert-Value 'a legacy pid-only entry never verifies, even for a live pid' ([bool](PidEntryProcess ([pscustomobject]@{ pid = $e.pid; start = 0; path = $null; legacy = $true }) '')) 'False'
 Assert-Value 'the game-name filter rejects a pwsh' ([bool](PidEntryProcess $back)) 'False'
+
+# ---------------------------------------------------------------- join addresses (ISSUES 2026-09-26 relay)
+Assert-Value 'no address given = loopback at -Port for every client' ((JoinAddresses 2 @() $false 14242 '') -join ',') '127.0.0.1:14242,127.0.0.1:14242'
+Assert-Value 'one -JoinAddress = every client' ((JoinAddresses 2 @('10.0.0.5:34242') $false 14242 '') -join ',') '10.0.0.5:34242,10.0.0.5:34242'
+Assert-Value 'one -JoinAddress per client, in order' ((JoinAddresses 2 @('127.0.0.1:34242', '127.0.0.1:34243') $false 14242 '') -join ',') '127.0.0.1:34242,127.0.0.1:34243'
+Assert-Value 'a count that fits neither form is refused' (Outcome { JoinAddresses 3 @('a:1', 'b:2') $false 14242 '' }) 'THROW -JoinAddress has 2 addresses for 3 clients - pass one (every client) or one per client, client1 first'
+Assert-Value 'a non host:port address is refused' (Outcome { JoinAddresses 1 @('34242') $false 14242 '' }) "THROW -JoinAddress '34242' is not host:port"
+Assert-Value 'zero clients = no addresses' ((JoinAddresses 0 @() $false 14242 '').Count) '0'
+$relayFile = Join-Path $scratch 'relay.pids'
+@([pscustomobject]@{ role = 'host'; pid = 1; port = 24242 }, [pscustomobject]@{ role = 'client1'; pid = 11; port = 34242 },
+  [pscustomobject]@{ role = 'client2'; pid = 12; port = 34243 }) | ConvertTo-Json -AsArray | Set-Content $relayFile
+$up = { param($e) $true }
+Assert-Value '-Relay maps clientN to its own tunnel port' ((JoinAddresses 2 @() $true 14242 $relayFile $up) -join ',') '127.0.0.1:34242,127.0.0.1:34243'
+Assert-Value '-Relay with -JoinAddress is refused' (Outcome { JoinAddresses 2 @('a:1') $true 14242 $relayFile $up }) 'THROW -Relay and -JoinAddress are exclusive: the relay names every client address itself'
+Assert-Value '-Relay short of a client tunnel is refused' (Outcome { JoinAddresses 3 @() $true 14242 $relayFile $up }) "THROW -Relay: no client3 tunnel in $relayFile (relay started with fewer -Clients than 3)"
+Assert-Value '-Relay with a dead tunnel is refused' (Outcome { JoinAddresses 2 @() $true 14242 $relayFile { param($e) $e.role -ne 'client2' } }) 'THROW -Relay: client2 tunnel (ssh pid 12, port 34243) is not running - restart the relay'
+Assert-Value '-Relay without a relay is refused' (Outcome { JoinAddresses 1 @() $true 14242 (Join-Path $scratch 'none.pids') $up }) "THROW -Relay: no relay pid file at $(Join-Path $scratch 'none.pids') - start it first: vps-relay.ps1 -Action start -Clients 1"
+@([pscustomobject]@{ role = 'client1'; pid = 11; port = 34242 }, [pscustomobject]@{ role = 'client2'; pid = 12; port = 34242 }) | ConvertTo-Json -AsArray | Set-Content $relayFile
+Assert-Value '-Relay refuses two clients on one port' (Outcome { JoinAddresses 2 @() $true 14242 $relayFile $up }) 'THROW -Relay: client2 shares port 34242 with another client - a broken pid file'
+Assert-Value 'the default tunnel check rejects a pid that is not ssh' ([bool](& $script:RelayTunnelAlive ([pscustomobject]@{ pid = $PID; port = 1 }))) 'False'
+
+# ---------------------------------------------------------------- menu readiness (ISSUES 2026-09-26 reconnect race)
+$menu = [pscustomobject]@{ phase = 'menu'; levelState = 'Playing'; mpUi = $true; menuButton = $true; top = 'PhoenixPoint.Home.View.ViewStates.UIStateHomeScreenCutscene' }
+Assert-Value 'a settled menu with the mod button is ready (top state not required)' ([string](MenuNotReady $menu)) ''
+Assert-Value 'a still-loading HomeScreen is not ready' (MenuNotReady ([pscustomobject]@{ phase = 'menu'; levelState = 'Loading'; mpUi = $true; menuButton = $true })) "HomeScreen level 'Loading', not Playing"
+Assert-Value 'no captured menu button is not ready' (MenuNotReady ([pscustomobject]@{ phase = 'menu'; levelState = 'Playing'; mpUi = $true; menuButton = $false })) 'mod menu button not captured yet (NativeWidgetFactory.HasMenuButton false)'
+Assert-Value 'no MultiplayerUI is not ready' (MenuNotReady ([pscustomobject]@{ phase = 'menu'; levelState = 'Playing'; mpUi = $false; menuButton = $true })) 'MultiplayerUI.Instance not up'
+Assert-Value 'an older build falls back to UIStateMainMenu' (MenuNotReady ([pscustomobject]@{ phase = 'menu'; levelState = 'Playing'; mpUi = $true; menuButton = $null; top = 'X.UIStateHomeScreenCutscene' })) "top home state 'X.UIStateHomeScreenCutscene', not UIStateMainMenu"
+Assert-Value 'an older build on the main menu is ready' ([string](MenuNotReady ([pscustomobject]@{ phase = 'menu'; levelState = 'Playing'; mpUi = $true; menuButton = $null; top = 'PhoenixPoint.Home.View.ViewStates.UIStateMainMenu' }))) ''
+Assert-Value 'the geoscape is not the menu' (MenuNotReady ([pscustomobject]@{ phase = 'geoscape'; levelState = 'Playing'; mpUi = $true; menuButton = $true })) "phase 'geoscape', not menu"
+# Sequence probe: not ready, ready, not ready (flicker), ready x3 -> returns on the 6th poll.
+$script:seq = @($false, $true, $false, $true, $true, $true, $true); $script:polls = 0
+$probe = { $ok = $script:seq[$script:polls]; $script:polls++; if ($ok) { $menu } else { [pscustomobject]@{ phase = 'loading' } } }
+$null = WaitMenuReadyCore $probe 10 3 1
+Assert-Value 'readiness needs 3 CONSECUTIVE ready polls (a flicker resets)' $script:polls '6'
+$script:polls = 0
+Assert-Value 'never settling throws the last reason' (Outcome { WaitMenuReadyCore { [pscustomobject]@{ phase = 'loading' } } 0 3 1 }) "THROW menu not ready after 0s: phase 'loading', not menu"
+Assert-Value 'a throwing probe counts as not ready' (Outcome { WaitMenuReadyCore { throw 'pipe down' } 0 3 1 }) 'THROW menu not ready after 0s: no state answer'
+
+# ---------------------------------------------------------------- dismiss (ISSUES 2026-09-26 cutscene)
+Assert-Value 'a geoscape cutscene is skipped' (DismissKind 'PhoenixPoint.Geoscape.View.ViewStates.UIStateGeoCutscene') 'cutscene'
+Assert-Value 'a modal gets its OK' (DismissKind 'PhoenixPoint.Geoscape.View.ViewStates.UIStateGeoModal') 'modal'
+Assert-Value 'an event gets FinishEncounter' (DismissKind 'PhoenixPoint.Geoscape.View.ViewStates.UIStateGeoscapeEvent') 'event'
+Assert-Value 'Replenish is left alone' ([string](DismissKind 'PhoenixPoint.Geoscape.View.ViewStates.UIStateReplenish')) ''
 }
 finally {
     if ($child) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }

@@ -3,13 +3,16 @@
 coop.ps1 - drive an N-PEER co-op session (Multiplayer mod) from the terminal.
 
   launch    start the peers (no Steam sync), wait until every PPBridge gate answers
-  lobby     host opens a session, every client joins 127.0.0.1:<port> and readies
+  lobby     host opens a session, every client joins its address and readies (default 127.0.0.1:<port>;
+            -JoinAddress <one for all | one per client>, or -Relay = vps-relay.ps1's per-client tunnels)
   campaign  lobby + host picks NEW GAME, every peer READYs (host too, which is what opens the native
             new-game settings), confirm it through the mod's own intercept, wait all on geoscape
   battle    HOST runs plans\launch-scavenge.json, wait until EVERY peer is in tactical
   kill      -Side host|client1|client2   hard-kill ONE peer (the crash a reconnect test needs)
   relaunch  -Side host|client1|client2   cold launch ONE peer again, wait for its gate (main menu)
-  reconnect -Side client1|client2        press the mod's RECONNECT (ReconnectFlow.Start); older: re-JOIN
+  reconnect -Side client1|client2        wait for the settled main menu, then press the mod's RECONNECT
+                                         (ReconnectFlow.Start); older: re-JOIN at that client's address
+  dismiss   -Side ...                    click through geoscape modals/events, skip a cutscene
   state     connect state on every peer
   grep      -Pattern <regex> [-Side host|client1|client2|all] [-Log mp|player|both] [-Since <line>]
             per peer: the mod log the peer names itself (default; an offline peer's file is derived
@@ -55,6 +58,13 @@ param(
     [ValidateRange(1, 4)] [int]$Peers = 2,
     [switch]$AllowSteamInstall,
     [int]$Port = 14242,
+    # Address each client JOINs: one = every client, else one per client (client1 first). Default 127.0.0.1:<Port>.
+    [string[]]$JoinAddress = @(),
+    # Join through Multiplayer2\tools\vps-relay.ps1's tunnels: clientN -> 127.0.0.1:<its port> from the relay's pid file.
+    [switch]$Relay,
+    [string]$RelayPidFile = (Join-Path $env:TEMP 'pp-vps-relay.pids'),
+    # reconnect: how long the relaunched client may take to reach a settled main menu.
+    [int]$MenuReadySeconds = 120,
     [int]$DifficultyIndex = 1,
     [string]$Pattern = '',
     # Which log `grep` reads per peer: the mod's own (default), the instance's Player.log, or both.
@@ -317,6 +327,30 @@ function WaitLog([string]$root, [string]$rx, [int]$sec, [hashtable]$mark = @{}, 
 # The mod's refusal of a join, e.g. a game-build parity mismatch:
 # "[MP][parity] join REFUSED by host: 1 difference(s)" + "Phoenix Point build differs: host … != client …".
 $joinRefusedRx = 'join REFUSED'
+# The address every client JOINs, client1 first (coop-util.ps1 JoinAddresses).
+function ClientJoins { JoinAddresses $clientRoots.Count $JoinAddress ([bool]$Relay) $Port $RelayPidFile }
+# OnGateJoin's args array, JSON-encoded (an address is data, never spliced into JSON by hand).
+function JoinArg([string]$addr) { ConvertTo-Json -InputObject @($addr) -Compress }
+# The top of the HomeScreen's own state stack ({h,type}), or $null outside the menu.
+function HomeTop([string]$root) {
+    $hsv = Result (Call $root '{"op":"invoke","type":"UnityEngine.Object","assembly":"UnityEngine.CoreModule","member":"FindObjectOfType","typeArgs":["PhoenixPoint.Home.View.HomeScreenView"],"args":[]}')
+    if (-not $hsv -or -not $hsv.ok -or -not $hsv.value) { return $null }
+    $stk = Result (Call $root ('{"op":"get","target":"' + $hsv.value.h + '","member":"_statesStack"}'))
+    if (-not $stk -or -not $stk.ok -or -not $stk.value) { return $null }
+    $cur = Result (Call $root ('{"op":"get","target":"' + $stk.value.h + '","member":"CurrentState"}'))
+    if ($cur -and $cur.ok) { $cur.value } else { $null }
+}
+# One readiness sample for MenuNotReady (coop-util.ps1).
+function MenuProbe([string]$root) {
+    $s = (Pp $root @('connect', 'state')).result
+    if (-not $s -or -not $s.ok) { return $null }
+    $mp = Result (Call $root '{"op":"get","type":"Multiplayer.UI.MultiplayerUI","assembly":"Multiplayer","member":"Instance"}')
+    $mb = Result (Call $root '{"op":"get","type":"Multiplayer.UI.NativeWidgetFactory","assembly":"Multiplayer","member":"HasMenuButton"}')
+    $menuButton = if ($mb -and $mb.ok) { [bool]$mb.value } else { $null }
+    $top = if ($s.phase -eq 'menu') { (HomeTop $root).type } else { $null }
+    [pscustomobject]@{ phase = $s.phase; levelState = $s.levelState; mpUi = [bool]($mp -and $mp.ok -and $mp.value)
+                       menuButton = $menuButton; top = $top }
+}
 function WaitPhase([string]$root, [string]$phase, [int]$sec) {
     $dl = (Get-Date).AddSeconds($sec)
     while ((Get-Date) -lt $dl) {
@@ -332,16 +366,19 @@ function WaitPhase([string]$root, [string]$phase, [int]$sec) {
 # (MultiplayerUI.OnLobbyToggleReady, MultiplayerUI.cs:643-660), so NEW GAME
 # (MultiplayerUI.OnLobbyChooseNewGame, MultiplayerUI.cs:1410) has to be pressed BEFORE any READY.
 function Do-Lobby([bool]$chooseNewGame = $false) {
+    # Resolved BEFORE the session opens: a bad -JoinAddress / dead relay tunnel refuses with nothing started.
+    $joins = ClientJoins
     Note "host: CREATE SESSION on $HostRoot"
     $hm = LogMark $HostRoot
     Invoke-Ui $HostRoot 'OnGateCreate' | Out-Null
     WaitLog $HostRoot '\[MP\]\[general\] transport initialized' 30 $hm | Out-Null
     # Clients join one after another: with 3+ peers the host has to relay an already-joined client's
     # state to the next one, which is the whole point of a third peer.
-    foreach ($c in $clientRoots) {
-        Note "$(SideName $c): JOIN 127.0.0.1:$Port from $c"
+    for ($i = 0; $i -lt $clientRoots.Count; $i++) {
+        $c = $clientRoots[$i]
+        Note "$(SideName $c): JOIN $($joins[$i]) from $c"
         $mark = LogMark $c
-        Invoke-Ui $c 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
+        Invoke-Ui $c 'OnGateJoin' (JoinArg $joins[$i]) | Out-Null
         WaitLog $c 'host ACCEPTED the join' 60 $mark $joinRefusedRx | Out-Null
     }
     # Parity: a mismatched JOIN locks READY; host-setting auto-apply usually clears it a beat later
@@ -426,15 +463,13 @@ switch ($Action) {
         # HOLDS that confirm and arms its 5 s countdown, whose fire re-issues it
         # (NewCampaignInterceptPatch.CommitNewCampaign) - the same path a human CONFIRM takes.
         # Difficulty = whatever the settings screen shows (profile Options_NewGameDifficultyOption).
-        $hsv = Result (Call $HostRoot '{"op":"invoke","type":"UnityEngine.Object","assembly":"UnityEngine.CoreModule","member":"FindObjectOfType","typeArgs":["PhoenixPoint.Home.View.HomeScreenView"],"args":[]}')
-        $stk = Result (Call $HostRoot ('{"op":"get","target":"' + $hsv.value.h + '","member":"_statesStack"}'))
-        $cur = Result (Call $HostRoot ('{"op":"get","target":"' + $stk.value.h + '","member":"CurrentState"}'))
-        if ($cur.value.type -notlike '*UIStateNewGeoscapeGameSettings') { throw "host top state is '$($cur.value.type)', not the new-game settings screen" }
+        $top = HomeTop $HostRoot
+        if ($top.type -notlike '*UIStateNewGeoscapeGameSettings') { throw "host top state is '$($top.type)', not the new-game settings screen" }
         # Marks before the confirm: ARMED and each client's [MP] traffic must come from THIS campaign.
         $armMark = LogMark $HostRoot
         $clientMarks = @{}
         foreach ($c in $clientRoots) { $clientMarks[$c] = LogMark $c }
-        $conf = Result (Call $HostRoot ('{"op":"invoke","target":"' + $cur.value.h + '","member":"GameSettings_OnConfirm","args":[]}'))
+        $conf = Result (Call $HostRoot ('{"op":"invoke","target":"' + $top.h + '","member":"GameSettings_OnConfirm","args":[]}'))
         if (-not $conf.ok) { throw "confirm failed: $($conf | ConvertTo-Json -Compress)" }
         WaitLog $HostRoot 'New-campaign co-op bootstrap ARMED' 30 $armMark | Out-Null
         $scenes = [ordered]@{ host = (WaitPhase $HostRoot 'geoscape' $TimeoutSeconds).scene }
@@ -488,6 +523,10 @@ switch ($Action) {
         # persistent playerGUID: SessionLifecycle.StaleRejoinPeers -> SessionManager.ResumePeer).
         if ($Side -notlike 'client*') { throw 'reconnect needs -Side client|client1|client2: the returning peer is a client, and a host cannot rejoin itself (relaunch the host and CREATE SESSION again)' }
         $ClientRoot = OneRoot $Side 'reconnect'
+        # A relaunched client answers its gate long before its main menu settles; pressing then races the
+        # mod's own menu setup (ISSUES 2026-09-26). Wait for the mod's own readiness (coop-util MenuNotReady).
+        Note "$(SideName $ClientRoot): waiting for a settled main menu (up to ${MenuReadySeconds}s)"
+        $ready = WaitMenuReadyCore { MenuProbe $ClientRoot } $MenuReadySeconds
         $probe = Result (Call $ClientRoot '{"op":"get","type":"Multiplayer.UI.ReconnectFlow","assembly":"Multiplayer","member":"CanReconnect"}')
         $can = if ($probe -and $probe.ok) { $probe.value } else { $null }
         if ($can -is [pscustomobject]) { $can = $can.Value }
@@ -496,6 +535,9 @@ switch ($Action) {
                elseif (-not $can) { 'OnGateJoin (ReconnectFlow present but CanReconnect false - no last-session record)' }
                else { 'ReconnectFlow.Start' }
         Note "client: $via"
+        # The fallback's address, resolved (and refused) before anything is pressed. ReconnectFlow replays
+        # the address the last session used, so it needs none.
+        $joinAddr = if ($via -ne 'ReconnectFlow.Start') { (ClientJoins)[[array]::IndexOf($clientRoots, $ClientRoot)] } else { $null }
         # Before the press: hostResume must quote THIS rejoin, not an older resume line in the host log.
         $hostMark = LogMark $HostRoot
         # Same for the client's own lines: a previous reconnect's "rejoined" must not pass this one.
@@ -506,31 +548,39 @@ switch ($Action) {
             $pressed = WaitLog $ClientRoot '\[MP\]\[reconnect\] RECONNECT pressed' 30 $mark
             $joined = WaitLog $ClientRoot '\[MP\]\[reconnect\] rejoined the session' 120 $mark
         } else {
-            Invoke-Ui $ClientRoot 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
+            Invoke-Ui $ClientRoot 'OnGateJoin' (JoinArg $joinAddr) | Out-Null
             $pressed = $null
             $joined = WaitLog $ClientRoot 'host ACCEPTED the join' 60 $mark $joinRefusedRx
         }
         # The host's own resume edge. Best effort: a host that never paused the peer posts no notice.
         $resumed = try { WaitLog $HostRoot 'RESUMED|is back' 30 $hostMark } catch { $null }
-        [pscustomobject]@{ ok = $true; side = (SideName $ClientRoot); via = $via; pressed = $pressed; joined = $joined
+        [pscustomobject]@{ ok = $true; side = (SideName $ClientRoot); via = $via; menu = $ready; pressed = $pressed; joined = $joined
                            hostResume = $resumed
                            client = (Pp $ClientRoot @('connect', 'state')).result.phase } | ConvertTo-Json -Compress
     }
     'dismiss' {
         # Click through the geoscape's stacked popups on one side (-Side host|client): a modal gets its
-        # OK (UIStateGeoModal.FinishDialog(Confirm)), an event gets FinishEncounter. Stops at the first
-        # other screen and reports it - UIStateReplenish is deliberately NOT dismissed.
+        # OK (UIStateGeoModal.FinishDialog(Confirm)), an event gets FinishEncounter, a cutscene gets the
+        # native skip (UIStateGeoCutscene.OnCancel - the intro video otherwise runs for minutes). Stops at
+        # the first other screen and reports it - UIStateReplenish is deliberately NOT dismissed.
+        # Every step acts on the HANDLE of the state it classified: @viewstate re-resolved at invoke time
+        # could already be the next screen, which would then get the wrong method.
         $root = if ($Side -in 'all', 'both') { $HostRoot } else { @(SideRoots $Side)[0] }
         $seen = @()
         for ($i = 0; $i -lt 12; $i++) {
-            $vs = (Pp $root @('connect', 'roots')).result.roots.viewstate.type
-            $seen += $vs
-            if ($vs -like '*UIStateGeoModal') {
-                Call $root '{"op":"invoke","target":"@viewstate","member":"FinishDialog","args":[{"$enum":"Confirm","type":"PhoenixPoint.Common.Utils.ModalResult"}]}' | Out-Null
-            } elseif ($vs -like '*UIStateGeoscapeEvent') {
-                $m = Result (Call $root '{"op":"get","target":"@viewstate","member":"Module"}')
-                Call $root ('{"op":"invoke","target":"' + $m.value.h + '","member":"FinishEncounter","args":[]}') | Out-Null
-            } else { break }
+            $vs = (Pp $root @('connect', 'roots')).result.roots.viewstate
+            $seen += $vs.type
+            $kind = DismissKind $vs.type
+            if (-not $kind) { break }
+            $r = switch ($kind) {
+                'modal' { Result (Call $root ('{"op":"invoke","target":"' + $vs.h + '","member":"FinishDialog","args":[{"$enum":"Confirm","type":"PhoenixPoint.Common.Utils.ModalResult"}]}')) }
+                'event' {
+                    $m = Result (Call $root ('{"op":"get","target":"' + $vs.h + '","member":"Module"}'))
+                    if ($m -and $m.ok) { Result (Call $root ('{"op":"invoke","target":"' + $m.value.h + '","member":"FinishEncounter","args":[]}')) } else { $m }
+                }
+                'cutscene' { Result (Call $root ('{"op":"invoke","target":"' + $vs.h + '","member":"OnCancel","args":[]}')) }
+            }
+            if (-not $r -or -not $r.ok) { throw "dismiss $kind on $($vs.type) failed: $($r | ConvertTo-Json -Compress)" }
             Start-Sleep 2
         }
         [pscustomobject]@{ ok = $true; side = (SideName $root); screens = $seen } | ConvertTo-Json -Compress
