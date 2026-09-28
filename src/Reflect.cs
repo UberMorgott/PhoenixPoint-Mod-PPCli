@@ -360,7 +360,7 @@ namespace Morgott.PPBridge
 
             switch (op)
             {
-                case "new": return New(type, argsArr);
+                case "new": return New(type, argsArr, a["sig"] as JArray);
                 case "get": return GetSet(type, target, haveTarget, member, null, false, (string)a["convertTo"]);
                 case "set":
                     if (a["value"] == null) return Bad("args", "set needs \"value\"");
@@ -461,10 +461,10 @@ namespace Morgott.PPBridge
             return true;
         }
 
-        private static object New(Type type, JArray args)
+        private static object New(Type type, JArray args, JArray sig)
         {
             object made;
-            object refusal = Construct(type, args, null, out made);
+            object refusal = Construct(type, args, sig, null, out made);
             return refusal ?? Value(made);
         }
 
@@ -478,11 +478,13 @@ namespace Morgott.PPBridge
         /// handle, so the only way to hand one back was to rebuild it. Fields are set, never properties
         /// - the same read-fields-only discipline projection has.
         /// </summary>
-        private static object Construct(Type type, JArray args, JObject fields, out object made)
+        private static object Construct(Type type, JArray args, JArray sig, JObject fields, out object made)
         {
             made = null;
             // Constructors are never inherited, so this is the one lookup with no hierarchy walk.
-            List<MethodBase> ctors = type.GetConstructors(AnyDeclared).Cast<MethodBase>().ToList();
+            // A static .cctor is the type initializer, never an instance constructor: listed, it tied
+            // with every parameterless .ctor() (List<T>, ArrayList) and made `new` unreachable.
+            List<MethodBase> ctors = type.GetConstructors(AnyDeclared).Where(c => !c.IsStatic).Cast<MethodBase>().ToList();
             if (ctors.Count == 0 || (type.IsValueType && (args == null || args.Count == 0)))
             {
                 // A struct's implicit parameterless constructor is not a ConstructorInfo, so a value
@@ -494,7 +496,7 @@ namespace Morgott.PPBridge
             else
             {
                 object[] bound;
-                object refusal = Pick(ctors, args, null, ".ctor", out bound);
+                object refusal = Pick(ctors, args, sig, ".ctor", out bound);
                 if (refusal != null) return refusal;
                 made = ((ConstructorInfo)Chosen).Invoke(bound);
             }
@@ -638,7 +640,8 @@ namespace Morgott.PPBridge
             Chosen = null;
             int count = args == null ? 0 : args.Count;
 
-            if (sig != null && sig.Count > 0)
+            // A PRESENT `sig` filters, the empty one included: `"sig":[]` names the zero-arg overload.
+            if (sig != null)
             {
                 string[] want = sig.Select(t => (string)t).ToArray();
                 candidates = candidates.Where(m => Matches(m, want)).ToList();
@@ -1034,6 +1037,7 @@ namespace Morgott.PPBridge
                     }
                     object built;
                     object refusal = Construct(made, spec == null ? null : spec["args"] as JArray,
+                                               spec == null ? null : spec["sig"] as JArray,
                                                spec == null ? null : spec["fields"] as JObject, out built);
                     if (refusal != null) { error = RefusalText(refusal); return false; }
                     value = built;

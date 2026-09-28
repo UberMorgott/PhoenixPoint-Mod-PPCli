@@ -38,7 +38,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 | `console` | `{command, args?:[]}` |
 | `var` | read `{name}`; set-then-read `{name,value}`; values convert via strings |
 | `screenshot` | `{path?,force?}`; explicit path must be absolute; omitted => timestamped PNG beside bridge files. Camera.main with `targetTexture` (upscaler) => scene written to sibling `*.scene.png`, reply adds `scenePath`. D3D12 + `timeScale==0` refused (wedges process) => use `0.0001` or `force:true`. `-Window` (client switch) grabs game window AFTER present via `PrintWindow(PW_RENDERFULLCONTENT)` => finished frame incl. upscaler + post-upscale passes, device pixels, `{ok,mode:"window",path,width,height,bytes}`; needs non-minimized window |
-| `call` | new `{op:"new",type,assembly?,args?:[]}`; get `{op:"get",type\|target,assembly?,member,convertTo?}`; set `{op:"set",type\|target,assembly?,member,value}`; invoke `{op:"invoke",type\|target,assembly?,member,args?:[],sig?:[],typeArgs?:[]}` |
+| `call` | new `{op:"new",type,assembly?,args?:[],sig?:[]}`; get `{op:"get",type\|target,assembly?,member,convertTo?}`; set `{op:"set",type\|target,assembly?,member,value}`; invoke `{op:"invoke",type\|target,assembly?,member,args?:[],sig?:[],typeArgs?:[]}` |
 | `types` | `{pattern,assembly?}` |
 | `members` | `{type\|h,assembly?,filter?,page?,pageSize?}`; page 0-based; max/default page size 400 |
 | `inspect` | `{h,filter?,page?,pageSize?,values?}`; `h` also accepts root or `@def:<name\|guid>` |
@@ -53,7 +53,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 | `status` | `{jobId}` |
 | `cancel` | `{jobId}` |
 
-`call` targets: static `type`; instance handle; `@game`, `@phoenix`, `@defs`, `@level`, `@geo`, `@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@faction`, `@selected`; def `@def:<exact-name|guid>`. Arg envelopes: `{"$h":...}`, `{"$def":...}`, `{"$type":...}`, `{"$enum":...}`, `{"$array":[...]}`, `{"$v2":[...]}`, `{"$v3":[...]}`, `{"$quat":[...]}`, `{"$box":{"type":"System.Single","value":0.5}}` (boxes primitive as named type for param declared `Object` — bare JSON number boxes as `Double`), `{"$new":{"type":"…","args":[…],"fields":{…}}}` (builds the argument; the ONLY way to pass an inlined struct like `EarthUnits` back, since it projects without a handle — `args` picks the ctor, `fields` sets fields after it). Reflection: `new|get|set|invoke`; no event subscription, no by-ref/out/pointer calls; indexers via `get_Item`/`set_Item`; equal overload ties refused.
+`call` targets: static `type`; instance handle; `@game`, `@phoenix`, `@defs`, `@level`, `@geo`, `@tac`, `@map`, `@view`, `@viewstate`, `@modules`, `@faction`, `@selected`; def `@def:<exact-name|guid>`. Arg envelopes: `{"$h":...}`, `{"$def":...}`, `{"$type":...}`, `{"$enum":...}`, `{"$array":[...]}`, `{"$v2":[...]}`, `{"$v3":[...]}`, `{"$quat":[...]}`, `{"$box":{"type":"System.Single","value":0.5}}` (boxes primitive as named type for param declared `Object` — bare JSON number boxes as `Double`), `{"$new":{"type":"…","args":[…],"fields":{…}}}` (builds the argument; the ONLY way to pass an inlined struct like `EarthUnits` back, since it projects without a handle — `args` picks the ctor, `sig` disambiguates it, `fields` sets fields after it). `sig:[]` = explicit zero-arg overload; static `.cctor` never a `new` candidate. Reflection: `new|get|set|invoke`; no event subscription, no by-ref/out/pointer calls; indexers via `get_Item`/`set_Item`; equal overload ties refused.
 
 ## Reply and exit contract
 
