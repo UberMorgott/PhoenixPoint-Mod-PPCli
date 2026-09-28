@@ -191,6 +191,8 @@ namespace Morgott.PPBridge
                         // rather than a DTO, and only the Runner knows what to do with one.
                         return Plan.Dispatch(job.Verb, job.Args)
                                ?? Shots.Dispatch(job.Verb, job.Args)
+                               ?? LogTap.Dispatch(job.Verb, job.Args)
+                               ?? EventTap.Dispatch(job.Verb, job.Args)
                                ?? Reflect.Dispatch(job.Verb, job.Args)
                                ?? Fail("unknown verb '" + job.Verb + "'");
                 }

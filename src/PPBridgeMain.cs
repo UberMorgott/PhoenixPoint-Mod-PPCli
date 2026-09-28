@@ -111,6 +111,11 @@ namespace Morgott.PPBridge
             try { Runner.Arm(ModGO, Path.Combine(ModDir ?? ".", JobFile), Path.Combine(ModDir ?? ".", ArmFile), Say); }
             catch (Exception ex) { log?.LogError("PPBridge arm THREW " + ex); }
 
+            // `log`: only an ARMED bridge taps the log. Threaded variant = every message from every
+            // thread; LogTap.Append locks and never throws.
+            try { Application.logMessageReceivedThreaded += OnLog; LogTap.Hooked = true; }
+            catch (Exception ex) { log?.LogError("PPBridge log hook THREW " + ex); }
+
             try
             {
                 pipe = new PipeServer(Runner.Enqueue, Say);
@@ -126,6 +131,9 @@ namespace Morgott.PPBridge
             // at a method in an assembly this DLL is about to stop owning.
             Shots.Shutdown();
             SceneManager.sceneUnloaded -= OnSceneUnloaded;
+            if (LogTap.Hooked) Application.logMessageReceivedThreaded -= OnLog;
+            LogTap.Shutdown();
+            EventTap.Shutdown();         // every handler off the game's events before the DLL goes
             Reflect.NewEpoch();          // nothing may keep a strong lease on a game object past this
             Protocol.StateProbe = null;
             Protocol.ConsoleRun = null;
@@ -141,7 +149,32 @@ namespace Morgott.PPBridge
             log = null;
         }
 
-        private static void OnSceneUnloaded(Scene scene) { Reflect.NewEpoch(); }
+        private static void OnSceneUnloaded(Scene scene)
+        {
+            Reflect.NewEpoch();
+            // A subscription on an object of the unloaded scene (or on something that is not a Unity
+            // object at all, whose owner we cannot place) ends here - named "scene" to a reader.
+            try
+            {
+                EventTap.DropWhere(o =>
+                {
+                    if (o == null) return false;                          // a static event outlives scenes
+                    if (!(o is UnityEngine.Object)) return true;          // cannot be placed in a scene
+                    UnityEngine.Object u = (UnityEngine.Object)o;
+                    if (u == null) return true;                           // Unity ==: destroyed
+                    Component c = u as Component;
+                    GameObject g = c != null ? c.gameObject : u as GameObject;
+                    return g != null && g.scene == scene;
+                }, "scene");
+            }
+            catch (Exception) { }
+        }
+
+        private static void OnLog(string condition, string stackTrace, LogType type)
+        {
+            try { LogTap.Append(condition, stackTrace, type.ToString()); }
+            catch (Exception) { }
+        }
 
         internal static void StopPipe()
         {

@@ -46,6 +46,9 @@
          patch that feeds it lives in src\ShotPatch.cs, which is the only file here that names a
          game type - and is deliberately NOT compiled into this check. -->
     <Compile Include="..\src\Shots.cs" Link="Shots.cs" />
+    <!-- log + events: the rings, paging, filters and the Expression-built event handler. The
+         Unity log hook and the scene-unload drop live in PPBridgeMain.cs. -->
+    <Compile Include="..\src\Taps.cs" Link="Taps.cs" />
     <Compile Include="SelfCheck.cs" />
   </ItemGroup>
 

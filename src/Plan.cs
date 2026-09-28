@@ -207,6 +207,10 @@ namespace Morgott.PPBridge
             private int countdown, polls;
             private string lastError;
             private JToken last;
+            /// <summary>A tap predicate (log / event): the matching row, or null while none has come.</summary>
+            private Func<JToken> probe;
+            /// <summary>Runs once when the wait ends however it ends - drops a wait-owned subscription.</summary>
+            private Action release;
 
             private Waiter(JObject call, string phase, int every, int timeoutMs, bool negate, bool duration = false)
             {
@@ -244,12 +248,102 @@ namespace Morgott.PPBridge
                 JObject call = a["call"] as JObject;
                 if (call != null) return new Waiter(call, null, every, timeout, negate);
 
+                if (a["log"] != null) return LogWait(a, every, timeout);
+                if (a["event"] != null) return EventWait(a, every, timeout);
+
                 return Bad("args", "wait needs one of {\"ready\":true} (HasAnyTurnStarted), " +
-                                   "{\"phase\":\"tactical|geoscape|menu|summary|other|loading\"}, {\"call\":{...}} " +
+                                   "{\"phase\":\"tactical|geoscape|menu|summary|other|loading\"}, {\"call\":{...}}, " +
+                                   "{\"log\":\"regex\"}, {\"event\":{sub|target+event}} " +
                                    "or {\"forMs\":N} (yield N ms of REAL time, then succeed)");
             }
 
+            /// <summary>
+            /// {"log":"regex", "level"?, "since"?}: succeeds on the first Unity log row after `since`
+            /// (default: the newest row when the wait starts, i.e. only NEW lines) whose message
+            /// matches. The value is that row. `not` is refused - "no such line came" is a forMs.
+            /// </summary>
+            private static object LogWait(JObject a, int every, int timeout)
+            {
+                if (Truthy(a["not"])) return Bad("args", "a log wait cannot be negated - wait {forMs} and read `log` instead");
+                Regex rx; object refusal;
+                string pattern = a["log"].Type == JTokenType.String ? (string)a["log"] : null;
+                if (string.IsNullOrEmpty(pattern)) return Bad("args", "log wait needs {\"log\":\"<regex>\"}");
+                if (!TapPage.TryRegex(pattern, out rx, out refusal)) return refusal;
+                string level = (string)a["level"];
+                long since;
+                if (!SinceOr(a["since"], LogTap.Ring.Last, out since)) return Bad("args", "since must be an integer >= 0");
+                Waiter w = new Waiter(null, null, every, timeout, false);
+                w.probe = () => LogTap.FirstMatch(rx, level, ref since);
+                return w;
+            }
+
+            /// <summary>
+            /// {"event":{"sub":N, "since"?}} watches a live subscription; {"event":{"target"|"type",
+            /// "event"}} subscribes for the length of the wait and unsubscribes when it ends (a sub
+            /// that already existed is left alone). Optional "match" = regex over the row's args JSON.
+            /// Only firings AFTER the wait starts count unless `since` says otherwise.
+            /// </summary>
+            private static object EventWait(JObject a, int every, int timeout)
+            {
+                if (Truthy(a["not"])) return Bad("args", "an event wait cannot be negated - wait {forMs} and read `events` instead");
+                JObject e = a["event"] as JObject;
+                if (e == null) return Bad("args", "event wait needs {\"event\":{\"sub\":N}} or {\"event\":{\"target\":\"@tac\",\"event\":\"ActorDeathEvent\"}}");
+                Regex rx; object refusal;
+                if (!TapPage.TryRegex((string)(e["match"] ?? a["match"]), out rx, out refusal)) return refusal;
+                long since;
+                if (!SinceOr(e["since"], EventTap.Ring.Last, out since)) return Bad("args", "since must be an integer >= 0");
+                int subId;
+                Action release = null;
+                if (e["sub"] != null && e["sub"].Type == JTokenType.Integer)
+                {
+                    subId = (int)e["sub"];
+                    if (EventTap.Find(subId) == null) return Bad("args", "no live subscription " + subId + " (" + EventTap.EndedReason(subId) + ")");
+                }
+                else
+                {
+                    EventTap.Sub sub; bool existing;
+                    refusal = EventTap.Subscribe(e, out sub, out existing);
+                    if (refusal != null) return refusal;
+                    subId = sub.Id;
+                    if (!existing) release = () => EventTap.Drop(sub, "wait ended");
+                }
+                Waiter w = new Waiter(null, null, every, timeout, false);
+                w.release = release;
+                w.probe = () =>
+                {
+                    JToken hit = EventTap.FirstMatch(subId, rx, ref since);
+                    if (hit == null)
+                    {
+                        string ended = EventTap.EndedReason(subId);
+                        if (ended != null) throw new InvalidOperationException("subscription " + subId + " ended: " + ended);
+                    }
+                    return hit;
+                };
+                return w;
+            }
+
+            private static bool SinceOr(JToken t, long fallback, out long since)
+            {
+                since = fallback;
+                if (t == null || t.Type == JTokenType.Null) return true;
+                if (t.Type != JTokenType.Integer || (long)t < 0) return false;
+                since = (long)t;
+                return true;
+            }
+
             public object Tick(bool cancelled)
+            {
+                object r = TickInner(cancelled);
+                if (r != null && release != null)
+                {
+                    Action once = release;
+                    release = null;
+                    try { once(); } catch (Exception) { }
+                }
+                return r;
+            }
+
+            private object TickInner(bool cancelled)
             {
                 int ms = (int)(DateTime.UtcNow - started).TotalMilliseconds;
                 if (cancelled) return new { ok = false, code = "cancelled", error = "cancelled after " + ms + " ms", waitedMs = ms, polls };
@@ -304,6 +398,13 @@ namespace Morgott.PPBridge
             {
                 try
                 {
+                    if (probe != null)
+                    {
+                        last = probe();
+                        lastError = null;
+                        return last != null;
+                    }
+
                     if (phase != null)
                     {
                         if (Protocol.StateProbe == null) { lastError = "no state probe installed"; return false; }

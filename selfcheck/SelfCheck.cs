@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using Newtonsoft.Json.Linq;
@@ -122,6 +123,35 @@ namespace Morgott.PPBridge
             for (int i = 0; i < 100; i++) big.Add(new string('я', 500));
             return big;
         }
+    }
+
+    // --- events fixtures: DeathReport's shape (public fields, one a nested object) and the three
+    // delegate shapes the tap must handle - a custom void delegate, a generic Action, a static event -
+    // plus the one it must refuse (a non-void delegate).
+    internal class FakeReport
+    {
+        public FakeDef Actor;
+        public FakeDef Killer;
+        public bool FromFire;
+        public bool FromFall;
+        public V3 Force;
+        public Season When;
+    }
+
+    internal delegate void FakeDeathHandler(FakeReport report);
+
+    internal class Emitter
+    {
+        public event FakeDeathHandler Death;
+        public event Action<int, string> Pair;
+        public event Func<int> Returns;
+        public static event Action<string> StaticPing;
+
+        public void Die(FakeReport r) { Death?.Invoke(r); }
+        public void Both(int n, string s) { Pair?.Invoke(n, s); }
+        public static void Ping(string s) { StaticPing?.Invoke(s); }
+        public int DeathHandlers { get { return Death == null ? 0 : Death.GetInvocationList().Length; } }
+        public int ReturnsHandlers { get { return Returns == null ? 0 : Returns.GetInvocationList().Length; } }
     }
 
     internal static class SelfCheck
@@ -756,6 +786,191 @@ namespace Morgott.PPBridge
             Check("console-command-and-cursor-refused", Console1("{'command':'few','cursor':'" + oldest + "'}").Contains("\"code\":\"args\""), "both accepted");
             ConsolePager.Reset();
             Protocol.ConsoleRun = null;
+        }
+
+        private static string V(string verb, string json)
+        {
+            return Protocol.Compact(Protocol.Dispatch(new Job { Id = "t", Verb = verb, Args = JObject.Parse(json) }));
+        }
+
+        /// <summary>Starts a cross-frame job and hands back the IPending (or the refusal DTO).</summary>
+        private static object Start(string verb, string json)
+        {
+            return Protocol.Dispatch(new Job { Id = "w", Verb = verb, Args = JObject.Parse(json) });
+        }
+
+        /// <summary>
+        /// Stage C: the log ring - seq numbers, tail vs delta reads, dropped count, level + regex
+        /// filters, clip and stack opt-in, the bridge's own markers skipped, thread-safe appends, the
+        /// `wait {log}` predicate, and the byte budget of a default page and of an empty poll.
+        /// </summary>
+        private static void LogChecks()
+        {
+            Func<string, int> B = s => Encoding.UTF8.GetByteCount(s);
+            LogTap.Shutdown();
+            string empty = V("log", "{}");
+            Check("log-empty-ring", empty == "{\"ok\":true,\"next\":0}", empty);
+
+            for (int i = 1; i <= 1500; i++)
+                LogTap.Append("line " + i + (i % 100 == 0 ? " boom" : ""), "at Frame" + i, i % 100 == 0 ? "Error" : i % 10 == 0 ? "Warning" : "Log");
+            JObject tail = JObject.Parse(V("log", "{}"));
+            JArray rows = (JArray)tail["rows"];
+            Check("log-tail-is-newest-page", rows.Count == TapPage.DefaultPageSize && (long)rows[rows.Count - 1]["s"] == 1500 &&
+                  (long)tail["next"] == 1500 && tail["dropped"] == null && tail["hasMore"] == null, tail.ToString(Newtonsoft.Json.Formatting.None).Substring(0, 200));
+            Check("log-no-stack-by-default", rows[0]["st"] == null, rows[0].ToString());
+
+            JObject delta = JObject.Parse(V("log", "{'since':1490}"));
+            Check("log-delta-after-since", ((JArray)delta["rows"]).Count == 10 && (long)delta["rows"][0]["s"] == 1491 && delta["hasMore"] == null, delta.ToString());
+
+            JObject behind = JObject.Parse(V("log", "{'since':100}"));
+            Check("log-dropped-counts-overwritten-rows", (long)behind["dropped"] == 400 && (long)behind["rows"][0]["s"] == 501 &&
+                  (bool)behind["hasMore"] && (long)behind["next"] == 525, behind.ToString(Newtonsoft.Json.Formatting.None).Substring(0, 120) + " next=" + behind["next"]);
+
+            string idle = V("log", "{'since':1500}");
+            Check("log-empty-poll-is-tiny", idle == "{\"ok\":true,\"next\":1500}" && B(idle) <= 30, idle);
+
+            JObject errs = JObject.Parse(V("log", "{'since':0,'level':'error','pageSize':200}"));
+            Check("log-level-filter", ((JArray)errs["rows"]).Count == 10 && ((JArray)errs["rows"]).All(r => (string)r["l"] == "E"), errs.ToString(Newtonsoft.Json.Formatting.None).Substring(0, 150));
+            JObject warn = JObject.Parse(V("log", "{'since':0,'level':'warning','pageSize':200}"));
+            Check("log-warning-includes-errors", ((JArray)warn["rows"]).Count == 100, "" + ((JArray)warn["rows"]).Count);
+            JObject rx = JObject.Parse(V("log", "{'since':0,'match':'^line 14\\\\d0 boom$'}"));
+            Check("log-regex-filter", ((JArray)rx["rows"]).Count == 1 && (string)rx["rows"][0]["m"] == "line 1400 boom", rx.ToString(Newtonsoft.Json.Formatting.None));
+            Check("log-bad-regex-refused", V("log", "{'match':'('}").Contains("\"code\":\"args\""), V("log", "{'match':'('}"));
+            Check("log-bad-level-refused", V("log", "{'level':'loud'}").Contains("\"code\":\"args\""), V("log", "{'level':'loud'}"));
+            Check("log-page-size-refused-not-clamped", V("log", "{'pageSize':0}").Contains("\"code\":\"args\"") && V("log", "{'pageSize':201}").Contains("\"code\":\"args\""), V("log", "{'pageSize':0}"));
+            Check("log-since-from-the-future-refused", V("log", "{'since':99999}").Contains("\"code\":\"cursor\""), V("log", "{'since':99999}"));
+            JObject st = JObject.Parse(V("log", "{'since':1499,'stack':true}"));
+            Check("log-stack-opt-in", (string)st["rows"][0]["st"] == "at Frame1500", st.ToString(Newtonsoft.Json.Formatting.None));
+
+            LogTap.Append("PPCLI|7|{\"ok\":true}", null, "Log");
+            LogTap.Append(new string('z', 5000), null, "Log");
+            JObject clipped = JObject.Parse(V("log", "{'since':1500}"));
+            Check("log-skips-bridge-markers-and-clips", ((JArray)clipped["rows"]).Count == 1 && ((string)clipped["rows"][0]["m"]).Length < 330 &&
+                  ((string)clipped["rows"][0]["m"]).EndsWith("...(+4700)"), clipped.ToString(Newtonsoft.Json.Formatting.None).Substring(0, 80));
+
+            // Any thread: the Unity callback is the THREADED one.
+            long before = LogTap.Ring.Last;
+            Thread[] ts = new Thread[4];
+            for (int t = 0; t < ts.Length; t++) { ts[t] = new Thread(() => { for (int i = 0; i < 500; i++) LogTap.Append("x", null, "Log"); }); ts[t].Start(); }
+            foreach (Thread t in ts) t.Join();
+            Check("log-thread-safe-append", LogTap.Ring.Last == before + 2000 && LogTap.Ring.Count == LogTap.Capacity, "last=" + LogTap.Ring.Last);
+
+            // wait {log}: only lines AFTER the wait starts count.
+            LogTap.Append("mission ready OLD", null, "Log");
+            IPending w = Start("wait", "{'log':'mission ready','everyFrames':1,'timeoutMs':5000}") as IPending;
+            object t1 = w == null ? "no pending" : w.Tick(false);
+            LogTap.Append("mission ready NEW", null, "Log");
+            string t2 = w == null ? "" : Protocol.Compact(w.Tick(false));
+            Check("log-wait-sees-only-new-lines", t1 == null && t2.Contains("\"ok\":true") && t2.Contains("mission ready NEW"), "" + t1 + " / " + t2);
+            Check("log-wait-bad-regex-refused", Protocol.Compact(Start("wait", "{'log':'['}")).Contains("\"code\":\"args\""), "accepted");
+            string planLog = Run("plan", "{'plan':{'steps':[{'id':'w','verb':'wait','args':{'log':'x','since':0,'timeoutMs':1000},'save':'W'}],'output':{'m':'${W.value.m}'}}}");
+            Check("log-wait-in-a-plan", planLog.Contains("\"ok\":true") && planLog.Contains("\"m\":"), planLog);
+
+            // Budget: 1000 rows of 1000-char messages, default tail read.
+            LogTap.Shutdown();
+            for (int i = 0; i < LogTap.Capacity; i++) LogTap.Append(new string('m', 1000), new string('s', 1500), "Error");
+            string fat = V("log", "{}");
+            Check("budget-log-default", B(fat) <= TapPage.DefaultPageBytes + 256, "bytes=" + B(fat));
+            LogTap.Shutdown();
+        }
+
+        /// <summary>
+        /// Stage D: event subscriptions built with Expression for arbitrary delegate signatures,
+        /// short projection at fire time, idempotent subscribe, caps, unsubscribe/scene drop with a
+        /// named reason, `wait {event}` owning a temporary subscription, and the byte budgets.
+        /// </summary>
+        private static void EventChecks()
+        {
+            Func<string, int> B = s => Encoding.UTF8.GetByteCount(s);
+            EventTap.Shutdown();
+            Emitter em = new Emitter();
+            Protocol.RootsProbe = () => new Dictionary<string, object> { { "em", em } };
+
+            JObject sub = JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Death'}}"));
+            int id = (int)sub["sub"];
+            Check("events-subscribe", (bool)sub["ok"] && id > 0 && (string)sub["event"] == "Death" && (long)sub["next"] == 0 && em.DeathHandlers == 1, sub.ToString(Newtonsoft.Json.Formatting.None));
+            JObject again = JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Death'}}"));
+            Check("events-subscribe-is-idempotent", (int)again["sub"] == id && (bool)again["existing"] && em.DeathHandlers == 1, again.ToString(Newtonsoft.Json.Formatting.None));
+
+            em.Die(new FakeReport { Actor = new FakeDef { Guid = "g-actor", name = "Crab" }, FromFire = true, Force = new V3(1f, 2f, 3f), When = Season.Summer });
+            JObject read = JObject.Parse(V("events", "{'since':0,'sub':" + id + "}"));
+            JToken a0 = read["rows"] == null ? null : read["rows"][0]["a"][0];
+            Check("events-brief-projection", a0 != null && (string)a0["type"] == "FakeReport" && (string)a0["Actor"]["Guid"] == "g-actor" &&
+                  (bool)a0["FromFire"] && a0["FromFall"] == null && a0["Killer"] == null && (float)a0["Force"]["y"] == 2f &&
+                  (string)a0["When"] == "Summer" && a0["Actor"]["h"] == null, read.ToString(Newtonsoft.Json.Formatting.None));
+
+            JObject pair = JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Pair'}}"));
+            em.Both(5, "x");
+            JObject pr = JObject.Parse(V("events", "{'since':1,'sub':" + (int)pair["sub"] + "}"));
+            Check("events-generic-action-args", pr["rows"] != null && pr["rows"][0]["a"].ToString(Newtonsoft.Json.Formatting.None) == "[5,\"x\"]", pr.ToString(Newtonsoft.Json.Formatting.None));
+
+            JObject st = JObject.Parse(V("events", "{'subscribe':{'type':'Morgott.PPBridge.Emitter','event':'StaticPing'}}"));
+            Emitter.Ping("pong");
+            string sr = V("events", "{'since':2,'sub':" + (int)st["sub"] + "}");
+            Check("events-static-event", sr.Contains("\"a\":[\"pong\"]"), sr);
+
+            string ret = V("events", "{'subscribe':{'target':'@em','event':'Returns'}}");
+            Check("events-non-void-refused", ret.Contains("\"code\":\"type\"") && em.ReturnsHandlers == 0, ret);
+            string none = V("events", "{'subscribe':{'target':'@em','event':'Nope'}}");
+            Check("events-unknown-event-lists-known", none.Contains("\"code\":\"member\"") && none.Contains("Death") && none.Contains("Pair"), none);
+            Check("events-null-root-refused", V("events", "{'subscribe':{'target':'@missing','event':'Death'}}").Contains("\"code\":\"handle\""), "accepted");
+            Check("events-one-mode-at-a-time", V("events", "{'subscribe':{'target':'@em','event':'Death'},'list':true}").Contains("\"code\":\"args\""), "accepted");
+            string list = V("events", "{'list':true}");
+            Check("events-list", list.Contains("\"sub\":" + id) && list.Contains("\"fired\":1") && list.Contains("\"on\":\"Emitter\""), list);
+
+            string un = V("events", "{'unsubscribe':" + id + "}");
+            em.Die(new FakeReport());
+            string after = V("events", "{'since':3,'sub':" + id + "}");
+            Check("events-unsubscribe-detaches", un.Contains("\"removed\":1") && em.DeathHandlers == 0 && after == "{\"ok\":true,\"next\":3,\"ended\":\"unsubscribed\"}", un + " / " + after);
+
+            EventTap.DropWhere(o => o == em, "scene");
+            string sc = V("events", "{'since':3,'sub':" + (int)pair["sub"] + "}");
+            Check("events-scene-drop-is-named", sc.Contains("\"ended\":\"scene\"") && EventTap.Live == 1, sc + " live=" + EventTap.Live);
+            V("events", "{'unsubscribe':'all'}");
+            Check("events-unsubscribe-all", EventTap.Live == 0, "live=" + EventTap.Live);
+
+            // Cap: 16 live subscriptions, the 17th refused.
+            List<Emitter> many = new List<Emitter>();
+            string capped = null;
+            for (int i = 0; i <= EventTap.MaxSubs; i++)
+            {
+                Emitter e = new Emitter();
+                many.Add(e);
+                capped = V("events", "{'subscribe':{'target':'" + Reflect.Track(e) + "','event':'Death'}}");
+            }
+            Check("events-sub-cap", EventTap.Live == EventTap.MaxSubs && capped.Contains("\"code\":\"cap\""), capped);
+            V("events", "{'unsubscribe':'all'}");
+
+            // wait {event}: a temporary subscription, only NEW firings, detached when the wait ends.
+            IPending w = Start("wait", "{'event':{'target':'@em','event':'Death','match':'g-killer'},'everyFrames':1,'timeoutMs':5000}") as IPending;
+            object t1 = w == null ? "no pending" : w.Tick(false);
+            em.Die(new FakeReport { Actor = new FakeDef { Guid = "other" } });
+            object t2 = w == null ? "no pending" : w.Tick(false);
+            em.Die(new FakeReport { Killer = new FakeDef { Guid = "g-killer" } });
+            string t3 = w == null ? "" : Protocol.Compact(w.Tick(false));
+            Check("events-wait-temp-subscription", t1 == null && t2 == null && t3.Contains("\"ok\":true") && t3.Contains("g-killer") &&
+                  em.DeathHandlers == 0 && EventTap.Live == 0, t1 + " / " + t2 + " / " + t3 + " handlers=" + em.DeathHandlers);
+
+            // wait on a sub that then ends fails with the reason, not a bare timeout.
+            int keep = (int)JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Death'}}"))["sub"];
+            IPending w2 = Start("wait", "{'event':{'sub':" + keep + "},'timeoutMs':1}") as IPending;
+            EventTap.DropWhere(o => true, "scene");
+            Thread.Sleep(5);
+            string t4 = w2 == null ? "" : Protocol.Compact(w2.Tick(false));
+            Check("events-wait-names-ended-sub", t4.Contains("\"code\":\"timeout\"") && t4.Contains("ended: scene"), t4);
+            Check("events-wait-unknown-sub-refused", Protocol.Compact(Start("wait", "{'event':{'sub':9999}}")).Contains("\"code\":\"args\""), "accepted");
+
+            // Budget: 1000 firings with a fat report, default tail read; empty poll.
+            EventTap.Shutdown();
+            V("events", "{'subscribe':{'target':'@em','event':'Death'}}");
+            for (int i = 0; i < EventTap.Capacity; i++)
+                em.Die(new FakeReport { Actor = new FakeDef { Guid = System.Guid.NewGuid().ToString() }, Killer = new FakeDef { Guid = new string('k', 400) }, FromFire = true });
+            string fat = V("events", "{}");
+            Check("budget-events-default", B(fat) <= TapPage.DefaultPageBytes + 256, "bytes=" + B(fat));
+            string idle = V("events", "{'since':" + EventTap.Ring.Last + "}");
+            Check("budget-events-empty-poll", B(idle) <= 30, idle);
+            EventTap.Shutdown();
+            Protocol.RootsProbe = null;
         }
 
         /// <summary>
@@ -1515,6 +1730,8 @@ namespace Morgott.PPBridge
             PlanChecks();
             ShotChecks();
             ConsolePagerChecks();
+            LogChecks();
+            EventChecks();
             BudgetChecks();
             PipeChecks();
 

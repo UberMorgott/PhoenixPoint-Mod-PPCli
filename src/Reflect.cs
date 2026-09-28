@@ -1214,6 +1214,87 @@ namespace Morgott.PPBridge
             return dto;
         }
 
+        /// <summary>The target grammar of `call` (@alias, @def:, handle, {$h}/{$def}), for other files.</summary>
+        internal static bool ResolveTargetToken(JToken tok, out object target, out string error)
+        {
+            return ResolveTarget(tok, out target, out error);
+        }
+
+        internal const int BriefFields = 8;
+        internal const int BriefChars = 160;
+
+        /// <summary>
+        /// The SHORT projection for things recorded now and read later (event args): no handle is
+        /// minted - the object may be gone by the read, and a strong lease per firing would pin it.
+        /// A scalar is its value (an enum its name, a string clipped); a Unity object is
+        /// {type,name,id}; any other object is {type} plus up to <see cref="BriefFields"/> of its
+        /// public instance FIELDS briefed one level down (a nested plain object keeps up to 4 scalar
+        /// fields; fields are read, no getter runs), dropping
+        /// null/false and anything that would only say its type. That is what makes
+        /// DeathReport{Actor,Killer,FromFire...} readable without a round trip.
+        /// </summary>
+        internal static object Brief(object v)
+        {
+            return Brief(v, 0);
+        }
+
+        private static object Brief(object v, int depth)
+        {
+            if (v == null) return null;
+            Type t = v.GetType();
+            if (v is Type) return ((Type)v).FullName;
+            if (t.IsEnum) return v.ToString();
+            if (v is string) { string s = (string)v; return s.Length > BriefChars ? s.Substring(0, BriefChars) + "..." : s; }
+            object scalar;
+            if (TryScalar(v, out scalar))
+            {
+                Dictionary<string, object> st = scalar as Dictionary<string, object>;
+                if (st != null) st.Remove("type");       // an inline struct: {x,y,z} is enough
+                return scalar;
+            }
+            Dictionary<string, object> dto = new Dictionary<string, object> { { "type", ShortName(t) } };
+            int? count = CountOf(v);
+            if (count != null) dto["count"] = count.Value;
+            Type unityObject = UnityObjectType();
+            if (unityObject != null && unityObject.IsInstanceOfType(v))
+            {
+                try
+                {
+                    PropertyInfo name = unityObject.GetProperty("name");
+                    MethodInfo id = unityObject.GetMethod("GetInstanceID", Type.EmptyTypes);
+                    if (name != null) dto["name"] = Brief(name.GetValue(v, null), 2);
+                    if (id != null) dto["id"] = id.Invoke(v, null);
+                }
+                catch (Exception) { }
+                return dto;
+            }
+            // Depth 0 = the argument: its fields, briefed. Depth 1 = a field's object: its SCALAR
+            // fields only (so a nested plain object still says which one it is). Depth 2 = stop.
+            if (depth >= 2 || count != null) return dto;
+            int max = depth == 0 ? BriefFields : 4;
+            int n = 0;
+            foreach (FieldInfo f in t.GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (n >= max) break;
+                object fv;
+                try { fv = f.GetValue(v); } catch (Exception) { continue; }
+                if (fv == null || (fv is bool && !(bool)fv)) continue;
+                if (depth == 1 && !IsBriefScalar(fv)) continue;
+                object b = Brief(fv, depth + 1);
+                Dictionary<string, object> bd = b as Dictionary<string, object>;
+                if (bd != null && bd.Count == 1 && bd.ContainsKey("type")) continue;   // says nothing
+                dto[f.Name] = b;
+                n++;
+            }
+            return dto;
+        }
+
+        private static bool IsBriefScalar(object v)
+        {
+            Type t = v.GetType();
+            return t.IsPrimitive || t.IsEnum || v is string || v is decimal || v is Guid || v is DateTime || v is TimeSpan;
+        }
+
         /// <summary>
         /// Everything that projects to a value rather than to a handle: primitives, strings, enums,
         /// the three round-trippable structs, and a small inlineable value type. Split out of
