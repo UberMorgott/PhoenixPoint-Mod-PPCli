@@ -46,9 +46,12 @@
       "args": { "op": "invoke", "target": "${GV.value.h}", "member": "SetSelectedActor",
                 "args": [ { "$h": "${VPAGE.items[0].h}" }, 0 ] } },
 
-    { "//": "The console command's own output is the receipt: it names the site it fired from.",
+    { "//": "The console command's own output is the receipt: it names the site it fired from. One page at the widest limits (console pages since 0.3.0).",
       "id": "trigger", "verb": "console", "save": "FIRED",
-      "args": { "command": "geo_event_trigger", "args": [ "${eventId}" ] } },
+      "args": { "command": "geo_event_trigger", "args": [ "${eventId}" ], "pageLines": 2000, "pageBytes": 196608 } },
+    { "//": "An INCOMPLETE receipt is a failure, not a pass: when the output overran that page, this deliberately refused cursor read fails the plan with the reason in its error. The event DID fire - the receipt just does not fit.",
+      "id": "receipt-complete", "verb": "console", "if": "${FIRED.hasMore}",
+      "args": { "cursor": "receipt-incomplete: geo_event_trigger printed more than one page; the plan output would be a partial receipt" } },
 
     { "id": "state", "verb": "state", "save": "ST" }
   ],
@@ -67,6 +70,7 @@
     "suppressWas": "${SUP0.value}",
     "vehicle": "${VPAGE.items[0].name}",
     "consoleOutput": "${FIRED.output}",
+    "consoleLines": "${FIRED.total}",
     "phase": "${ST.phase}"
   }
 }
