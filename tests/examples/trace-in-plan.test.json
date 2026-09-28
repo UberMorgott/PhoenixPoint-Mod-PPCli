@@ -1,0 +1,21 @@
+{
+  "name": "a plan traces, waits for the hit, reads args + return",
+  "//": "The PLAN owns the trace here (save T): start with args/ret, trigger, `wait {trace}` from T.next so a hit between start and wait is not lost, then assert on the recorded row. finally stops it.",
+  "timeoutMs": 20000,
+  "steps": [
+    { "id": "trace", "verb": "trace", "save": "T",
+      "args": { "start": { "type": "PhoenixPoint.Common.Game.PhoenixGame", "method": "IsDlcEnabled", "args": true, "ret": true } } },
+    { "id": "poke", "verb": "call",
+      "args": { "op": "get", "target": "@phoenix", "member": "IsLivingWeaponsDlcEnabled" } },
+    { "id": "hit", "verb": "wait", "save": "HIT",
+      "args": { "trace": "${T.id}", "since": "${T.next}", "timeoutMs": 5000 } }
+  ],
+  "finally": [ { "id": "stop", "verb": "trace", "args": { "stop": "${T.id}" } } ],
+  "expect": {
+    "results": [
+      { "var": "HIT", "path": "value.a[0].name", "eq": "LivingWeaponsEntitlementDef" },
+      { "var": "HIT", "path": "value.r", "exists": true }
+    ],
+    "traces": [ { "var": "T", "min": 1, "max": 5 } ]
+  }
+}

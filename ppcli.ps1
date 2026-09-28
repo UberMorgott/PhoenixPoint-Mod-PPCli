@@ -24,7 +24,7 @@
 #>
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('deploy', 'run', 'batch', 'connect', 'plan', 'index')]
+    [ValidateSet('deploy', 'run', 'batch', 'connect', 'plan', 'index', 'test')]
     [string] $Command,
 
     [Parameter(Position = 1)] [string] $Arg1,
@@ -67,7 +67,14 @@ param(
     [switch] $Quiet,
     # `act {use}` / `act {endTurn}` / `ui {click}` (alone, in `multi`, a batch or a plan) against the
     # Steam install you PLAY is refused unless this is passed: it would play your real turn.
-    [switch] $AllowMutate
+    [switch] $AllowMutate,
+    # `test` only: write a JUnit XML report here too (CI / IDE test panes read it).
+    [string] $JUnit = '',
+    # `test` only: launch this install's game for the suite and stop it after (same preflight and
+    # Options.jopt restore as `run`). Default = the game ALREADY running (`connect`).
+    [switch] $Cold,
+    # `test` only: run just the cases whose name matches this regex.
+    [string] $Only = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,6 +91,7 @@ function Info([string] $m) { if (-not $script:quiet) { Note $m } }
 . (Join-Path $PSScriptRoot 'paths.ps1')
 . (Join-Path $PSScriptRoot 'waits.ps1')
 . (Join-Path $PSScriptRoot 'index.ps1')
+. (Join-Path $PSScriptRoot 'harness.ps1')
 
 # One place decides whether a wait has already lost. Returns nothing, or throws naming the fault.
 # Throttled to once every 2 s: a poll loop runs four times a second and the log it re-reads is tens
@@ -111,7 +119,9 @@ function Assert-MutateAllowed($Node, [string] $Verb = '') {
            "(ppcli-install.txt), or pass -AllowMutate if you mean it. Nothing was sent.")
 }
 
-function Invoke-Jobs([string] $jobsJson) {
+# Everything a cold launch must prove BEFORE a process exists, shared by `run`/`batch` (Invoke-Jobs)
+# and `test -Cold` (Invoke-ColdSuite). Returns what the launch and its cleanup need.
+function Get-ColdLaunch {
     if (-not (Test-Path $exe))    { throw "No game executable at $exe" }
     if (-not (Test-Path $modDir)) { throw "PPBridge is not deployed: $modDir missing. Run '.\ppcli.ps1 deploy'." }
     $dll = Join-Path $modDir 'PPBridge.dll'
@@ -164,14 +174,38 @@ function Invoke-Jobs([string] $jobsJson) {
     # silently disabling every other mod too - which then looks like the harness breaking for an
     # unrelated reason.
     $joptBefore = [IO.File]::ReadAllBytes($jopt)
+    [pscustomobject]@{ jopt = $jopt; joptBefore = $joptBefore; expected = $expected; logPath = $logPath; game = $null }
+}
 
+# -mods turns PPModLoader on; -logFile keeps this run out of the shared LocalLow log. -PassThru is
+# load-bearing: $cold.game.Id is the only handle Stop-ColdGame may ever use.
+function Start-ColdGame($cold) {
+    $cold.game = Start-Process -FilePath $exe -ArgumentList '-mods', '-logFile', $cold.logPath -PassThru
+    Info "launched PID $($cold.game.Id) (the only process this run may stop)"
+}
+
+# Stops ONLY the process this run started, drops the job file, restores Options.jopt byte-exact.
+function Stop-ColdGame($cold) {
+    $game = $cold.game
+    if ($game -and -not $game.HasExited) { Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
+    Remove-Item $jobsPath -Force -ErrorAction SilentlyContinue   # never fire on a later manual launch
+    if (Test-Path $cold.jopt) {
+        $after = [IO.File]::ReadAllBytes($cold.jopt)
+        if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$cold.joptBefore, $after)) {
+            [IO.File]::WriteAllBytes($cold.jopt, $cold.joptBefore)
+            Note "restored $($cold.jopt) byte-exact (the run changed it)"
+        }
+    }
+}
+
+function Invoke-Jobs([string] $jobsJson) {
+    $cold = Get-ColdLaunch
+    $logPath = $cold.logPath; $expected = $cold.expected
     Set-Content -Path $jobsPath -Value $jobsJson -Encoding utf8NoBOM
-    $stamp = '(no init line)'; $done = $null; $game = $null
+    $stamp = '(no init line)'; $done = $null
     try {
-        # -mods turns PPModLoader on; -logFile keeps this run out of the shared LocalLow log.
-        # -PassThru is load-bearing: $game.Id is the only handle Stop-Process may ever use.
-        $game = Start-Process -FilePath $exe -ArgumentList '-mods', '-logFile', $logPath -PassThru
-        Info "launched PID $($game.Id) (the only process this run may stop)"
+        Start-ColdGame $cold
+        $game = $cold.game
 
         $start = Get-Date; $inited = $false
         # This log did not exist a moment ago, so the mark is 0 and every line in it belongs to
@@ -194,17 +228,7 @@ function Invoke-Jobs([string] $jobsJson) {
             if ($d) { $done = [int]$d.Matches[0].Groups[1].Value; break }
         }
     }
-    finally {
-        if ($game -and -not $game.HasExited) { Stop-Process -Id $game.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
-        Remove-Item $jobsPath -Force -ErrorAction SilentlyContinue   # never fire on a later manual launch
-        if (Test-Path $jopt) {
-            $after = [IO.File]::ReadAllBytes($jopt)
-            if (-not [Linq.Enumerable]::SequenceEqual($joptBefore, $after)) {
-                [IO.File]::WriteAllBytes($jopt, $joptBefore)
-                Note "restored $jopt byte-exact (the run changed it)"
-            }
-        }
-    }
+    finally { Stop-ColdGame $cold }
 
     if (-not (Test-Path $logPath)) { throw "no log was written to $logPath" }
     $stale = $stamp -ne $expected
@@ -505,6 +529,34 @@ function Invoke-Verb([string] $verb, $verbArgs, $ep) {
     $reply
 }
 
+# `test -Cold`: one launch for the WHOLE suite. The game is started by this run (Get-ColdLaunch's
+# preflight: armed, activated, not already running), gated on its own endpoint answering `state`,
+# refused if it runs another build than the one deployed, and always stopped + Options.jopt restored.
+function Invoke-ColdSuite([scriptblock] $Body) {
+    $cold = Get-ColdLaunch
+    try {
+        Start-ColdGame $cold
+        $deadline = (Get-Date).AddSeconds($InitTimeoutSeconds + 60)
+        $ep = $null
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 2
+            if ($cold.game.HasExited) { throw "the game exited during start-up (log: $($cold.logPath))" }
+            $cand = $null
+            try { $cand = Get-Endpoint } catch { continue }
+            if ([string]$cand.pid -ne [string]$cold.game.Id) { continue }
+            try { $s = Invoke-Pipe $cand ([ordered]@{ token = $cand.token; id = 'c1'; verb = 'state' }) 10 } catch { continue }
+            if ($s.status -eq 'done' -and $s.result.ok) { $ep = $cand; break }
+        }
+        if (-not $ep) { throw "the launched game (PID $($cold.game.Id)) never answered 'state' within $($InitTimeoutSeconds + 60)s (log: $($cold.logPath))" }
+        if ($ep.build -ne $cold.expected) {
+            throw "REFUSED: the launched game runs build=$($ep.build), not the deployed $($cold.expected) - every result would be a ghost"
+        }
+        Info "cold suite on PID $($ep.pid), build=$($ep.build)"
+        & $Body $ep
+    }
+    finally { Stop-ColdGame $cold }
+}
+
 # The one JSON object on stdout. Every caller that wants the answer instead of the printout uses
 # Invoke-Verb directly, so the contract lives in exactly one place.
 function Send-Verb([string] $verb, $verbArgs) {
@@ -760,6 +812,54 @@ switch ($Command) {
         [ordered]@{ ok = $true; rows = $rows.Count; scanned = $defs.Count; pages = $pages
                     research = $research; catalog = (Join-Path $CatalogDir 'defs.ndjson'); build = $ep.build } |
             ConvertTo-Json -Compress
+    }
+    'test' {
+        # MOD TEST HARNESS (harness.ps1): *.test.json = a plan + `expect`. One summary on stdout,
+        # exit 1 when any case failed. Every file is parsed and every var reference checked BEFORE
+        # the first case touches the game.
+        if (-not $Arg1) { throw "usage: ppcli.ps1 test <dir|file.test.json> ['{""var"":value}'] [-Cold] [-JUnit out.xml] [-Only regex]" }
+        $files = @(Get-TestFiles $Arg1)
+        $callerVars = if ($Arg2) { Resolve-PlanVars (ConvertFrom-Json $Arg2 -NoEnumerate) } else { $null }
+        $overridden = @(if ($callerVars) { $callerVars.PSObject.Properties.Name } else { @() })
+        $longest = 0
+        foreach ($f in $files) {
+            $c = Read-TestCase $f
+            foreach ($pl in @($c.plan) + @($c.setup | ForEach-Object { $_.plan }) + @($c.teardown | ForEach-Object { $_.plan })) {
+                Assert-MutateAllowed $pl
+                if ($pl.timeoutMs -and [int]$pl.timeoutMs -gt $longest) { $longest = [int]$pl.timeoutMs }
+            }
+        }
+        # Same rule as `plan`: the client must not be the shorter clock.
+        if (-not $PSBoundParameters.ContainsKey('TimeoutSeconds') -and $longest -gt 0) {
+            $want = [int]($longest / 1000) + 60
+            if ($want -gt $TimeoutSeconds) { $TimeoutSeconds = $want }
+        }
+        # A case file's own vars name defs too - resolved exactly like `plan` resolves a plan file's.
+        $prepare = {
+            param($case)
+            foreach ($v in @($case.plan.vars, $case.vars) + @($case.setup | ForEach-Object { $_.vars }) + @($case.teardown | ForEach-Object { $_.vars })) {
+                if (-not $v) { continue }
+                # A "${SETUP.field}" value is filled from a setup's output at run time, not a def name.
+                $late = @($v.PSObject.Properties | Where-Object { $_.Value -is [string] -and $_.Value.StartsWith('${') } | ForEach-Object Name)
+                Resolve-PlanVars $v (@($overridden) + $late) | Out-Null
+            }
+        }
+        $suite = {
+            param($ep)
+            $script:harnessEp = $ep
+            Invoke-TestSuite $files { param($v, $a) Invoke-Verb $v $a $script:harnessEp } $callerVars $Only $prepare
+        }
+        $summary = if ($Cold) { Invoke-ColdSuite $suite } else { & $suite (Get-Endpoint) }
+        $summary.mode = $Cold ? 'cold' : 'connect'
+        if ($JUnit) {
+            $xml = ConvertTo-JUnitXml $summary ([IO.Path]::GetFileNameWithoutExtension($Arg1.TrimEnd('\', '/')))
+            $dir = Split-Path -Parent ([IO.Path]::GetFullPath($JUnit))
+            if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
+            Set-Content -Path $JUnit -Value $xml -Encoding utf8NoBOM
+            $summary.junit = [IO.Path]::GetFullPath($JUnit)
+        }
+        if (-not $summary.ok) { $script:AnyRefusal = $true }
+        $summary | ConvertTo-Json -Depth 16 -Compress
     }
 }
 # EVERY verb ends with an exit code, not just the ones that happen to run a native command. `index`

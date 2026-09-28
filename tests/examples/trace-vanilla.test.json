@@ -1,0 +1,15 @@
+{
+  "name": "trace hits a vanilla method",
+  "//": "Any phase (@phoenix exists from the main menu on). The HARNESS traces PhoenixGame.IsDlcEnabled around the steps; the step makes the game call it once through a DLC getter.",
+  "timeoutMs": 20000,
+  "steps": [
+    { "id": "poke", "verb": "call", "save": "P",
+      "args": { "op": "get", "target": "@phoenix", "member": "IsLivingWeaponsDlcEnabled" } }
+  ],
+  "finally": [],
+  "expect": {
+    "results": [ { "var": "P", "path": "value", "exists": true } ],
+    "traces": [ { "type": "PhoenixPoint.Common.Game.PhoenixGame", "method": "IsDlcEnabled", "min": 1 } ],
+    "log": { "level": "error", "hasNot": [ "PPBridge" ] }
+  }
+}
