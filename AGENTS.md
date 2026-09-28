@@ -40,7 +40,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 | `wait` | `{ready}` `{phase}` `{call}` `{forMs}` `{log:"rx",level?,since?}` `{event:{sub\|target+event,match?,since?}}` + `not?,timeoutMs?,everyFrames?` |
 | `log` | `{since?,level?,match?,pageSize?,pageBytes?,clip?,stack?}` → `{rows?:[{s,l,m}],next,hasMore?,dropped?}`; pass `next` as `since` |
 | `events` | `{subscribe:{target\|type,event}}` → `{sub,next}`; `{since?,sub?,match?}` → `{rows?:[{s,sub,a}],next,ended?}`; `{unsubscribe}` `{list:true}` |
-| `imgui` | `{list:true,owner?,match?}` → `{total,rows:[{l,i?,k?,on?,dis?,o,r}]}`; `{press:{label,owner?,index?},waitFrames?}` → `{fired:true,ev}` / `code:"ambiguous\|notfound\|disabled\|notfired\|busy"`. EXPERIMENTAL |
+| `imgui` | `{list:true,owner?,match?}` → `{total,rows:[{l,i?,k?,on?,dis?,o,r}]}`; `{press:{label,owner?,index?},waitFrames?}` → `{fired:true,ev}` / `code:"ambiguous\|notfound\|disabled\|notfired\|scene\|busy"`; fires only on Repaint/MouseMove, bound to owner. EXPERIMENTAL |
 | `observe` | `{action:"start",target?}` / `read {aim?,page?,pageSize?(10/200)}` / `stop\|mark\|status` |
 | `snapshot` / `restore` | `{name,timeoutMs?}` / `{name}` (issue-only → follow with `wait`) |
 | `plan` | `{plan:{steps,finally?,vars?,output?,timeoutMs?,maxSteps?,trace?},vars?}`; `trace:"errors"` default, `"full"` opt-in |
