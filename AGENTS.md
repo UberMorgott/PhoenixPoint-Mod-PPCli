@@ -84,4 +84,13 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 12. Disarm when done: delete `Mods\PPBridge\ppcli-enabled`; endpoint stops after periodic check, parked plan still gets cleanup; relaunch needed to re-arm.
 13. Co-op `tools\coop.ps1 launch|relaunch -Lite` = quarter-screen tiled windows + VeryLow preset, shadows off. Unity `-screen-*` args alone useless: game re-applies profile `Options_ScreenWidth/Height/Mode` at boot (`OptionsManager.InitVideoOptions`), so `-Lite` edits each peer's profile `Options.jopt` (id = Goldberg `force_steamid.txt`, else Steam `ActiveUser`) + snapshots shared HKCU PlayerPrefs (one key for ALL installs); originals backed up once in `tools\coop-lite\`, put back by `stop` / `restore` after process exit. After `kill` without `relaunch` => `coop.ps1 restore`. A non-`-Lite` start of a still-backed install restores first. `stop` polls the process LIST until killed pids vanish (≤90 s) — never `Wait-Process` (returns in ms on a killed-but-tearing-down game). `-Lite` commit bar = 8 GB/peer (measured ~5.35), explicit `-MinFreeCommitGB` wins.
 
+## Release (local build, no CI)
+
+1. Bump `Version`/`AssemblyVersion`/`FileVersion` in `PPBridge.csproj` + `"Version"` in `meta.json` (`X.Y.Z.0`). No CHANGELOG; notes live on the GitHub release (`git log --oneline vPREV..HEAD`).
+2. `dotnet build -c Release /p:PPRoot="D:\PP-Instance2"` (bare build fails: needs `<PPRoot>\ModSDK`). Run every `tests\*.tests.ps1` (`pwsh -NoProfile -File`), all green.
+3. Zip FLAT: `PPBridge.dll` + `meta.json` from `bin\Release\PPBridge\` → `PPBridge-X.Y.Z.zip` (no folder, no pdb).
+4. `git commit -m "chore(release): vX.Y.Z"`, `git tag -a vX.Y.Z -m vX.Y.Z`, `git push origin main --tags` (no force).
+5. `gh release create vX.Y.Z <zip> -R UberMorgott/PhoenixPoint-Mod-PPCli --title vX.Y.Z --notes-file <notes> --latest --verify-tag`.
+6. `.\ppcli.ps1 deploy` (`-AllowRunning` if the target game runs → staged for next launch).
+
 Next: [`PLAYBOOK.md`](PLAYBOOK.md) = intent -> command; [`docs/REFERENCE.md`](docs/REFERENCE.md) = deep protocol/plan/reflection/security reference; [`ISSUES.md`](ISSUES.md) = defect inbox—log hits there; don't derail current task.
