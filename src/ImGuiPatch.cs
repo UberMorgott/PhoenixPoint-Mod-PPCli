@@ -57,7 +57,7 @@ namespace Morgott.PPBridge
                 bool toggle = style != null && style.name != null && style.name.IndexOf("toggle", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (ImGuiTap.Observe(Time.frameCount, t == EventType.Repaint, t.ToString(), Label(content),
                                      position.x, position.y, position.width, position.height,
-                                     GUI.enabled, toggle, on, OwnerFn))
+                                     GUI.enabled, toggle, on, OwnerFn, GUIUtility.hotControl == 0))
                 {
                     __result = !on;
                     GUI.changed = true;

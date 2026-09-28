@@ -1544,9 +1544,7 @@ In-process, semantic press: no SendInput, so the user's focus and cursor are nev
 - **press:** `{press:{label, owner?, index?}, waitFrames?}`. `label` EXACT, case-sensitive. Resolution
   on one Repaint pass: none → `code:"notfound"` (+`controls`, `labels` ≤ 10 distinct); > 1 without
   `index` → `code:"ambiguous"` (+`candidates` ≤ 10 rows, pass `index` = the row's `i` and/or `owner`);
-  drawn disabled → `code:"disabled"`. Then ARMED: the first non-Layout event reaching that (label, i)
-  gets the forced result, ONCE — an input event if one arrives that frame, else Repaint. Layout is
-  skipped (GUILayout's dummy pass; forcing there desyncs the layout). Fired →
+  drawn disabled → `code:"disabled"`. Then ARMED: the matched (label, i) gets the forced result ONCE, on the first SAFE pass - `Repaint` or `MouseMove`, and only while `GUIUtility.hotControl == 0`. NEVER on MouseDown/MouseUp/MouseDrag/Key*/Used: forcing a real MouseDown true runs the body, then the native MouseUp on the same control runs it AGAIN and leaves hotControl grabbed (Codex review P1). Layout is skipped (GUILayout's dummy pass; forcing there desyncs the layout). While the user holds a control, the press waits (→ `notfired` if it never frees). Fired →
   `{ok:true,fired:true,ev:"Repaint|MouseMove|…",frames}`; not drawn again within `waitFrames`
   (default 30, max 600) → `{ok:false,code:"notfired",fired:false}`. Every refusal carries `fired:false`.
 - **Trap:** a press fired in Repaint runs the button's body mid-Repaint. A body that ADDS/REMOVES

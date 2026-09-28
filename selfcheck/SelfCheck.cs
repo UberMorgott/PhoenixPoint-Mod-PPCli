@@ -881,6 +881,7 @@ namespace Morgott.PPBridge
         // ------------------------------------------------------------------ imgui (pure half)
 
         private static int imFrame;
+        private static bool imIdle = true;
 
         /// <summary>One simulated OnGUI frame: Layout (skipped by the patch, so never observed), an
         /// optional input event, then Repaint - each pass visiting the same controls in draw order.
@@ -891,7 +892,7 @@ namespace Morgott.PPBridge
             foreach (string ev in inputEv == null ? new[] { "Repaint" } : new[] { inputEv, "Repaint" })
                 for (int i = 0; i < labels.Length; i++)
                     if (ImGuiTap.Observe(imFrame, ev == "Repaint", ev, labels[i], i * 10, 5, 100, 20,
-                                         enabled == null || enabled[i], false, false, () => owner))
+                                         enabled == null || enabled[i], false, false, () => owner, imIdle))
                         forced.Add(ev + ":" + labels[i] + "#" + i);
             return forced;
         }
@@ -959,6 +960,21 @@ namespace Morgott.PPBridge
             forced.Clear();
             string ev = ImRun("{'press':{'label':'Stop','owner':'benchui'}}", ui, null, "MouseMove", forced);
             Check("imgui-press-input-event-first", ev.Contains("\"ev\":\"MouseMove\"") && forced.Count == 1 && forced[0] == "MouseMove:Stop#1", ev + " " + string.Join(",", forced));
+            // P1 double action: a real MouseDown/MouseUp pass is never forced (the native MouseUp would
+            // run the body again); the press waits for Repaint. hotControl held -> never fires.
+            forced.Clear();
+            string md = ImRun("{'press':{'label':'Stop'}}", ui, null, "MouseDown", forced);
+            Check("imgui-press-skips-mousedown", md.Contains("\"ev\":\"Repaint\"") && forced.Count == 1 && forced[0] == "Repaint:Stop#1", md + " " + string.Join(",", forced));
+            forced.Clear();
+            string mu = ImRun("{'press':{'label':'Stop'}}", ui, null, "MouseUp", forced);
+            Check("imgui-press-skips-mouseup", mu.Contains("\"ev\":\"Repaint\"") && forced.Count == 1 && forced[0] == "Repaint:Stop#1", mu + " " + string.Join(",", forced));
+            forced.Clear();
+            imIdle = false;
+            string hot = ImRun("{'press':{'label':'Stop'},'waitFrames':5}", ui, null, null, forced);
+            imIdle = true;
+            Check("imgui-press-not-while-hotcontrol", hot.Contains("\"code\":\"notfired\"") && forced.Count == 0, hot);
+            Check("imgui-safe-pass", ImGuiTap.SafePass("Repaint", true) && ImGuiTap.SafePass("MouseMove", true) && !ImGuiTap.SafePass("MouseDown", true) &&
+                  !ImGuiTap.SafePass("MouseUp", true) && !ImGuiTap.SafePass("Used", true) && !ImGuiTap.SafePass("KeyDown", true) && !ImGuiTap.SafePass("Repaint", false), "safe pass set");
             forced.Clear();
             string dis = ImRun("{'press':{'label':'Export'}}", ui, new[] { true, true, true, false }, null, forced);
             Check("imgui-press-disabled", dis.Contains("\"code\":\"disabled\"") && forced.Count == 0, dis);

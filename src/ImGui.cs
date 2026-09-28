@@ -21,9 +21,11 @@ namespace Morgott.PPBridge
     ///   - a control's identity inside a frame = (label, i): i = how many controls with the same label
     ///     came before it in that event pass. Stable frame to frame for the same UI.
     ///   - list/resolve read ONE complete Repaint pass (the frame before the current Update).
-    ///   - press fires on the first non-Layout event that reaches the matched control - an input event
-    ///     if one comes that frame, else Repaint. Layout is skipped: GUILayout returns the dummy result
-    ///     there and the layout pass must match the next pass.
+    ///   - press fires ONLY on a SAFE pass (<see cref="SafePass"/>): Repaint or MouseMove, and only while
+    ///     no control holds the mouse (GUIUtility.hotControl == 0). Never on MouseDown/MouseUp/MouseDrag/
+    ///     Key*/Used: forcing a real MouseDown true would run the button body, then the native MouseUp
+    ///     on the same control would run it AGAIN and hotControl would stay grabbed. Layout is skipped:
+    ///     GUILayout returns the dummy result there and the layout pass must match the next pass.
     ///   - one imgui request at a time; the Harmony patch lives only while a request is running.
     /// Main thread only, like every verb.
     /// </summary>
@@ -84,7 +86,7 @@ namespace Morgott.PPBridge
         /// </summary>
         internal static bool Observe(int frame, bool repaint, string ev, string label,
                                      float x, float y, float w, float h,
-                                     bool enabled, bool toggle, bool on, Func<string> owner)
+                                     bool enabled, bool toggle, bool on, Func<string> owner, bool idle = true)
         {
             if (!Active) return false;
             label = label ?? "";
@@ -111,7 +113,7 @@ namespace Morgott.PPBridge
             }
 
             Target t = target;
-            if (t != null && enabled && n == t.I && string.Equals(label, t.Label, StringComparison.Ordinal))
+            if (t != null && enabled && SafePass(ev, idle) && n == t.I && string.Equals(label, t.Label, StringComparison.Ordinal))
             {
                 target = null;
                 fired = true; firedEv = ev; firedFrame = frame;
@@ -119,6 +121,13 @@ namespace Morgott.PPBridge
                 return true;
             }
             return false;
+        }
+
+        /// <summary>The only passes a forced press may ride: nothing native can also click there.
+        /// <paramref name="idle"/> = GUIUtility.hotControl == 0 (no control mid-click).</summary>
+        internal static bool SafePass(string ev, bool idle)
+        {
+            return idle && (ev == "Repaint" || ev == "MouseMove");
         }
 
         private static void RefreshActive() { Active = recording || target != null; }
