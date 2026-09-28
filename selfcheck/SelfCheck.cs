@@ -1211,6 +1211,21 @@ namespace Morgott.PPBridge
             string canc = p == null ? "" : Protocol.Compact(p.Tick(true));
             Check("ui-click-cancel-says-done", canc.Contains("\"code\":\"cancelled\"") && canc.Contains("NOT undone"), canc);
 
+            int scans = 0;
+            UiTap.Scan = () => { scans++; return nodes; };
+            frame = 500;
+            string d1 = V("ui", "{'tree':{},'pageSize':1,'diag':true}");
+            string d2 = V("ui", "{'tree':{},'pageSize':1,'page':1,'diag':true}");
+            Check("ui-diag-scanms", d1.Contains("\"diag\":{\"scanMs\":") && d1.Contains("\"cached\":false") && d1.Contains("\"nodes\":" + nodes.Count), d1);
+            Check("ui-scan-cached-per-frame", scans == 1 && d2.Contains("\"cached\":true"), "scans=" + scans + " " + d2);
+            V("ui", "{'click':{'label':'NEW GAME'},'waitFrames':0}");
+            V("ui", "{'tree':{},'pageSize':1}");
+            Check("ui-click-drops-scan-cache", scans == 2, "scans=" + scans);
+            frame = 501;
+            V("ui", "{'tree':{},'pageSize':1}");
+            Check("ui-scan-new-frame-rescans", scans == 3, "scans=" + scans);
+            Check("ui-diag-args", V("ui", "{'tree':{},'diag':1}").Contains("\"code\":\"args\""), "diag:1");
+            Check("ui-no-diag-by-default", !V("ui", "{'tree':{},'pageSize':1}").Contains("diag"), "diag leaked");
             UiTap.Scan = () => { throw new InvalidOperationException("scan boom"); };
             Check("ui-scan-throw", V("ui", "{'tree':{}}").Contains("\"code\":\"threw\""), V("ui", "{'tree':{}}"));
             UiTap.Scan = () => nodes;

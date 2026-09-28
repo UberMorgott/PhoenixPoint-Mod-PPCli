@@ -11,7 +11,7 @@ namespace Morgott.PPBridge
     /// <summary>
     /// The game half of <c>ui</c> (pure half + contract: Ui.cs). Scan = every active uGUI element a
     /// pointer click can reach: enabled Selectables (Selectable.allSelectablesArray) plus any enabled
-    /// MonoBehaviour implementing IPointerClickHandler (PhoenixGeneralButton, list rows, TFTV panels).
+    /// IPointerClickHandler under a root Canvas (PhoenixGeneralButton, list rows, TFTV panels).
     /// Click = the pointer sequence StandaloneInputModule runs for a real left click, started at the
     /// object the raycast at the element's centre actually hits: enter (hit and every ancestor ->
     /// hovered) -> deselect-if-changed -> down (ExecuteHierarchy) + pointerDrag/initializePotentialDrag
@@ -38,8 +38,17 @@ namespace Morgott.PPBridge
             HashSet<int> seen = new HashSet<int>();
             foreach (Selectable s in Selectable.allSelectablesArray)
                 if (s != null && s.isActiveAndEnabled) Add(nodes, seen, s.gameObject);
-            foreach (MonoBehaviour mb in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>())
-                if (mb is IPointerClickHandler && mb.isActiveAndEnabled && mb.transform is RectTransform) Add(nodes, seen, mb.gameObject);
+            // Only under root Canvases (no uGUI click lands elsewhere), and only the click handlers -
+            // not every MonoBehaviour in the scene.
+            foreach (Canvas c in UnityEngine.Object.FindObjectsOfType<Canvas>())
+            {
+                if (c == null || !c.isRootCanvas) continue;
+                foreach (IPointerClickHandler h in c.GetComponentsInChildren<IPointerClickHandler>())
+                {
+                    MonoBehaviour mb = h as MonoBehaviour;
+                    if (mb != null && mb.isActiveAndEnabled && mb.transform is RectTransform) Add(nodes, seen, mb.gameObject);
+                }
+            }
             // A container that is itself clickable (UINavigationalElementsHolder, list views) would
             // otherwise borrow its first child button's text and collide with that button's label.
             HashSet<Transform> cands = new HashSet<Transform>();

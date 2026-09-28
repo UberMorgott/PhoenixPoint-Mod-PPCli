@@ -72,6 +72,8 @@ namespace Morgott.PPBridge
     ///          (default 1) lets the UI react before the reply. ok:true = the events were DISPATCHED
     ///          and no handler threw (a swallowed handler exception -> threw, click not undone) - NOT
     ///          that the screen changed: check the effect with a follow-up ui tree / state / screenshot.
+    ///   diag:true (either form) adds diag:{scanMs, nodes, cached}. One scan per frame is shared by
+    ///   every request in that frame; a click drops it.
     /// Refusals: args, ui (offline), notfound(+near), ambiguous(+candidates), disabled(+row),
     ///           blocked(+top,row), noraycast(+row), unsupported(+row: Slider/Scrollbar), noclick, threw.
     /// Main thread only, like every verb.
@@ -98,7 +100,38 @@ namespace Morgott.PPBridge
 
         internal static object Bad(string code, string message) { return new { ok = false, code, error = Protocol.Clip(message) }; }
 
-        internal static void Shutdown() { Scan = null; ClickRun = null; FrameNow = null; }
+        internal static void Shutdown() { Scan = null; ClickRun = null; FrameNow = null; cache = null; }
+
+        // One scan per frame: a tree and a click (or two pages) in the same frame share it. A click
+        // drops it - what it changed must not be answered from the scan before it.
+        private static List<UiNode> cache;
+        private static int cacheFrame;
+        private static Func<List<UiNode>> cacheScan;
+        private static double lastMs;
+        private static bool lastCached;
+        private static int lastCount;
+
+        private static List<UiNode> Scanned()
+        {
+            int frame = FrameNow == null ? int.MinValue : FrameNow();
+            if (cache != null && FrameNow != null && frame == cacheFrame && cacheScan == Scan) { lastCached = true; return cache; }
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            cache = null;
+            List<UiNode> nodes = Scan();
+            lastMs = sw.Elapsed.TotalMilliseconds;
+            lastCached = false;
+            lastCount = nodes == null ? 0 : nodes.Count;
+            cache = FrameNow == null ? null : nodes;
+            cacheFrame = frame;
+            cacheScan = Scan;
+            return nodes ?? new List<UiNode>();
+        }
+
+        /// <summary>diag:true - scanMs = wall time of the last real scan (0-cost when cached).</summary>
+        private static JObject Diag()
+        {
+            return new JObject { ["scanMs"] = Math.Round(lastMs, 2), ["nodes"] = lastCount, ["cached"] = lastCached };
+        }
 
         internal static object Dispatch(string verb, JObject a)
         {
@@ -110,7 +143,9 @@ namespace Morgott.PPBridge
                 return Bad("args", "ui takes exactly one of {tree:{match?,root?,interactable?,all?}, page?, pageSize?} or {click:{label|path, index?, force?}, waitFrames?}");
 
             int page = 0, size = DefaultPageSize, wait = DefaultWaitFrames, index = -1;
-            string err = Protocol.IntArg(a, "page", 0, out page)
+            bool diag = false;
+            string err = Bool(a, "diag", out diag)
+                         ?? Protocol.IntArg(a, "page", 0, out page)
                          ?? Protocol.IntArg(a, "pageSize", DefaultPageSize, out size)
                          ?? Protocol.IntArg(a, "waitFrames", DefaultWaitFrames, out wait);
             if (err == null && page < 0) err = "page must be >= 0";
@@ -125,9 +160,11 @@ namespace Morgott.PPBridge
                 if (err != null) return Bad("args", err);
                 if (Scan == null) return Bad("ui", "no ui runner installed - this is the offline half, or the mod is shutting down");
                 List<UiNode> nodes;
-                try { nodes = Scan(); }
+                try { nodes = Scanned(); }
                 catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
-                return Tree(nodes, match, root, inter, all, page, size);
+                JObject tr = Tree(nodes, match, root, inter, all, page, size);
+                if (diag) tr["diag"] = Diag();
+                return tr;
             }
 
             string label = null, path = null; bool force = false;
@@ -142,7 +179,7 @@ namespace Morgott.PPBridge
             if (Scan == null || ClickRun == null) return Bad("ui", "no ui runner installed - this is the offline half, or the mod is shutting down");
 
             List<UiNode> all2;
-            try { all2 = Scan(); }
+            try { all2 = Scanned(); }
             catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
             UiNode pick;
             object refusal = Resolve(all2, label, path, index, out pick);
@@ -156,6 +193,7 @@ namespace Morgott.PPBridge
                 };
 
             UiClickResult res;
+            cache = null;                                   // the click may change what is on screen
             try { res = ClickRun(pick, force); }
             catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
             if (res != null && res.Refuse != null)
@@ -181,6 +219,7 @@ namespace Morgott.PPBridge
                 };
             JObject reply = new JObject { ["ok"] = true, ["clicked"] = ShortPath(pick.Path), ["handler"] = res.Handler };
             if (res.Target != null) reply["target"] = ShortPath(res.Target);
+            if (diag) reply["diag"] = Diag();
             if (res.Warn != null) reply["warn"] = Protocol.Clip(res.Warn);
             if (wait == 0 || FrameNow == null) { reply["frames"] = 0; return reply; }
             return new Pending(reply, wait, FrameNow());
