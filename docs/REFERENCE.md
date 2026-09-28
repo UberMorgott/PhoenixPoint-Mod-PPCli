@@ -405,7 +405,7 @@ parameter.
 
 Scores: exact `0`, assignable/nullable `1`, enum-or-guid parse `2`, lossless/range-checked numeric
 widening `3`. Lowest **unique** total wins. A tie is refused with the tied signatures and demands an
-explicit `sig` — reflection order never decides. Ambiguous type names are refused the same way, with
+explicit `sig` — reflection order never decides. A PRESENT `sig` always filters, for `new` and `invoke` alike: `sig:[]` names the zero-arg overload (not "no filter" - omit `sig` for that), and a struct `new` with no args returns the default instance only when `sig` is absent or empty - a non-empty one that matches no ctor refuses `code:"overload"`. Ambiguous type names are refused the same way, with
 the candidates listed. v1 rejects by-ref and pointer parameters; open generics need `typeArgs`.
 
 ### Handles and result projection

@@ -332,6 +332,16 @@ namespace Morgott.PPBridge
             Check("overload-wrong-arity",
                   R("call", "{'op':'invoke','type':'" + OvType + "','member':'TakeSeason','args':[1,2]}").Contains("takes 1 args"),
                   R("call", "{'op':'invoke','type':'" + OvType + "','member':'TakeSeason','args':[1,2]}"));
+            // A struct's default instance needs no ctor, but a sig naming one that does not exist must
+            // still refuse - the Activator shortcut used to skip the sig and hand back default(V3).
+            string v3Default = R("call", "{'op':'new','type':'Morgott.PPBridge.V3','args':[]}");
+            Check("struct-new-no-args-is-the-default", v3Default.Contains("\"ok\":true"), v3Default);
+            string v3EmptySig = R("call", "{'op':'new','type':'Morgott.PPBridge.V3','args':[],'sig':[]}");
+            Check("struct-new-empty-sig-is-the-default", v3EmptySig.Contains("\"ok\":true"), v3EmptySig);
+            string v3BadSig = R("call", "{'op':'new','type':'Morgott.PPBridge.V3','args':[],'sig':['Int32']}");
+            Check("struct-new-sig-without-a-match-refuses", v3BadSig.Contains("\"code\":\"overload\""), v3BadSig);
+            string scalNoCtor = R("call", "{'op':'new','type':'Morgott.PPBridge.Scal','sig':['Single','Single']}");
+            Check("struct-new-sig-arity-mismatch-refuses", scalNoCtor.Contains("\"ok\":false"), scalNoCtor);
 
             // v1's two flat refusals.
             Check("byref-refused",

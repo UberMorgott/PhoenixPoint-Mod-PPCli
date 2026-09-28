@@ -485,13 +485,18 @@ namespace Morgott.PPBridge
             // A static .cctor is the type initializer, never an instance constructor: listed, it tied
             // with every parameterless .ctor() (List<T>, ArrayList) and made `new` unreachable.
             List<MethodBase> ctors = type.GetConstructors(AnyDeclared).Where(c => !c.IsStatic).Cast<MethodBase>().ToList();
-            if (ctors.Count == 0 || (type.IsValueType && (args == null || args.Count == 0)))
+            // A struct's implicit parameterless constructor is not a ConstructorInfo, so a value type
+            // with no explicit ctor lists none. "new" with no args (and no sig, or `sig:[]`) on one
+            // means the default instance - exactly what Activator.CreateInstance(Type) hands back. A
+            // non-empty sig names a real ctor and goes through Pick, which refuses a mismatch.
+            bool structDefault = type.IsValueType && (args == null || args.Count == 0) && (sig == null || sig.Count == 0);
+            if (structDefault) made = Activator.CreateInstance(type);
+            else if (ctors.Count == 0)
             {
-                // A struct's implicit parameterless constructor is not a ConstructorInfo, so a value
-                // type with no explicit ctor lists none. "new" with no args on one means the default
-                // instance - exactly what Activator.CreateInstance(Type) hands back.
-                if (type.IsValueType && (args == null || args.Count == 0)) made = Activator.CreateInstance(type);
-                else return Bad("member", type.FullName + " has no accessible constructor");
+                if (sig != null && sig.Count > 0)
+                    return Bad("overload", "no overload matches sig [" + string.Join(", ", sig.Select(t => (string)t).ToArray()) +
+                                           "]: " + type.FullName + " has no accessible constructor");
+                return Bad("member", type.FullName + " has no accessible constructor");
             }
             else
             {
