@@ -41,12 +41,13 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 | `log` | `{since?,level?,match?,pageSize?,pageBytes?,clip?,stack?}` → `{rows?:[{s,l,m}],next,hasMore?,dropped?}`; pass `next` as `since` |
 | `events` | `{subscribe:{target\|type,event}}` → `{sub,next}`; `{since?,sub?,match?}` → `{rows?:[{s,sub,a}],next,ended?}`; `{unsubscribe}` `{list:true}` |
 | `imgui` | `{list:true,owner?,match?}` → `{total,rows:[{l,i?,k?,on?,dis?,o,r}]}`; `{press:{label,owner?,index?},waitFrames?}` → `{fired:true,ev}` / `code:"ambiguous\|notfound\|disabled\|notfired\|scene\|busy"`; fires only on Repaint/MouseMove, bound to owner. EXPERIMENTAL |
+| `act` | `{squad:true\|"all"}` → `{turn:{n,f,mine},actors}`; `{list:{actor?,ability?,src?,targets?,all?}}` → `{actor,turn,abilities:[{i,def,t,src?,dis?,tk,ap?}]}` (`targets:true` needs `ability`, capped); `{use:{actor?,ability,src?,target?:{actor}\|{pos:[x,y,z]}},waitMs?(20000)}` → settles → `{exec,ap:[b,a],hp?,dead?,pos?}`; `{endTurn:true}`. Codes `turn busy disabled(+dis) notarget targetKind noability noactor ambiguous(+candidates) scene cap timeout(+settle) cancelled threw stale`; timeout/cancel = `issued:true`, not undone. 0.3.1 offline-tested |
 | `observe` | `{action:"start",target?}` / `read {aim?,page?,pageSize?(10/200)}` / `stop\|mark\|status` |
 | `snapshot` / `restore` | `{name,timeoutMs?}` / `{name}` (issue-only → follow with `wait`) |
 | `plan` | `{plan:{steps,finally?,vars?,output?,timeoutMs?,maxSteps?,trace?},vars?}`; `trace:"errors"` default, `"full"` opt-in |
 | `status` / `cancel` | `{jobId}` |
 
-`call` targets: `type`, handle, `@game @phoenix @defs @level @geo @tac @map @view @viewstate @modules @faction @selected`, `@def:<name|guid>`. Arg envelopes `$h $def $type $enum $array $v2 $v3 $quat $box $new`; `sig:[]` = zero-arg only. No by-ref/out; indexers via `get_Item`/`set_Item`.
+`call` targets: `type`, handle, `@game @phoenix @defs @level @geo @tac @map @view @viewstate @modules @faction @selected @soldier` (selected if a soldier, else player's first alive non-vehicle), `@def:<name|guid>`. Arg envelopes `$h $def $type $enum $array $v2 $v3 $quat $box $new`; `sig:[]` = zero-arg only. No by-ref/out; indexers via `get_Item`/`set_Item`.
 
 ## Reply and exit contract
 
@@ -77,6 +78,8 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 12. Disarm when done: delete `ppcli-enabled`.
 13. Co-op `-Lite`/`stop`/`restore` details → REFERENCE § "Full verb envelopes" (Client).
 14. `imgui` press in Repaint may log one GUILayout `ArgumentException` if the button body changes later controls; not a failure of the press.
+15. `act use`/`endTurn` (also inside `multi`/`batch`/`plan`) against a Steam-library install (the one the user plays) → client refuses unless `-AllowMutate`. `NewTurnEvent` also fires for AI turns → re-check `act {squad:true}` `turn.mine`.
+16. `connect` wait + mod exception in log: client pings the main thread; answers → job continues, reply gets `logFaults[]`; silent → DEAD RUN. Cold `run`/`batch` still fast-fail on any mod frame.
 
 ## Release (local build, no CI)
 

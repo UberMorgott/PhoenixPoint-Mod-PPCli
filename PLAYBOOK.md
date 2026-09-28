@@ -9,6 +9,7 @@ PPCLI directory against a **running** game. Do not dig the decompile first. Dept
 | name a creature/item casually (`crabman`) | [Names](#names--say-it-plainly-the-client-resolves-it) |
 | fire a weapon, get spread/damage numbers | [Weapon](#i-built-a-weapon--show-me-it-firing-and-give-me-numbers) |
 | start a mission/campaign from the menu | [Cold start](#cold-start--from-the-main-menu-with-nothing-played) |
+| PLAY a turn: list abilities, move, shoot, any ability, end turn | [Play a turn](#play-a-turn--act) |
 | spawn / equip / move actors in tactical | [Tactical](#tactical--the-plans) |
 | get a handle on an actor | [Handles](#getting-a-handle--how-to-name-an-actor-without-touching-the-ui) |
 | read or change the open game screen | [Open screen](#the-open-screen--reading-and-changing-it) |
@@ -557,6 +558,38 @@ confirm the effect (log/state) after `fired:true`. Detail: REFERENCE § `imgui`.
 | two buttons share the label | `code:"ambiguous"` lists candidates → add `"index":<row i>` and/or `"owner"` |
 
 Toggle press = flip. `code:"notfound"` lists seen labels; `code:"disabled"` = drawn greyed out.
+
+## Play a turn — `act`
+
+The game's own levers (the UI's `ability.Activate`), one action at a time; `use` answers only once
+the game has SETTLED (animation, projectiles, reaction fire), so the next call never races it. Actor =
+exact GameObject name (`Sophia_7`), `h:` handle, `@selected` (default) or `@soldier`. 0.3.1,
+offline-tested — live-verify before trusting numbers. Detail: REFERENCE § `act`.
+
+| Intent | Command |
+|---|---|
+| my squad + whose turn | `.\ppcli.ps1 connect act '{"squad":true}'` → `{turn:{n,f,mine},actors:[{n,ap,apMax,wp,hp,pos,veh?,sel?}]}` |
+| everything I can see (enemies too) | `.\ppcli.ps1 connect act '{"squad":"all"}'` (only actors revealed to you) |
+| an actor's abilities | `.\ppcli.ps1 connect act '{"list":{"actor":"Sophia_7"}}'` → rows `{i,def,t,src?,dis?,tk,ap?}` (`dis` absent = usable) |
+| reachable tiles | `.\ppcli.ps1 connect act '{"list":{"ability":"move","targets":true}}'` → `targets:[{p,len}]` |
+| who can I shoot | `.\ppcli.ps1 connect act '{"list":{"ability":"shoot","targets":true}}'` → `targets:[{a}]` |
+| move | `.\ppcli.ps1 connect act '{"use":{"ability":"move","target":{"pos":[11.5,0,-4.5]}}}'` → `{ok,exec,ap:[b,a],pos}` |
+| shoot an actor | `.\ppcli.ps1 connect act '{"use":{"ability":"shoot","target":{"actor":"Crabman_10"}}}'` → `{ok,hp:[b,a],dead?}` |
+| shoot the ground (grenade, AoE) | `... "target":{"pos":[x,y,z]} ...` |
+| overwatch a direction | `.\ppcli.ps1 connect act '{"use":{"ability":"overwatch","target":{"pos":[x,y,z]}}}'` |
+| self / no-target ability | `.\ppcli.ps1 connect act '{"use":{"ability":"<def or i>"}}'` |
+| end the turn | `.\ppcli.ps1 connect act '{"endTurn":true}'`, then `wait {event:NewTurnEvent}` and re-check `squad` `turn.mine` (the event also fires for the AI's turn) |
+| a whole turn as one request | `.\ppcli.ps1 plan .\plans\play-turn.json '{"movePos":[11.5,0,-4.5],"target":"Crabman_10","endTurn":true}'` |
+
+- `ability` = def name, type alias (`move`, `shoot`, `overwatch`, `reload`...) or the row's `i`. Two
+  weapons → `code:"ambiguous"` + `candidates` → pass `i` or `"src":"PX_Pistol_WeaponDef"`.
+- Refusals change NOTHING (no weapon is selected before the checks). Codes: `turn` (not your turn),
+  `busy` (still settling), `disabled`+`dis` (game's reason), `notarget`, `targetKind` (wrong target shape),
+  `noability`, `noactor`, `scene`, `cap`. `timeout` / `cancelled` carry `issued:true`: the action was
+  issued and is NOT undone.
+- `targets:true` needs one `ability` (each candidate is a line-of-fire test) and is capped (`capped:true`).
+- Against the Steam install you PLAY, `use`/`endTurn` are refused unless `-AllowMutate`.
+
 ## When it goes wrong
 
 - **`REFUSED: '<path>' has Phoenix Point running (PID <n>)`** — `deploy` detected a game process

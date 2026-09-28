@@ -456,7 +456,8 @@ of a mission that ended. Every accessor is the game's own — `GameUtl.cs:38,51,
 `TacticalLevelController.cs:155,161,165`, `TacticalView.cs:148,189`, `GeoLevelController.cs:209`.
 
 `game` · `phoenix` · `defs` · `level` · `geo` · `tac` · `map` · `view` · `viewstate` · `modules` ·
-`faction` · `selected`.
+`faction` · `selected` · `soldier` (0.3.1: `selected` when it is a soldier, else the player faction's
+first alive in-play non-vehicle — `start-mission` leaves a vehicle selected; vehicle = `Vehicle_TagDef`).
 A wrong-phase alias answers `null` (not "no such alias") — those are different answers.
 
 **The three UI roots are phase-aware**, so the same alias names the open screen in either phase:
@@ -1567,6 +1568,48 @@ In-process, semantic press: no SendInput, so the user's focus and cursor are nev
 .\ppcli.ps1 connect imgui '{"list":true,"owner":"BenchUI","match":"bench"}'
 .\ppcli.ps1 connect imgui '{"press":{"label":"Run bench"}}'               # fired:true | code:ambiguous
 .\ppcli.ps1 connect imgui '{"press":{"label":"Run bench","index":1},"waitFrames":60}'
+```
+
+## `act` — play a tactical turn (0.3.1, offline-tested only)
+
+Pure half `src\Act.cs` (args, single-flight gate, timeout/cancel, reply shaping — all in SelfCheck),
+game half `src\ActGame.cs`. Design: Claude base + Codex review (corrections won). Every lever is the
+one the UI's own click pulls:
+
+| Step | Lever (decompile) |
+|---|---|
+| activate | `ability.Activate(target)` + `View.UpdateSquadMembersActionAndWillPoints()` = body of `TacticalViewState.ActivateAbility` (TacticalViewState.cs:259-277). The UI's `UIStateWaiting` push is NOT mirrored — the open view state is left alone (selection ring may look stale). |
+| enabled? | `GetDisabledState(IgnoreEquipmentNotSelected)` (TacticalAbility.cs:372, IgnoredAbilityDisabledStatesFilter.cs:10). NO `SetSelectedEquipment` before the checks — a refusal must mutate nothing; `Activate` selects the source weapon itself (:1087-1090). |
+| ability pick | ALL `GetAbilities<TacticalAbility>()` enumerated (not `GetAbilityWithDef`, which returns the first of two identical Shoot defs from two weapons, ActorComponent.cs:243); name = def name, def name + `_AbilityDef`, or type alias; >1 → `ambiguous` + candidates. `i` = index into the full list. |
+| target {actor} | the element of a FRESH `GetTargets()` whose `Actor` is it (Shoot's set is already `TryGetShootTarget`ed, ShootAbility.cs:177-192). Never `GetAttackActorTarget` alone / bare `TacticalAbilityTarget(actor)` — both skip the allowed-set filter (feet aim, no LoF). |
+| target move {pos} | nearest `GetTargetsData()` entry within 0.75 m (MoveAbility.cs:163) `.ToTarget()`, the UI path (UIStateCharacterSelected.cs:936-941). NOT `SnapPointAndDistance` (its list is filled inside Activate, MoveAbility.cs:43-48). |
+| target shoot {pos} | `ShootAbility.GetShootTarget(new TacticalAbilityTarget(pos){AttackType}, null, OriginTargetData)` (UIStateShoot.cs:1172-1182). |
+| target overwatch | `new TacticalAbilityTarget{Cone = GetAbilityTargetCone(aim, DefaultValue°)}` (UIStateOverwatchAbilitySelected.cs:117,300-307) — `GetTargets()` is empty there. |
+| other {pos} | nearest `GetTargets()` `PositionToApply` within 0.75 m. Other target kinds explicit → `targetKind`. |
+| no target | `GetTargets()` first (UIStateAbilitySelected.cs:629, reload :631), else `null` for `TargetResult.None` (InventoryAbility, UIStateCharacterSelected.cs:624). Shoot/move/overwatch require one. |
+| settle | per frame: `!View.IsWaitingForActiveAndQueuedAbilitiesAndMapUpdate()` (TacticalView.cs:867) `&& !actor.HasExecutingAbility(null,false)` (TacticalActorBase.cs:695) `&& !TacticalNav.IsNavigating/IsExecutingFacing` (AI block TacticalFaction.cs:616-622) `&& !ability.IsEnqueued/IsExecuting`, AND `AbilityExecutedEvent` for THIS ability (subscribed before Activate; raised in ClearPlayingAction, TacticalAbility.cs:1057) + 2 settled frames → `exec:"event"`. A Regular shot is ENQUEUED (ShootAbility.cs:167-174), so the view test alone can pass before it starts. Never busy for 10 frames and no event → `exec:"sync"` (plays no action). Busy then idle 30 frames, no event → `exec:"noevent"`. |
+| turn | `CurrentFaction == actor.TacticalFaction && IsControlledByPlayer && IsPlayingTurn` else `turn`. `endTurn` = `RequestEndTurn()` (TacticalFaction.cs:382) under the same guard — it does not check Human itself; the human loop (:471-483) waits for it. |
+| scene | no playing tactical level / `IsGameOver` → `scene`. `TacticalGameParams.GlobalTime == null` → `scene` (a kill would NRE in `PhoenixGame.GetCurrentGameTime`, PhoenixGame.cs:718-723; start-mission/build-mission set it since 0.3.1). |
+
+Reply budgets (SelfCheck): 25-row list ≤ 4500 B, 100-row ≤ 12000 B, use reply ≤ 300 B. Names clip at
+48 chars + `~`. `targets:true` scans ≤ 2000 candidates (`capped:true`). One `use` in flight;
+`endTurn` while one settles → `busy`. `waitMs` default 20000, max 120000; timeout carries
+`settle:{view,exec,nav,face,enq,event,frames}`. Scene change mid-settle → `stale`.
+
+**Client guard:** `Test-PPMainInstall` (path under `\steamapps\common\`) + `Test-ActMutates` (walks
+verb/args, `multi`, batch arrays, plan steps/repeat/finally) → `use`/`endTurn` refused unless
+`-AllowMutate`, before any endpoint lookup (paths.ps1, tests\paths.tests.ps1).
+
+**Not verified live yet:** everything above. First live run: `squad` → `list` → move → shoot → `endTurn`
+on D:\PP-Instance2 after `start-mission.json`; check `exec` is `event` for move/shoot, `hp` drops,
+TFTV-disabled states read sensibly, overwatch cone lands where aimed.
+
+```powershell
+.\ppcli.ps1 connect act '{"squad":"all"}'
+.\ppcli.ps1 connect act '{"list":{"actor":"@soldier"}}'
+.\ppcli.ps1 connect act '{"use":{"actor":"@soldier","ability":"move","target":{"pos":[11.5,0,-4.5]}}}'
+.\ppcli.ps1 connect act '{"use":{"ability":"shoot","src":"PX_AssaultRifle_WeaponDef","target":{"actor":"Crabman_10"}}}'
+.\ppcli.ps1 connect act '{"endTurn":true}'
 ```
 
 ## Full verb envelopes and client details (moved from AGENTS.md, 0.3.0)
