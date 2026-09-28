@@ -1546,7 +1546,7 @@ In-process, semantic press: no SendInput, so the user's focus and cursor are nev
   `match` = case-insensitive SUBSTRING of label (not regex); `owner` = short or full type name,
   case-insensitive. pageSize default 25, max 200. Recording caps at 1000 controls/frame → `more:true`.
 - **press:** `{press:{label, owner?, index?}, waitFrames?}`. `label` EXACT, case-sensitive. Resolution
-  on one Repaint pass: none → `code:"notfound"` (+`controls`, `labels` ≤ 10 distinct); > 1 without
+  on one Repaint pass: none → `code:"notfound"` (+`controls`, `labels` ≤ 10 distinct; label/owner echoed in `error` clipped to 120 chars); > 1 without
   `index` → `code:"ambiguous"` (+`candidates` ≤ 10 rows, pass `index` = the row's `i` and/or `owner`);
   drawn disabled → `code:"disabled"`. Then ARMED: the matched (label, i) gets the forced result ONCE, on the first SAFE pass - `Repaint` or `MouseMove`, and only while `GUIUtility.hotControl == 0`. NEVER on MouseDown/MouseUp/MouseDrag/Key*/Used: forcing a real MouseDown true runs the body, then the native MouseUp on the same control runs it AGAIN and leaves hotControl grabbed (Codex review P1). Layout is skipped (GUILayout's dummy pass; forcing there desyncs the layout). While the user holds a control, the press waits (→ `notfired` if it never frees). Fired →
   `{ok:true,fired:true,ev:"Repaint|MouseMove|…",frames}`; not drawn again within `waitFrames`

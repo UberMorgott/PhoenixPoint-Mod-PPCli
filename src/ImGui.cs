@@ -188,6 +188,15 @@ namespace Morgott.PPBridge
             return busy;
         }
 
+        internal const int EchoClip = 120;
+
+        /// <summary>Caller-supplied text echoed into an error, clipped: an error never grows with its args.</summary>
+        internal static string Echo(string s)
+        {
+            if (s == null) return "";
+            return s.Length > EchoClip ? s.Substring(0, EchoClip) + "~" : s;
+        }
+
         private static string Str(JToken t) { return t == null || t.Type != JTokenType.String || ((string)t).Length == 0 ? null : (string)t; }
 
         internal static object Bad(string code, string message) { return new { ok = false, code, error = Protocol.Clip(message) }; }
@@ -337,7 +346,7 @@ namespace Morgott.PPBridge
                     JArray seen = new JArray();
                     HashSet<string> uniq = new HashSet<string>();
                     foreach (Ctl c in snap) if (uniq.Add(c.Label) && seen.Count < 10) seen.Add(Row(c)["l"]);
-                    return End(new JObject { ["ok"] = false, ["code"] = "notfound", ["error"] = "no IMGUI control labelled exactly '" + Protocol.Clip(label) + "'" + (owner == null ? "" : " owned by " + owner) + (index < 0 ? "" : " with i=" + index), ["fired"] = false, ["controls"] = snap.Count, ["labels"] = seen });
+                    return End(new JObject { ["ok"] = false, ["code"] = "notfound", ["error"] = "no IMGUI control labelled exactly '" + Echo(label) + "'" + (owner == null ? "" : " owned by " + Echo(owner)) + (index < 0 ? "" : " with i=" + index), ["fired"] = false, ["controls"] = snap.Count, ["labels"] = seen });
                 }
                 if (cand.Count > 1)
                 {

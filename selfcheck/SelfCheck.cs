@@ -1035,6 +1035,10 @@ namespace Morgott.PPBridge
             string cx = Protocol.Compact(pc.Tick(true));
             Check("imgui-cancel-releases", cx.Contains("\"code\":\"cancelled\"") && !ImGuiTap.Active && disarms == arms, cx + " arms=" + arms + " disarms=" + disarms);
 
+            // P2 notfound echoes caller args clipped: a 5000-char owner/label cannot grow the error.
+            string longArg = new string('q', 5000);
+            string nfl = ImRun("{'press':{'label':'" + longArg + "','owner':'" + longArg + "'}}", ui, null, null, forced);
+            Check("imgui-notfound-clips-echo", nfl.Contains("\"code\":\"notfound\"") && Encoding.UTF8.GetByteCount(nfl) < 800, Encoding.UTF8.GetByteCount(nfl) + " B");
             // P2 cleanup: a job the Runner drops without completing (Tick threw, refused park, Runner
             // destroyed) goes through Plan.Drop, which must release the patch; Abort always unpatches.
             IPending pd = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'list':true}") });
