@@ -78,6 +78,45 @@ namespace Morgott.PPBridge
         /// control. Nested/compiler types are walked up to the outermost declaring type; FULL name (namespace kept) so a press binds to exactly that type.</summary>
         private static string Owner()
         {
+            // COST CAP (Codex review P2): a stack walk per control per Repaint is up to 1000 walks a
+            // frame. Unity selects one GUILayout cache per OnGUI MonoBehaviour (and per GUI.Window)
+            // before calling it (GUILayoutUtility.Begin/SelectIDList -> current.topLevel), so that
+            // reference identifies "the same OnGUI call": walk once per (topLevel, frame, event),
+            // reuse for its other controls. Hard ceiling MaxWalks per frame, past it owner = null.
+            // Caveat: a MonoBehaviour with useGUILayout=false never calls Begin, so its controls may
+            // inherit the previous behaviour's cached owner.
+            int frame = Time.frameCount;
+            Event e = Event.current;
+            EventType ev = e == null ? EventType.Ignore : e.type;
+            object key = null;
+            try { key = TopLevel == null ? null : TopLevel(); } catch (Exception) { }
+            if (key != null && ReferenceEquals(key, cacheKey) && frame == cacheFrame && ev == cacheEv) return cacheOwner;
+            if (frame != walkFrame) { walkFrame = frame; walks = 0; }
+            if (++walks > MaxWalks) return null;
+            string owner = Walk();
+            cacheKey = key; cacheFrame = frame; cacheEv = ev; cacheOwner = owner;
+            return owner;
+        }
+
+        internal const int MaxWalks = 64;
+        private static object cacheKey;
+        private static int cacheFrame = -1, walkFrame = -1, walks;
+        private static EventType cacheEv;
+        private static string cacheOwner;
+        private static readonly Func<object> TopLevel = MakeTopLevel();
+
+        private static Func<object> MakeTopLevel()
+        {
+            try
+            {
+                MethodInfo g = AccessTools.PropertyGetter(typeof(GUILayoutUtility), "topLevel");
+                return g == null ? null : (Func<object>)Delegate.CreateDelegate(typeof(Func<object>), g);
+            }
+            catch (Exception) { return null; }
+        }
+
+        private static string Walk()
+        {
             StackFrame[] frames = new StackTrace(2, false).GetFrames();
             if (frames == null) return null;
             foreach (StackFrame f in frames)

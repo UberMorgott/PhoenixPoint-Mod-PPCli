@@ -1536,7 +1536,11 @@ In-process, semantic press: no SendInput, so the user's focus and cursor are nev
 - **Row:** `{l, i?, k?:"t" (toggle: on=true or style name contains "toggle"), on?, dis? (GUI.enabled
   false), o (owner), r:[x,y,w,h]}`. `l` = `GUIContent.text`, else tooltip, else `#img:<texture>`;
   clipped to 80 chars + `~`. `o` = first stack frame outside UnityEngine/HarmonyLib/System/bridge,
-  outermost declaring type's short name (the MonoBehaviour whose OnGUI drew it). `r` = GUI-local
+  outermost declaring type (the MonoBehaviour whose OnGUI drew it); rows show the SHORT name, the
+  bridge keeps the FULL name, `owner` args match either (case-insensitive). Cost: walked only for
+  recorded Repaint rows and the fire candidate, once per OnGUI call (cached on
+  `GUILayoutUtility.current.topLevel` + frame + event), ≤ 64 walks/frame (past it `o` absent). A
+  MonoBehaviour with `useGUILayout=false` may inherit the previous one's owner. `r` = GUI-local
   (GUIClip) rect, rounded.
 - **list:** `{list:true, owner?, match?, page?, pageSize?}` → `{ok,total,page?,hasMore?,more?,rows}`.
   `match` = case-insensitive SUBSTRING of label (not regex); `owner` = short or full type name,

@@ -882,6 +882,7 @@ namespace Morgott.PPBridge
 
         private static int imFrame;
         private static bool imIdle = true;
+        private static int imOwnerCalls;
 
         /// <summary>One simulated OnGUI frame: Layout (skipped by the patch, so never observed), an
         /// optional input event, then Repaint - each pass visiting the same controls in draw order.
@@ -892,7 +893,7 @@ namespace Morgott.PPBridge
             foreach (string ev in inputEv == null ? new[] { "Repaint" } : new[] { inputEv, "Repaint" })
                 for (int i = 0; i < labels.Length; i++)
                     if (ImGuiTap.Observe(imFrame, ev == "Repaint", ev, labels[i], i * 10, 5, 100, 20,
-                                         enabled == null || enabled[i], false, false, () => owner, imIdle))
+                                         enabled == null || enabled[i], false, false, () => { imOwnerCalls++; return owner; }, imIdle))
                         forced.Add(ev + ":" + labels[i] + "#" + i);
             return forced;
         }
@@ -975,6 +976,12 @@ namespace Morgott.PPBridge
             Check("imgui-press-not-while-hotcontrol", hot.Contains("\"code\":\"notfired\"") && forced.Count == 0, hot);
             Check("imgui-safe-pass", ImGuiTap.SafePass("Repaint", true) && ImGuiTap.SafePass("MouseMove", true) && !ImGuiTap.SafePass("MouseDown", true) &&
                   !ImGuiTap.SafePass("MouseUp", true) && !ImGuiTap.SafePass("Used", true) && !ImGuiTap.SafePass("KeyDown", true) && !ImGuiTap.SafePass("Repaint", false), "safe pass set");
+            // P2 owner cost: the lazy owner walk runs only for RECORDED Repaint rows (resolve pass) and
+            // for the one fire candidate - never for input passes or for other controls while armed.
+            imOwnerCalls = 0;
+            forced.Clear();
+            string oc = ImRun("{'press':{'label':'Export'}}", ui, null, "MouseMove", forced);
+            Check("imgui-owner-walks-bounded", oc.Contains("\"fired\":true") && imOwnerCalls <= ui.Length + 1, imOwnerCalls + " owner walks " + oc);
             // P1 owner bound at resolve: after it, "Stop" i=0 is drawn by ANOTHER type -> no fire.
             forced.Clear();
             IPending po = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop','owner':'mods.bench.benchui'},'waitFrames':5}") });
