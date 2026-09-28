@@ -286,13 +286,23 @@ function MpLogFor([string]$root) {
     if ($p) { return [pscustomobject]@{ path = $p; via = 'offline install mapping' } }
     $null
 }
-function WaitLog([string]$root, [string]$rx, [int]$sec) {
+# Both surfaces of that one peer: its Player.log and the mod log the peer names itself.
+function LogFiles([string]$root) { @((LogLines $root), (MpLogFor $root).path) | Where-Object { $_ } }
+# Line count of each log file NOW. Taken BEFORE an action, it makes WaitLog believe only lines written
+# after it: a long-lived host log otherwise answers with the same line from an earlier press.
+function LogMark([string]$root) {
+    $m = @{}
+    foreach ($f in LogFiles $root) { $m[$f] = @(Get-Content -LiteralPath $f -ErrorAction SilentlyContinue).Count }
+    $m
+}
+function WaitLog([string]$root, [string]$rx, [int]$sec, [hashtable]$mark = @{}) {
     $dl = (Get-Date).AddSeconds($sec)
-    # Both surfaces of that one peer: its Player.log and the mod log the peer names itself.
-    $files = @((LogLines $root), (MpLogFor $root).path) | Where-Object { $_ }
+    $files = LogFiles $root
     while ((Get-Date) -lt $dl) {
         foreach ($f in $files) {
-            $hit = Select-String -Path $f -Pattern $rx -ErrorAction SilentlyContinue | Select-Object -Last 1
+            $from = [int]$mark[$f]
+            $hit = Select-String -Path $f -Pattern $rx -ErrorAction SilentlyContinue |
+                Where-Object LineNumber -gt $from | Select-Object -Last 1
             if ($hit) { return $hit.Line }
         }
         Start-Sleep 2
@@ -321,8 +331,9 @@ function Do-Lobby([bool]$chooseNewGame = $false) {
     # state to the next one, which is the whole point of a third peer.
     foreach ($c in $clientRoots) {
         Note "$(SideName $c): JOIN 127.0.0.1:$Port from $c"
+        $mark = LogMark $c
         Invoke-Ui $c 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
-        WaitLog $c 'host ACCEPTED the join' 60 | Out-Null
+        WaitLog $c 'host ACCEPTED the join' 60 $mark | Out-Null
     }
     # Parity: a mismatched JOIN locks READY; host-setting auto-apply usually clears it a beat later
     # ("parity OK - READY unlocked"). A clean first JOIN logs no parity line at all.
@@ -453,18 +464,21 @@ switch ($Action) {
                elseif (-not $can) { 'OnGateJoin (ReconnectFlow present but CanReconnect false - no last-session record)' }
                else { 'ReconnectFlow.Start' }
         Note "client: $via"
+        # Before the press: hostResume must quote THIS rejoin, not an older resume line in the host log.
+        $hostMark = LogMark $HostRoot
         if ($via -eq 'ReconnectFlow.Start') {
             $r = Result (Call $ClientRoot '{"op":"invoke","type":"Multiplayer.UI.ReconnectFlow","assembly":"Multiplayer","member":"Start","args":[]}')
             if (-not $r.ok) { throw "ReconnectFlow.Start on ${ClientRoot}: $($r | ConvertTo-Json -Compress)" }
             $pressed = WaitLog $ClientRoot '\[MP\]\[reconnect\] RECONNECT pressed' 30
             $joined = WaitLog $ClientRoot '\[MP\]\[reconnect\] rejoined the session' 120
         } else {
+            $mark = LogMark $ClientRoot
             Invoke-Ui $ClientRoot 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
             $pressed = $null
-            $joined = WaitLog $ClientRoot 'host ACCEPTED the join' 60
+            $joined = WaitLog $ClientRoot 'host ACCEPTED the join' 60 $mark
         }
         # The host's own resume edge. Best effort: a host that never paused the peer posts no notice.
-        $resumed = try { WaitLog $HostRoot 'RESUMED|is back' 30 } catch { $null }
+        $resumed = try { WaitLog $HostRoot 'RESUMED|is back' 30 $hostMark } catch { $null }
         [pscustomobject]@{ ok = $true; side = (SideName $ClientRoot); via = $via; pressed = $pressed; joined = $joined
                            hostResume = $resumed
                            client = (Pp $ClientRoot @('connect', 'state')).result.phase } | ConvertTo-Json -Compress
