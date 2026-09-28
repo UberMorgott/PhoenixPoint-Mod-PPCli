@@ -71,4 +71,12 @@ menu readiness live; relay offline)._
   leaving the JSON path entirely.
 - **2026-09-28 note (not re-verified):** `console` now runs once and pages the capture by opaque `cursor` (`3be9b6f`, `5d9fb6c`), which is the paged reply asked for. Live check on `D:\PP-Instance3` found no command with >200 output lines on that install (its ContentTool `ct_list audio`/`bundles` print 62), so the whole-listing read-back is still unproven - rerun the original `ct_list audio` on an install whose ContentTool prints the full listing, then delete this entry.
 
+## imgui press "Reset view" (ContentTool bench) -> notfired, v0.3.2
+
+- **Attempted:** `connect imgui '{"press":{"label":"Reset view"}}'` on D:\PP-Instance2 (build a16fd3f7), ContentTool bench open on "Replace a model" (3D screen, button enabled and listed by `imgui list`, rect [188,4,96,21]). Game window unfocused (background).
+- **Happened:** `{"ok":false,"code":"notfired","error":"armed, but the control was not drawn again within 30 frames"}`, reproduced 2 of 2 on two launches. Other presses in the same session fired (task cards, "< Back", step buttons, fold headers, "Copy log").
+- **Expected:** fired:true (the button is drawn every frame in the same horizontal group as "< Back", which fired).
+- **Evidence:** 2026-09-28 ~14:10, ContentTool main 2d8e612+. Workaround: `call` FitBench.ResetView.
+- **diag (~14:20, same build):** `{"press":{"label":"Reset view"},"diag":true}` and `{"press":{"label":"Reset view","diag":true}}` both reply only `{"ok":false,"code":"notfired","error":"armed, but the control was not drawn again within 30 frames","fired":false}` - no diag payload at all; `"waitFrames":60` -> same, 60 frames.
+- **Severity:** low.
 <!-- Append new entries above this line. Keep them evidence-backed. -->
