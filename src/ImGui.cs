@@ -31,9 +31,18 @@ namespace Morgott.PPBridge
     ///     MouseUp made DoControl return the click. The patch only observes there - the body runs where a
     ///     human click runs it, between Layout passes, so a button that restructures the layout is safe.
     ///     Any down that was posted gets its up, also on timeout/cancel/scene unload.
-    ///   - press mode "force" (DEFAULT, the 0.3.0 behaviour): forces DoControl's return on a Repaint
-    ///     pass. A button body that adds/removes later GUILayout controls then breaks that Repaint
-    ///     ("Getting control N's position in a group with only N controls") - it can close the panel.
+    ///   - press mode "force" (DEFAULT): forces DoControl's return on a Repaint/MouseMove pass. The
+    ///     button body then runs mid-pass; a body that adds later GUILayout controls used to break that
+    ///     Repaint ("Getting control N's position in a group with only N controls", live 0.3.0/0.3.1: it
+    ///     closed the ContentTool bench). SINCE 0.3.2 the rest of THAT pass is LAYOUT-TOLERANT (see
+    ///     <see cref="InPass"/>): the game half pads an overrun group with a dummy entry and swaps a
+    ///     mismatched group for an empty one - exactly what GetNext already does on every non-Repaint
+    ///     pass, i.e. what a real click's MouseUp pass sees. Nothing is drawn at the padded rects, the next
+    ///     Layout rebuilds from the new state. NOT GUIUtility.ExitGUI (the reviewed first design): an
+    ///     OnGUI that wraps its body in catch(Exception) - the ContentTool bench does - swallows the
+    ///     ExitGUIException and closes itself exactly like on the original ArgumentException.
+    ///     After the fire the request SETTLES <see cref="SettleFrames"/> frames and reports
+    ///     repaired (padded mismatches), alive (the owner drew again) and errors (error logs meanwhile).
     ///   - force fires ONLY on a SAFE pass (<see cref="SafePass"/>): Repaint or MouseMove, and only while
     ///     no control holds the mouse (GUIUtility.hotControl == 0). Never on MouseDown/MouseUp/MouseDrag/
     ///     Key*/Used: forcing a real MouseDown true would run the button body, then the native MouseUp
@@ -141,6 +150,58 @@ namespace Morgott.PPBridge
         private static readonly Dictionary<string, int> evFrames = new Dictionary<string, int>();
         private static readonly Dictionary<string, int> evLast = new Dictionary<string, int>();
 
+        // ------------------------------------------------------------------ force: pass guard + settle
+
+        /// <summary>Frames a fired force press keeps watching before it answers.</summary>
+        internal const int SettleFrames = 2;
+        internal const int MaxErrors = 3;
+
+        /// <summary>Game half's one-branch early out for the layout prefixes.</summary>
+        internal static volatile bool GuardArmed;
+        private static int gFrame = int.MinValue;
+        private static string gEv;
+        private static int repaired;
+        private static bool settling, alive;
+        private static string settleOwner;
+        private static readonly List<string> errs = new List<string>();
+
+        /// <summary>
+        /// True = the caller (a GUILayout prefix) runs in the SAME pass a force press fired in (frame +
+        /// raw event type; the owner's EndGUI/EndGUIFromException ends it earlier via
+        /// <see cref="PassEnded"/>), so a layout mismatch there is the press's doing and is padded. A
+        /// later frame disarms. Not bound to the topLevel group: GUILayout swaps topLevel on every
+        /// Begin/End group, and padding a mismatch that would otherwise throw is harmless in any pass.
+        /// </summary>
+        internal static bool InPass(int frame, string ev)
+        {
+            if (!GuardArmed) return false;
+            if (frame != gFrame) { PassEnded(); return false; }
+            return string.Equals(ev, gEv, StringComparison.Ordinal);
+        }
+
+        /// <summary>A layout prefix padded one mismatch.</summary>
+        internal static void Repaired() { repaired++; }
+
+        /// <summary>Game half: GUIUtility.EndGUI / EndGUIFromException - the fired pass is over.</summary>
+        internal static void PassEnded() { GuardArmed = false; }
+
+        /// <summary>Game half: every Unity log line while the tap is armed; kept only while a fired press
+        /// settles (the fire pass itself included).</summary>
+        internal static void Logged(bool bad, string msg)
+        {
+            if (!settling || !bad || errs.Count >= MaxErrors) return;
+            msg = msg ?? "";
+            int nl = msg.IndexOf('\n');
+            if (nl >= 0) msg = msg.Substring(0, nl);
+            errs.Add(msg.Length > 160 ? msg.Substring(0, 160) + "~" : msg);
+        }
+
+        private static void ClearSettle()
+        {
+            GuardArmed = false; gFrame = int.MinValue; gEv = null; repaired = 0;
+            settling = alive = false; settleOwner = null; errs.Clear();
+        }
+
         private static void ClearPost()
         {
             pDown = pDownFrame = pDownHot = pUp = pUpFrame = 0;
@@ -187,6 +248,11 @@ namespace Morgott.PPBridge
                 }
             }
 
+            // Settling after a fire: did the owner draw again on a later Repaint (panel still open)?
+            if (settling && repaint && !alive && frame > firedFrame && settleOwner != null
+                && string.Equals(settleOwner, SafeOwner(owner), StringComparison.Ordinal))
+                alive = true;
+
             Target t = target;
             if (t != null && t.Post)
             {
@@ -214,6 +280,10 @@ namespace Morgott.PPBridge
             {
                 target = null;
                 fired = true; firedEv = ev; firedFrame = frame;
+                // The body runs right after this returns: arm the layout-tolerant rest of THIS pass.
+                errs.Clear(); repaired = 0; alive = false;
+                settling = true; settleOwner = t.Owner;
+                gFrame = frame; gEv = ev; GuardArmed = true;
                 RefreshActive();
                 return true;
             }
@@ -227,7 +297,7 @@ namespace Morgott.PPBridge
             return idle && (ev == "Repaint" || ev == "MouseMove");
         }
 
-        private static void RefreshActive() { Active = recording || target != null; }
+        private static void RefreshActive() { Active = recording || target != null || settling; }
 
         /// <summary>The newest Repaint pass that is COMPLETE at frame <paramref name="now"/> (its frame is
         /// already over) and not older than <paramref name="since"/>; null if none yet.</summary>
@@ -366,6 +436,8 @@ namespace Morgott.PPBridge
             curFrame = lastFrame = countFrame = int.MinValue;
             counts.Clear();
             ClearPost();
+            ClearSettle();
+            RefreshActive();
             try { if (Arm != null) Arm(false); } catch (Exception) { }
         }
 
@@ -470,7 +542,8 @@ namespace Morgott.PPBridge
                 if (done) return Bad("imgui", "request already ended");
                 if (cancelled) return End(new { ok = false, code = "cancelled", error = "imgui request cancelled", fired = fired && armedAt >= 0 });
                 int now = FrameNow == null ? int.MaxValue : FrameNow();
-                if (!list && epoch != sceneEpoch)
+                if (!list && epoch != sceneEpoch && !(fired && armedAt >= 0))   // a fired press still answers fired
+
                     return End(new { ok = false, code = "scene", error = "a scene unloaded before the press fired - the UI it was resolved in is gone", fired = false });
                 if (armedAt >= 0) return Fire(now);
 
@@ -593,7 +666,11 @@ namespace Morgott.PPBridge
                 if (PostMode) return FirePost(now);
                 if (fired)
                 {
-                    JObject r = new JObject { ["ok"] = true, ["fired"] = true, ["mode"] = "force", ["ev"] = firedEv, ["frames"] = Math.Max(0, firedFrame - armedAt) };
+                    // Settle: let the next Layout + Repaint run on the new state before answering.
+                    if (now <= firedFrame + SettleFrames) return null;
+                    JObject r = new JObject { ["ok"] = true, ["fired"] = true, ["mode"] = "force", ["ev"] = firedEv, ["frames"] = Math.Max(0, firedFrame - armedAt), ["repaired"] = repaired };
+                    if (settleOwner != null) r["alive"] = alive;
+                    if (errs.Count > 0) r["errors"] = new JArray(errs.ToArray());
                     return End(r);
                 }
                 if (now - armedAt > wait)

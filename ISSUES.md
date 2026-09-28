@@ -107,21 +107,5 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   per client with its own address, NEW GAME, READY, confirm). Expected: `-JoinAddress` per client (list) or `-Relay` switch
   reading the relay's `clientJoin`. Severity: medium.
 
-## 2026-09-28 — no way to press an IMGUI (OnGUI) control (feature request, target v0.3.0)
-
-- Attempted (ContentTool UI audit, Instance2): drive ContentTool bench, which is Unity IMGUI (`GUILayout.Button`).
-- Happened: PPCLI has no verb to click an IMGUI control / inject a mouse click at screen x,y. Worked around by `call set` on private statics (`FitBench.tab`, `ModelDoctor.browserOpen`, `panelScroll`) + `invoke` of internal pick methods.
-- Expected: `connect click '{"x":..,"y":..}'` (synthesized Event for OnGUI) or IMGUI button-by-label press.
-- Severity: medium (blocks screenshot-driven UI testing without source knowledge). Banner half of this entry fixed in v0.2.3 (`-Quiet` / `PPCLI_QUIET=1`).
-
-## 2026-09-28 — `imgui` press on a button that changes the panel's layout closes the ContentTool bench
-
-- **Attempted:** v0.3.0 live, `D:\PP-Instance2` geoscape, ContentTool bench open, "Fit a weapon" tab, soldier list filtered to "Phoenix Assault": `connect imgui '{"press":{"label":"Phoenix Assault 1"}}'` (the press itself replied `fired:true`, `ev:"Repaint"`).
-- **Happened:** the button's body swaps the list for the chosen-soldier row in the SAME Repaint pass, GUILayout then throws `ArgumentException: Getting control 8's position in a group with only 8 controls when doing repaint`, and the bench's own guard closes the whole panel (`ct_bench: the panel threw and closed itself`, Player.log frame 40527). TFTV then showed its "An error has occurred" popup on the geoscape. Earlier presses (Replace a model, file browser rows, Build & test) went through; the Model Doctor overlay logged the same exception once (frame 25306).
-- **Expected:** a press lands the way a real click does (MouseDown/MouseUp event, then Layout + Repaint rebuild), so a button that changes later controls can't break the Repaint pass. AGENTS trap 14 names one `ArgumentException`, but here it is fatal to the panel under test.
-- **Workaround:** select via the mod's own console path (`ct_bench unit <TacCharacterDef>`) or `call set` of the field, then press only buttons whose click doesn't restructure the list.
-- **Severity:** medium (a press that closes the panel under test).
-- **Status: OPEN - post mode failed live (0.3.1, 2026-09-28, `D:\PP-Instance3`, ContentTool bench unit row, game FOREGROUND borderless 2560x1440).** `mode:"post"` + `diag:true` → `code:"noevent"`, `stage:"down"`, diag `client`=`screen`=[2560,1440], `pt`=[182,180], `evs:{}`: Unity turned no posted `WM_LBUTTONDOWN` into an IMGUI MouseDown even focused; minimized → `offscreen` (`client:[0,0]`). Default reverted to `force` (0.3.1); force on the same row closed the bench again (`list` total 813 → 0, one `ArgumentException`). Next lever to try: Unity likely reads mouse buttons from Raw Input / `GetAsyncKeyState`, not WM_ messages - e.g. queue a synthetic `Event` through `GUIUtility`/`Event` injection on the owner's next OnGUI (MouseDown then MouseUp) instead of Win32 posts.
-
 <!-- Append new entries above this line. Keep them evidence-backed. -->
 

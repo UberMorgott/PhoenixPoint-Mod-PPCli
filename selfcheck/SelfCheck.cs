@@ -904,6 +904,60 @@ namespace Morgott.PPBridge
             return forced;
         }
 
+        /// <summary>
+        /// Force press = layout-tolerant rest of the fired pass + settle. Simulates the game half: right
+        /// after the forced DoControl (the button body) the GUILayout prefixes ask InPass and report
+        /// repairs; EndGUI ends the pass; a Unity error log while settling lands in errors.
+        /// </summary>
+        private static void ImGuardChecks(string[] ui)
+        {
+            ImGuiTap.Logged(true, "before the press");                       // not settling -> dropped
+            IPending p = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop'}}") });
+            bool inPass = false, otherEv = true, afterEnd = true, staleOff = false;
+            int fireFrame = -1;
+            string r = null;
+            for (int f = 0; f < 30 && r == null; f++)
+            {
+                imFrame++;
+                object done = p.Tick(false);
+                if (done != null) { r = Protocol.Compact(done); break; }
+                string owner = fireFrame >= 0 && imFrame > fireFrame + 1 ? "Mods.Other.Gone" : "Mods.Bench.BenchUI";
+                for (int i = 0; i < ui.Length; i++)
+                {
+                    if (!ImGuiTap.Observe(imFrame, true, "Repaint", ui[i], 0, 0, 10, 10, true, false, false, () => owner, true)) continue;
+                    fireFrame = imFrame;
+                    inPass = ImGuiTap.InPass(imFrame, "Repaint");            // the body's GUILayout calls
+                    ImGuiTap.Repaired(); ImGuiTap.Repaired();
+                    ImGuiTap.Logged(true, "ArgumentException: Getting control 8's position\n  at GetNext");
+                    ImGuiTap.Logged(false, "plain info line");
+                    otherEv = ImGuiTap.InPass(imFrame, "Layout");
+                }
+                if (fireFrame == imFrame) { ImGuiTap.PassEnded(); afterEnd = ImGuiTap.InPass(imFrame, "Repaint"); }
+            }
+            JObject j = r == null ? new JObject() : JObject.Parse(r);
+            Check("imgui-guard-in-pass", inPass && !otherEv && !afterEnd, "inPass=" + inPass + " otherEv=" + otherEv + " afterEnd=" + afterEnd);
+            Check("imgui-guard-settle-reply", (bool?)j["fired"] == true && (int?)j["repaired"] == 2 && j["errors"] is JArray ea && ea.Count == 1 &&
+                  (string)ea[0] == "ArgumentException: Getting control 8's position" && (bool?)j["alive"] == true && !ImGuiTap.Active && !ImGuiTap.GuardArmed, r);
+
+            // Owner gone after the press (panel closed) -> alive:false; a pass never ended by EndGUI is
+            // disarmed by the next frame (stale), never carried into it.
+            p = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Export'}}") });
+            fireFrame = -1; r = null;
+            for (int f = 0; f < 30; f++)
+            {
+                imFrame++;
+                if (fireFrame >= 0 && fireFrame == imFrame - 1) staleOff = !ImGuiTap.InPass(imFrame, "Repaint") && !ImGuiTap.GuardArmed;
+                object done = p.Tick(false);
+                if (done != null) { r = Protocol.Compact(done); break; }
+                string owner = fireFrame >= 0 ? "Mods.Other.Gone" : "Mods.Bench.BenchUI";
+                for (int i = 0; i < ui.Length; i++)
+                    if (ImGuiTap.Observe(imFrame, true, "Repaint", ui[i], 0, 0, 10, 10, true, false, false, () => owner, true)) fireFrame = imFrame;
+            }
+            j = r == null ? new JObject() : JObject.Parse(r);
+            Check("imgui-guard-stale-frame", staleOff, "guard survived into the next frame");
+            Check("imgui-guard-not-alive", (bool?)j["fired"] == true && (bool?)j["alive"] == false && (int?)j["repaired"] == 0 && j["errors"] == null && !ImGuiTap.Active, r);
+        }
+
         /// <summary>Runs a cross-frame imgui request: Update (Tick) then OnGUI, frame by frame.</summary>
         private static string ImRun(string json, string[] labels, bool[] enabled, string inputEv, List<string> forced, int frames = 50)
         {
@@ -1220,7 +1274,9 @@ namespace Morgott.PPBridge
             imOwnerCalls = 0;
             forced.Clear();
             string oc = ImRun("{'press':{'label':'Export','mode':'force'}}", ui, null, "MouseMove", forced);
-            Check("imgui-owner-walks-bounded", oc.Contains("\"fired\":true") && imOwnerCalls <= ui.Length + 1, imOwnerCalls + " owner walks " + oc);
+            // +1: the settle frames' "owner drew again" check stops at the first matching control.
+            Check("imgui-owner-walks-bounded", oc.Contains("\"fired\":true") && imOwnerCalls <= ui.Length + 2, imOwnerCalls + " owner walks " + oc);
+            ImGuardChecks(ui);
             // P1 owner bound at resolve: after it, "Stop" i=0 is drawn by ANOTHER type -> no fire.
             forced.Clear();
             IPending po = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop','owner':'mods.bench.benchui','mode':'force'},'waitFrames':5}") });

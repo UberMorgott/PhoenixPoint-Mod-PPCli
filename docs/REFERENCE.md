@@ -1514,7 +1514,7 @@ fired :657) — subscribe through a handle to the level's `GeoscapeEventSystem`.
 .\ppcli.ps1 connect wait '{"event":{"target":"@tac","event":"NewTurnEvent"},"timeoutMs":120000}'
 ```
 
-## `imgui` — list and press OnGUI buttons (0.3.0; force live-verified, post EXPERIMENTAL + live-failed)
+## `imgui` — list and press OnGUI buttons (0.3.0; force live-verified + layout-safe since 0.3.2, post EXPERIMENTAL + live-failed)
 
 For mod UIs drawn with Unity IMGUI (`OnGUI` + `GUI.Button` / `GUILayout.Button` / `GUI.Toggle` /
 `GUILayout.Toggle`) — e.g. ContentTool's bench. uGUI (the game's own screens) is NOT covered.
@@ -1580,17 +1580,43 @@ queue - no SendInput, the user's focus and real cursor are never touched - but i
   (default 30, max 600) → `{ok:false,code:"notfired",fired:false}`. The armed target is BOUND to
   the resolved control's full owner type: if the UI reorders and (label, i) is drawn by another type,
   it does not fire (→ `notfired`). A scene unload drops an armed press → `code:"scene"`. Every refusal carries `fired:false`.
-- **Trap (force mode):** a forced press runs the button's body mid-Repaint. A body that ADDS/REMOVES
-  GUILayout controls later in the same OnGUI throws `ArgumentException: Getting control
-  N's position in a group with only N controls` in that Repaint - live 2026-09-28 this CLOSED the
-  ContentTool bench (its guard shut the panel) and raised TFTV's error popup. Use force only on
-  buttons whose body starts work (coroutine, flag) and leaves the layout alone.
+- **Layout-tolerant rest of the forced pass (0.3.2).** A forced press runs the button's body
+  mid-Repaint. Up to 0.3.1 a body that ADDED GUILayout controls later in the same OnGUI threw
+  `ArgumentException: Getting control N's position in a group with only N controls` - live
+  2026-09-28 that CLOSED the ContentTool bench. Now, from the fire until the owner's
+  `GUIUtility.EndGUI`/`EndGUIFromException` (or the next frame), bound to frame + raw event type,
+  Harmony prefixes (installed/removed with the DoControl patch) absorb the mismatch the way a real
+  click's MouseUp pass does: `GUILayoutGroup.GetNext`/`PeekNext` past the group's end → a dummy entry
+  is appended first (GetNext's own `none`, what non-Repaint passes already return);
+  `GUILayoutUtility.BeginLayoutGroup` whose next entry is missing / not a group → an empty group of
+  the asked type is put there (instead of Unity's `ExitGUIException("Mismatched LayoutGroup")`).
+  Nothing visible is drawn at those rects for that one frame; the next Layout rebuilds from the new
+  state. Verified on the game's IMGUIModule.dll: GetNext throws on overrun only when
+  `Event.current.type == Repaint`. **Not `GUIUtility.ExitGUI`** (the first reviewed design):
+  FitBench wraps its OnGUI in `catch (Exception)` → Close() (`ContentTool\src\Dev\FitBench.cs:2634`),
+  so an `ExitGUIException` closes the bench exactly like the ArgumentException did.
+  Residual risk: a body that itself calls more GUI in odd ways (BeginArea/Window mismatch) is not padded.
+- **Settle (0.3.2):** after the fire the request waits `SettleFrames` = 2 more frames (next Layout +
+  Repaint) and answers `{ok:true,fired:true,mode:"force",ev,frames,repaired:N,alive?:bool,errors?:[..]}`:
+  `repaired` = mismatches padded in the fired pass; `alive` = the resolved owner drew a control again
+  on a later Repaint (false → the panel closed/vanished); `errors` = ≤ 3 Unity log lines of type
+  Error/Exception/Assert (or containing "Exception") logged from the fire to the reply, first line
+  clipped to 160. Still confirm the effect (state/log) - a press is only as good as the body it ran.
+- **Live 0.3.2 (2026-09-28, `D:\PP-Instance3`, ContentTool FitBench, 813 controls):** unit row
+  `AN_Assault1_CharacterTemplateDef` (the 0.3.1 crasher) → `fired:true,repaired:98,alive:true`, bench
+  stayed open, unit list collapsed to `> unit (789)` + weapon list shown (121 controls); plain
+  `RESET VIEW` → `fired:true,repaired:0,alive:true`; weapon row `AC_Mattock_WeaponDef` →
+  `fired:true,alive:true`, panel switched to the fit controls. Player.log: 0 `ArgumentException` /
+  `Getting control` / `threw and closed`.
 - **Evidence:** SelfCheck `imgui-*` (arg strictness, one Repaint pass, i, owner/match filters,
   ambiguous/notfound/disabled/notfired, fires once on first non-Layout event, patch removed on every
   exit incl. cancel, 25-row budget ≤ 3600 B) and `imgui-post-*` (MAKELPARAM, client conversion +
   scaling, MOVE+DOWN then UP on a later frame, click only in the real MouseUp pass, never forced,
   noevent/missed/nohwnd/offscreen, up posted on timeout/cancel/scene, diag opt-in) against a fake
-  player modelled on the decompiled `DoControl`. Force mode ran live (0.3.0, 0.3.1); post mode failed live (`noevent`, above).
+  player modelled on the decompiled `DoControl`; `imgui-guard-*` (in-pass only for the fired
+  frame + event, off after EndGUI and on the next frame, repaired/alive/errors in the settle reply,
+  errors before the fire dropped). Force mode ran live (0.3.0, 0.3.1, layout-safe 0.3.2); post mode failed live (`noevent`, above).
+  Post mode is KEPT opt-in (documented dead-end, zero cost unless asked) rather than removed.
 
 ```powershell
 .\ppcli.ps1 connect imgui '{"list":true}'                                  # rows of the frame
@@ -1598,7 +1624,7 @@ queue - no SendInput, the user's focus and real cursor are never touched - but i
 .\ppcli.ps1 connect imgui '{"press":{"label":"Run bench"}}'               # fired:true | code:ambiguous
 .\ppcli.ps1 connect imgui '{"press":{"label":"Run bench","index":1},"waitFrames":60}'
 .\ppcli.ps1 connect imgui '{"press":{"label":"Run bench","mode":"post"},"diag":true}'  # experimental post + coordinates/events seen
-# default press = force: layout-mutating buttons can crash (see Trap)
+# default press = force; layout-changing buttons are safe since 0.3.2 (check repaired/alive/errors)
 ```
 
 ## `act` — play a tactical turn (0.3.1, live-verified 2026-09-28 on D:\PP-Instance3: squad/list/move/shoot/overwatch/endTurn → NewTurnEvent → turn 2 `mine:true`)
@@ -1708,7 +1734,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 | `wait` | one of `{ready:true}`, `{phase:"tactical\|geoscape\|menu\|summary\|other\|loading"}`, `{call:{...}}`, `{forMs:N}`, `{log:"regex",level?,since?}`, `{event:{sub:N,since?,match?}}`, `{event:{target\|type,event,match?}}` (wait-owned sub, released when wait ends - also on plan cancel/deadline or a refused park). Log/event waits fail AT ONCE, not by timeout: `code:"dropped"` (ring overwrote rows after `since` before they were scanned), `code:"cursor"` (`since` ahead of the ring, at start or after a restart), `code:"regex"` (budget); bad `level` => `code:"args"`; plus `not?` (not for log/event), `timeoutMs?`, `everyFrames?`. log/event default `since` = rows AFTER wait start; `value` = matching row |
 | `log` | `{since?,level?:"log\|warning\|error"(min),match?:regex,pageSize?(25,max 200),pageBytes?(8192),clip?(300,40..1000),stack?}`; `{status:true}` => `{hooked,next,stored,capacity}`. No `since` = newest page. Reply `{ok,rows?:[{s,l:"L\|W\|E\|A\|X",m,st?}],next,hasMore?,dropped?}`; pass `next` as `since`; empty poll `{"ok":true,"next":N}`. Ring 1000 (thread-safe, hooked on ARM). since > newest => `code:"cursor"`. Bad `level` => `code:"args"`. `match` has ONE 100 ms budget per request (a row timing out = same): exceeded => `code:"regex"`, never a silent partial scan. A row alone over `pageBytes` is cut to fit (`clipped:true`, stack dropped) |
 | `events` | `{subscribe:{target\|type,event,handles?}}` => `{sub,event,next,existing?}` (PUBLIC events, any void delegate, cap 16); `{unsubscribe:id\|"all"}`; `{list:true}`; read `{since?,sub?,match?,pageSize?,pageBytes?}` => `{rows?:[{s,sub,a:[args]}],next,hasMore?,dropped?,ended?}`. Args projected SHORT at fire time (scalar; Unity obj `{type,name,id}`; plain obj `{type}`+≤8 public fields, 1 level; no handles unless `handles:true`). ≤8 args per firing (+`{"$moreArgs":N}`); an arg > 1 KiB JSON => `{"$clipped":type,bytes}`; firing OFF the main thread records scalars only, objects as `{"$offMain":type}`. A row alone over `pageBytes` => args dropped, `clipped:<bytes>`. `match` budget as `log` (`code:"regex"`). Unsubscribe whose remove accessor throws => `ok:false,code:"threw",failed[{sub,error}]`, handler STILL attached, sub kept (`list` shows `removeError`), retry unsubscribe. Sub ends on unsubscribe / target destroyed / its scene unloaded => `ended:"unsubscribed\|destroyed\|scene"` |
-| `imgui` | list `{list:true,owner?,match?(substring),page?,pageSize?(25,max 200)}` => `{ok,total,page?,hasMore?,more?,rows:[{l,i?,k?,on?,dis?,o,r:[x,y,w,h]}]}`; press `{press:{label(exact),owner?,index?,mode?("force" default|"post" experimental)},waitFrames?(30,max 600),diag?}` => `{ok:true,fired:true,mode,ev,frames}` or `code:"notfound|ambiguous|disabled|nohwnd|offscreen|noevent|missed|notfired|busy|patch"` + `fired:false`. EXPERIMENTAL (post mode offline-tested only). See the `imgui` section above |
+| `imgui` | list `{list:true,owner?,match?(substring),page?,pageSize?(25,max 200)}` => `{ok,total,page?,hasMore?,more?,rows:[{l,i?,k?,on?,dis?,o,r:[x,y,w,h]}]}`; press `{press:{label(exact),owner?,index?,mode?("force" default|"post" experimental)},waitFrames?(30,max 600),diag?}` => `{ok:true,fired:true,mode,ev,frames}` (+ force: `repaired,alive?,errors?` after a 2-frame settle) or `code:"notfound|ambiguous|disabled|nohwnd|offscreen|noevent|missed|notfired|busy|patch"` + `fired:false`. Post mode EXPERIMENTAL (live-failed). See the `imgui` section above |
 | `observe` | start `{action:"start",target?:<actor instanceId int>}`; read `{action:"read",aim?:[x,y,z],page?,pageSize?}` = summary over whole ring + page of impacts NEWEST first (page 0 = last `pageSize`; default 10, max 200, 0 = summary only; `hasMore`); `{action:"stop\|mark\|status"}` |
 | `snapshot` | `{name,timeoutMs?}` |
 | `restore` | `{name}`; issue-only (reply `{ok,issued,name,console}`, no completion signal); follow with `wait {ready:true}` / `wait {phase:"geoscape"}` |

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -27,6 +28,8 @@ namespace Morgott.PPBridge
                 if (!on)
                 {
                     if (harmony == null) return null;
+                    Application.logMessageReceived -= OnLog;
+                    ImGuiTap.PassEnded();
                     harmony.UnpatchAll(Id);
                     harmony = null;
                     return null;
@@ -35,9 +38,23 @@ namespace Morgott.PPBridge
                 MethodInfo target = AccessTools.Method(typeof(GUI), "DoControl",
                     new[] { typeof(Rect), typeof(int), typeof(bool), typeof(bool), typeof(GUIContent), typeof(GUIStyle) });
                 if (target == null) return "UnityEngine.GUI.DoControl(Rect,int,bool,bool,GUIContent,GUIStyle) was not found - Unity changed under the tap";
+                string lerr = Layout();
+                if (lerr != null) return lerr;
                 Harmony h = new Harmony(Id);
-                h.Patch(target, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(Pre)), postfix: new HarmonyMethod(typeof(ImGuiPatch), nameof(Post)));
+                try
+                {
+                    h.Patch(target, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(Pre)), postfix: new HarmonyMethod(typeof(ImGuiPatch), nameof(Post)));
+                    // The layout-tolerant rest of a forced pass (ImGui.cs InPass): pad GetNext/PeekNext
+                    // overruns, swap a mismatched BeginLayoutGroup entry; EndGUI ends the pass.
+                    h.Patch(mGetNext, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PreNext)));
+                    h.Patch(mPeekNext, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PreNext)));
+                    h.Patch(mBeginGroup, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PreBeginGroup)));
+                    h.Patch(mEndGUI, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PassOver)));
+                    h.Patch(mEndGUIEx, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PassOver)));
+                }
+                catch (Exception) { try { h.UnpatchAll(Id); } catch (Exception) { } throw; }
                 harmony = h;
+                Application.logMessageReceived += OnLog;
                 return null;
             }
             catch (Exception ex)
@@ -45,6 +62,94 @@ namespace Morgott.PPBridge
                 harmony = null;
                 return ex.GetType().Name + ": " + ex.Message;
             }
+        }
+
+        // ------------------------------------------------------------------ layout-tolerant pass
+        // GUILayoutGroup / GUILayoutEntry are internal: reached by reflection, touched only while
+        // ImGuiTap.GuardArmed (one volatile read otherwise). Verified on the game's IMGUIModule.dll
+        // (Unity 2019.4.31f1, ilspycmd): GUILayoutGroup.GetNext throws on overrun only when
+        // Event.current.type == Repaint and returns its static `none` otherwise; PeekNext always throws;
+        // GUILayoutUtility.BeginLayoutGroup throws ExitGUIException("Mismatched LayoutGroup") when the
+        // next entry is not a group; EndGUI / EndGUIFromException close every OnGUI call (native).
+
+        private static MethodInfo mGetNext, mPeekNext, mBeginGroup, mEndGUI, mEndGUIEx, mCreateGroup;
+        private static FieldInfo fEntries, fCursor, fNone;
+        private static Type tGroup;
+
+        private static string Layout()
+        {
+            if (mGetNext != null) return null;
+            Type g = AccessTools.TypeByName("UnityEngine.GUILayoutGroup");
+            if (g == null) return "UnityEngine.GUILayoutGroup not found - Unity changed under the tap";
+            MethodInfo next = AccessTools.Method(g, "GetNext", Type.EmptyTypes);
+            MethodInfo peek = AccessTools.Method(g, "PeekNext", Type.EmptyTypes);
+            FieldInfo entries = AccessTools.Field(g, "entries"), cursor = AccessTools.Field(g, "m_Cursor"), none = AccessTools.Field(g, "none");
+            MethodInfo begin = AccessTools.Method(typeof(GUILayoutUtility), "BeginLayoutGroup", new[] { typeof(GUIStyle), typeof(GUILayoutOption[]), typeof(Type) });
+            MethodInfo create = AccessTools.Method(typeof(GUILayoutUtility), "CreateGUILayoutGroupInstanceOfType", new[] { typeof(Type) });
+            MethodInfo end = AccessTools.Method(typeof(GUIUtility), "EndGUI", new[] { typeof(int) });
+            MethodInfo endEx = AccessTools.Method(typeof(GUIUtility), "EndGUIFromException", new[] { typeof(Exception) });
+            if (next == null || peek == null || entries == null || cursor == null || none == null || begin == null || create == null || end == null || endEx == null)
+                return "GUILayout internals (GetNext/PeekNext/entries/m_Cursor/none/BeginLayoutGroup/EndGUI) not found - Unity changed under the tap";
+            tGroup = g; fEntries = entries; fCursor = cursor; fNone = none;
+            mPeekNext = peek; mBeginGroup = begin; mCreateGroup = create; mEndGUI = end; mEndGUIEx = endEx;
+            mGetNext = next;
+            return null;
+        }
+
+        private static bool InForcedPass()
+        {
+            if (!ImGuiTap.GuardArmed) return false;
+            Event e = Event.current;
+            return e != null && ImGuiTap.InPass(Time.frameCount, EvName(e.rawType));
+        }
+
+        /// <summary>GetNext/PeekNext past the group's end in the forced pass: append a dummy entry
+        /// first, so the original returns it instead of throwing (what non-Repaint passes return).</summary>
+        private static void PreNext(object __instance)
+        {
+            try
+            {
+                if (!InForcedPass()) return;
+                IList entries = (IList)fEntries.GetValue(__instance);
+                if ((int)fCursor.GetValue(__instance) < entries.Count) return;
+                entries.Add(fNone.GetValue(null));
+                ImGuiTap.Repaired();
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>BeginLayoutGroup in the forced pass whose next entry is missing or not a group:
+        /// put an empty group of the asked type there, so the original takes it instead of throwing.</summary>
+        private static void PreBeginGroup(Type layoutType)
+        {
+            try
+            {
+                if (!InForcedPass()) return;
+                EventType t = Event.current.type;
+                if (t == EventType.Layout || t == EventType.Used) return;
+                object top = TopLevel == null ? null : TopLevel();
+                if (top == null) return;
+                IList entries = (IList)fEntries.GetValue(top);
+                int cur = (int)fCursor.GetValue(top);
+                if (cur < entries.Count && tGroup.IsInstanceOfType(entries[cur])) return;
+                object fresh = mCreateGroup.Invoke(null, new object[] { layoutType });
+                if (cur < entries.Count) entries[cur] = fresh; else entries.Add(fresh);
+                ImGuiTap.Repaired();
+            }
+            catch (Exception) { }
+        }
+
+        private static void PassOver() { if (ImGuiTap.GuardArmed) ImGuiTap.PassEnded(); }
+
+        private static void OnLog(string msg, string stack, LogType type)
+        {
+            try
+            {
+                bool bad = type == LogType.Error || type == LogType.Exception || type == LogType.Assert
+                           || (msg != null && msg.IndexOf("Exception", StringComparison.Ordinal) >= 0);
+                ImGuiTap.Logged(bad, msg);
+            }
+            catch (Exception) { }
         }
 
         /// <summary>DoControl Use()s the MouseDown/MouseUp it takes, so after it runs Event.current.type

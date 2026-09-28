@@ -572,9 +572,10 @@ still ran. `code:"notfound"` carries `near` rows; `disabled` = not interactable.
 ## Press a mod's OnGUI button — `imgui`
 
 For IMGUI panels (`OnGUI` + `GUILayout.Button`/`Toggle`, e.g. ContentTool's bench). Not the game's
-own uGUI screens. Default press = `force` (the button's result forced on a Repaint): fine for buttons
-that start work, but it CAN crash a button that rebuilds the layout (live 0.3.1: pressing a bench unit row
-closed the ContentTool bench + `ArgumentException` in the log). `"mode":"post"` = a real click posted into the
+own uGUI screens. Default press = `force` (the button's result forced on a Repaint). Since 0.3.2 a button
+that rebuilds the layout is safe too (bench unit row, live: `fired:true,repaired:98,alive:true`, bench stays
+open); the reply waits 2 frames and adds `repaired` (layout mismatches absorbed), `alive` (panel drew
+again - `false` = it closed) and `errors` (error logs meanwhile). `"mode":"post"` = a real click posted into the
 game's own window — opt-in, EXPERIMENTAL, NOT working live yet: 0.3.1 run got `code:"noevent"` with the game
 focused (Unity turned no posted `WM_LBUTTONDOWN` into a MouseDown) and `code:"offscreen"` (client 0x0) when
 minimized. Confirm every press by its effect (log/state). Detail: REFERENCE § `imgui`.
