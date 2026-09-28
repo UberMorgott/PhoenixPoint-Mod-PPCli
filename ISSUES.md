@@ -44,62 +44,7 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   handles stay server-side as `${VAR.value.h}`.
 - **Severity:** medium. Every multi-step reflection sequence from PowerShell has to become a plan file;
   `connect call` cannot chain on a handle at all from the shell.
-
-## 2026-09-05 — `call {"op":"new"}` ignores `sig`, so an ambiguous constructor cannot be selected
-
-- **Attempted:** `{"op":"new","type":"System.Collections.ArrayList","args":[],"sig":[]}` inside a plan
-  step, to build a zero-element accumulator.
-- **Happened:** `step 'acc' (call) failed: score 0 is a tie across 2 overloads - pass "sig" with the
-  parameter type names` — the error asks for `sig`, but `sig` was already present and empty, and
-  adding it changed nothing.
-- **Expected:** `"sig": []` selects the parameterless constructor, the same way `sig` disambiguates
-  `invoke`.
-- **Evidence:** live `D:\PP-Instance3`, build `3068ae67`. Failed identically with and without `sig`.
-  Worked around by dropping the accumulator and generating explicit indexed steps.
-- **Severity:** low. Only bites types with an `()`/`(int)`/`(ICollection)` constructor family.
-
-## 2026-09-06 — a handle cannot be passed as an ARGUMENT from the shell, and the envelope that works is undocumented
-
-- **Attempted:** `connect call '{"op":"invoke","type":"Morgott.ContentTool.Dev.FitBench","member":"ShowPrototype","args":["h:4:17","h:4:28"]}'`
-  — pass two handles that a previous `call`/`items` reply returned as arguments to a static method.
-- **Happened:** `{"ok":false,"code":"overload","error":"nothing binds for 'ShowPrototype': static String
-  ShowPrototype(PrototypeRecord record, PrototypeVariant variant) arg 0 (PrototypeRecord): a string cannot
-  bind to PrototypeRecord"}`, exit 1. A bare `h:N:M` string is never resolved back to its handle.
-- **Expected:** either a bare `h:N:M` argument resolves to the live object, or `PLAYBOOK.md` names the
-  envelope that does. `PLAYBOOK.md:343` documents only `{"$type":"..."}` for passing a TYPE, and the
-  refusal message does not name any alternative.
-- **Evidence:** live `D:\PP-Instance2`, build `3068ae67`, PID 12424, 2026-09-06. Found by trial that
-  `{"$h":"h:4:17"}` DOES work — `{"op":"invoke",...,"args":[{"$h":"h:4:17"},{"$h":"h:4:28"}]}` returned
-  `{"ok":true,"value":null}` and the prototype was really shown. Same envelope worked for an instance
-  method: `{"op":"invoke","target":"h:4:49","member":"PickTarget","args":[{"$h":"h:4:34"}]}` → `ok:true`.
-- **Severity:** low (documentation). The capability exists and works; it is only unfindable — the
-  overload refusal costs a round trip and reads like "this cannot be done from the shell".
-
-## 2026-09-06 — stderr chatter is on the INFORMATION stream, so `2>$null` does not silence it
-
-- **Attempted:** silence the per-call `pipe ppcli-<id> (pid N, build=…, ppcli/1)` banner in a polling
-  loop with `& .\ppcli.ps1 … connect call $json 2>$null`, then with `2>&1` plus a filter.
-- **Happened:** the banner still reached the transcript on every one of ~200 poll iterations; `2>$null`
-  and `2>&1`+filter both left it visible.
-- **Expected:** `2>$null` silences per-call diagnostics, per the output contract's "everything else on
-  stderr" (`PLAYBOOK.md:389`).
-- **Evidence:** live `D:\PP-Instance2`, build `3068ae67`, 2026-09-06, pwsh 7. `6>$null` (the Information
-  stream, i.e. `Write-Host`) DID silence it, which is what identifies where it is written.
-- **Severity:** low, but it is a real cost for an agent: a bounded poll loop floods the transcript, and
-  the documented redirection is the wrong one.
-
-## 2026-09-06 — `6>$null` does NOT silence the per-call banner either (correction to the entry above)
-
-- **Attempted:** the workaround the previous entry recommends — `6>$null` on the `& $ppcli … connect …`
-  call, and then on the whole enclosing `& { … } 6>$null` script block.
-- **Happened:** the `pipe ppcli-<id> (pid N, build=…, ppcli/1)` banner still reached the transcript on
-  every call, in both placements. One bounded poll loop printed it ~250 times.
-- **Expected:** either `2>$null` or `6>$null` silences it, per the output contract (`PLAYBOOK.md:389`).
-- **Evidence:** live `D:\PP-Instance2`, build `3068ae67`, PID 27480, 2026-09-06, pwsh 7 — the same
-  install and build as the entry above. Reproduced on every call of a ~40-call session. Worked around
-  by polling every 3 s instead of every 0.7 s, i.e. by making fewer calls.
-- **Severity:** low, but the documented workaround is wrong: nothing a caller can redirect suppresses
-  it, which suggests the banner is written straight to the console host rather than to a stream.
+- **2026-09-28 retest (not reproduced):** live `D:\PP-Instance2`, build `ab0755a4`, pwsh 7 in-process: `$h` from `(connect call '{"op":"get","target":"@geo","member":"Factions"}' | ConvertFrom-Json).result.value.h`, then `connect inspect ('{"h":"' + $h + '","filter":"Count"}')` and `connect call ('{"op":"get","target":"' + $h + '","member":"Count"}')`, with and without `-PPRoot`, and via `$q` → all `ok:true`, exit 0. The client only ever `ConvertFrom-Json`s `$Arg2`; no path cmdlet sees it. A caller-side quoting layer (e.g. `pwsh -Command "..."` from bash) is the remaining suspect - need the exact command line that failed.
 
 ## 2026-09-07 — `connect screenshot` shows the level-curtain art instead of the presented frame once a mod camera draws objects over its own blit
 
@@ -140,4 +85,32 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   unreadable through the bridge; the workaround is the mod's own spill file on disk, which means
   leaving the JSON path entirely.
 
+## 2026-09-26 — `launch-scavenge.json` NREs at step `sites` on a plain `start-campaign` geoscape
+
+- **Attempted:** solo smoke run on `D:\PP-Instance2` (PID 55388, build `ab0755a4`): `plan .\plans\start-campaign.json '{"difficultyIndex":1}'` (ok, phase geoscape Playing), then `plan .\plans\launch-scavenge.json '{"siteIndex":0}'`.
+- **Happened:** `ok:false`, `step 'sites' (call) failed: NullReferenceException: Object reference not set to an instance of an object` (`GetConnectedSitesOfType_Land` invoke). Root cause not isolated (null `CurrentSite` on vehicle 0 or an arg, unverified).
+- **Expected:** plan works on any fresh geoscape, or refuses up front by name (e.g. `assert` that `S0.value` is non-null) instead of an opaque NRE. PLAYBOOK lists it only under the co-op section, so a plain-campaign precondition, if real, is undocumented.
+- **Severity:** low. Blocks a one-instance tactical entry from a cold start; coop `battle` path unaffected (per PLAYBOOK).
+
+## 2026-09-26 — `coop.ps1 dismiss` stops at the geoscape intro cutscene
+
+- Attempted: `coop.ps1 dismiss -Side client1|client2` right after `campaign` (3 peers).
+- Happened: returns `screens:["...UIStateGeoCutscene"]`, nothing dismissed; the intro video runs ~minutes.
+- Expected: dismiss skips a cutscene too. Worked around with `connect call '{"op":"invoke","target":"@viewstate","member":"OnCancel","args":[]}'` (`UIStateGeoCutscene.OnCancel` = native skip, decompile `UIStateGeoCutscene.cs:89-93`), then `dismiss` again.
+- Severity: low.
+
+## 2026-09-26 — `coop.ps1 reconnect` presses RECONNECT ~0.2 s after the relaunched menu's UI init
+
+- Attempted: `kill -Side client2` → `relaunch -Side client2 -AllowSteamInstall` → `reconnect -Side client2`, host on geoscape.
+- Happened: RECONNECT pressed 02:52:08.03, 0.2 s after `[MP][general] UI initialized`; the on-demand join ran `EnterLevel → FinishLevel` and the client stayed on HomeScreen with the roster strip at `Loading 0%` (mod-side race, logged in the Multiplayer2 field results). Same sequence with a 25 s wait between `relaunch` and `reconnect` rejoined the geoscape fine.
+- Expected: `reconnect` waits for the main menu to settle (or a mod readiness probe) before pressing, so the automation does not manufacture the race; the mod should also survive it (separate Multiplayer2 bug).
+- Evidence: Multiplayer2 `docs\field\2026-09-26\T5-F9-after-reconnect-client2.jpg`, client2 mod log L24-L66 of that run.
+- Severity: medium.
+
+## 2026-09-26 — `coop.ps1` cannot join clients through a relay (Multiplayer2 field run 2, three peers over VPS relay)
+
+- `lobby`/`campaign` (Do-Lobby) and the `reconnect` fallback join every client at `127.0.0.1:<Port>`; `tools\vps-relay.ps1`
+  hands out one port per client (`34242`, `34243`). Attempted a WAN run → had to replicate Do-Lobby by hand (`OnGateJoin`
+  per client with its own address, NEW GAME, READY, confirm). Expected: `-JoinAddress` per client (list) or `-Relay` switch
+  reading the relay's `clientJoin`. Severity: medium.
 <!-- Append new entries above this line. Keep them evidence-backed. -->
