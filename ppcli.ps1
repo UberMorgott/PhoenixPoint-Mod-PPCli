@@ -106,7 +106,7 @@ function Assert-NoLogFault($mark) {
 function Assert-MutateAllowed($Node, [string] $Verb = '') {
     if ($AllowMutate -or -not (Test-PPMainInstall $PPRoot)) { return }
     if (-not (Test-ActMutates $Node $Verb)) { return }
-    throw ("REFUSED: this request contains an `act` use/endTurn and $PPRoot is a Steam install - the game " +
+    throw ("REFUSED: this request contains an 'act' use/endTurn and $PPRoot is a Steam install - the game " +
            "you PLAY. It would take a real action in your real save. Point -PPRoot at an automation copy " +
            "(ppcli-install.txt), or pass -AllowMutate if you mean it. Nothing was sent.")
 }
@@ -401,8 +401,13 @@ function Test-ConnectFault($mark, $ep, $faults) {
                "so the wait was abandoned. Kill that game process and relaunch it; pass -IgnoreLogFaults " +
                "to wait anyway. Log: $($mark.path)`n" + $fault)
     }
+    # A coroutine that dies every frame (the TFTV FadeInGraphic NRE: ~80 repeats over one end-mission)
+    # is ONE fault: note and record each distinct stack once, not once per 2 s poll.
+    $short = $fault.Length -gt 600 ? $fault.Substring(0, 600) + '~' : $fault
+    if (-not $script:seenFaults) { $script:seenFaults = [Collections.Generic.HashSet[string]]::new() }
+    if (-not $script:seenFaults.Add($short)) { return }
     Note "mod exception logged while waiting; the game still answers, so the job goes on:`n$fault"
-    if ($faults.Count -lt 3) { $faults.Add(($fault.Length -gt 600 ? $fault.Substring(0, 600) + '~' : $fault)) }
+    if ($faults.Count -lt 3) { $faults.Add($short) }
 }
 
 # One request per connection: connect, one length-prefixed UTF-8 frame out, one back, close.
