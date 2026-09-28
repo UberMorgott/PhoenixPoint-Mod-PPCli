@@ -29,9 +29,9 @@ Compressed contract. Rules: [`AGENTS.md`](AGENTS.md) · intent -> command: [`PLA
 
 - **Gate:** one driver per install. Send nothing until `connect state` answers; `index` only after. Handles `h:<epoch>:<id>` die on scene change/restart (TTL 900 s).
 - **Wire:** stdout = ONE compact JSON object; notes -> stderr, off by default (`-Verbose`/`PPCLI_VERBOSE=1` on, `-Quiet`/`PPCLI_QUIET=1` off). Live reply `{status:"done",result:{ok:true,...}}`; `status:"timeout"` keeps `jobId`. Refusal `ok:false` + `error` (+`code`), no payload key, exit 1 - check `$LASTEXITCODE` at once. Bad paging args -> `code:"args"`, never clamped.
-- **Modes:** `connect <verb> '<json>'` (live, 17-60 ms) · `plan <file> '<vars>'` (bounded cross-frame steps + `finally`; prefer over client loops) · `connect multi '<array>'|@file.json|-` (sequential, not transactional) · `run <verb> '<json>'` / `batch <file>` (cold launch ~17 s, restores options, kills only own PID) -> check outer `ok`, `stale`, each `results[].result.ok` · `index` (def catalog -> `catalog\defs.ndjson`) · `deploy`.
+- **Modes:** `connect <verb> '<json>'` (live, 17-60 ms) · `plan <file> '<vars>'` (bounded cross-frame steps + `finally`; prefer over client loops) · `connect multi '<array>'|@file.json|-` (sequential, not transactional) · `run <verb> '<json>'` / `batch <file>` (cold launch ~17 s, restores options, kills only own PID) -> check outer `ok`, `stale`, each `results[].result.ok` · `index` (def catalog -> `catalog\defs.ndjson`) · `test <dir|file> [-Cold] [-JUnit x.xml]` (mod test harness: `*.test.json` = plan + `expect`, one pass/fail summary) · `deploy`.
 - **Safety:** `act use`/`endTurn` and `ui click` (also inside `multi`/`batch`/`plan`) against a Steam-library install are refused without `-AllowMutate`. `deploy` refuses a running target (`-AllowRunning` = stage for next launch; `-Force` = ignore pinned install). `stale:true` = old DLL, discard results. A dispatched click is not proof of effect.
-- **Options:** `-PPRoot` `-ProfileId` `-TimeoutSeconds`(300) `-PipeTimeoutSeconds`(30) `-FaultPattern` `-IgnoreLogFaults` `-Window` `-AllowMutate` `-AllowRunning` `-Force` `-Quiet`/`-Verbose`.
+- **Options:** `-PPRoot` `-ProfileId` `-TimeoutSeconds`(300) `-PipeTimeoutSeconds`(30) `-FaultPattern` `-IgnoreLogFaults` `-Window` `-AllowMutate` `-AllowRunning` `-Force` `-Quiet`/`-Verbose`; `test`: `-Cold` `-JUnit` `-Only`.
 
 | Verb | Purpose | Key args |
 |---|---|---|
@@ -42,7 +42,8 @@ Compressed contract. Rules: [`AGENTS.md`](AGENTS.md) · intent -> command: [`PLA
 | `console` | Run native command once, page output | `command`, `args?`, `pageLines?`, `pageBytes?`; `cursor` (120 s) |
 | `var` | Get/set console variable | `name`, `value?` (string) |
 | `log` `events` | Page Unity log; C# event subscriptions | `since` -> `next`, `match?`; `subscribe:{target\|type,event}` |
-| `wait` | Cross-frame predicate | `ready` `phase` `call` `forMs` `log` `event`; `not?` `timeoutMs?` |
+| `wait` | Cross-frame predicate | `ready` `phase` `call` `forMs` `log` `event` `trace`; `not?` `timeoutMs?` |
+| `trace` | Runtime Harmony hook on any game/mod method: did it run, args, return | `start:{type,method,sig?,args?,ret?,stack?}` -> `id`; `{id}` -> `hits`+rows; `stop`; ends on TTL/maxHits/scene |
 | `plan` `status` `cancel` | Run / inspect / cancel a job | `plan:{steps,finally?,vars?}`; `jobId` |
 | `observe` | Record live observations | `action`: start, read, mark, status, stop |
 | `screenshot` | PNG of the frame | `path?` (absolute), `mode?` `backbuffer`\|`capture`; client `-Window` = window grab |
