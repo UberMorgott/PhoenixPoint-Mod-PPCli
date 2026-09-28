@@ -12,10 +12,12 @@ namespace Morgott.PPBridge
     /// The game half of <c>ui</c> (pure half + contract: Ui.cs). Scan = every active uGUI element a
     /// pointer click can reach: enabled Selectables (Selectable.allSelectablesArray) plus any enabled
     /// MonoBehaviour implementing IPointerClickHandler (PhoenixGeneralButton, list rows, TFTV panels).
-    /// Click = the pointer sequence StandaloneInputModule runs for a real left click, executed on the
-    /// element itself: enter (whole hovered chain) -> down (ExecuteHierarchy) -> up -> click (only when
-    /// the press handler IS the click handler, like Unity) -> exit. PhoenixGeneralButton.OnPointerClick
-    /// ignores a click unless eventData.hovered contains its BaseButton's GameObject - hence the chain.
+    /// Click = the pointer sequence StandaloneInputModule runs for a real left click, started at the
+    /// object the raycast at the element's centre actually hits: enter (hit and every ancestor ->
+    /// hovered) -> deselect-if-changed -> down (ExecuteHierarchy) + pointerDrag/initializePotentialDrag
+    /// -> up -> click (only when the press handler IS the click handler, like Unity) -> exit.
+    /// PhoenixGeneralButton.OnPointerClick ignores a click unless eventData.hovered contains its
+    /// BaseButton's GameObject - a hovered chain from the real hit contains it wherever it sits.
     /// </summary>
     internal static class UiGame
     {
@@ -185,7 +187,9 @@ namespace Morgott.PPBridge
             UiClickResult res = new UiClickResult();
             List<RaycastResult> hits = new List<RaycastResult>();
             try { es.RaycastAll(ped, hits); } catch (Exception) { hits.Clear(); }
-            GameObject top = hits.Count > 0 ? hits[0].gameObject : null;
+            RaycastResult first = default(RaycastResult);          // BaseInputModule.FindFirstRaycast
+            foreach (RaycastResult h in hits) if (h.gameObject != null) { first = h; break; }
+            GameObject top = first.gameObject;
             // Refuse BEFORE any event goes out: what a real mouse would not reach is not clicked.
             if (top == null)
             {
@@ -197,41 +201,69 @@ namespace Morgott.PPBridge
                 if (!force) return new UiClickResult { Refuse = "blocked", Top = PathOf(top.transform) };
                 res.Warn = "forced: blocked - " + UiTap.ShortPath(PathOf(top.transform)) + " is on top at the centre";
             }
-            RaycastResult rr = new RaycastResult { gameObject = go, screenPosition = centre, module = hits.Count > 0 ? hits[0].module : null };
+            // Like StandaloneInputModule: everything starts at the object the raycast actually hit
+            // (a child Image/Text of the button, typically) - forced past a refusal, at the element.
+            bool fromHit = top != null && res.Warn == null;
+            GameObject over = fromHit ? top : go;
+            RaycastResult rr = fromHit ? first : new RaycastResult { gameObject = go, screenPosition = centre, module = first.module };
             ped.pointerCurrentRaycast = rr;
-            ped.pointerPressRaycast = rr;
 
-            List<GameObject> chain = new List<GameObject>();
-            for (Transform t = go.transform; t != null; t = t.parent) chain.Add(t.gameObject);
-            ped.hovered.AddRange(chain);
-            ped.pointerEnter = go;
-            for (int i = chain.Count - 1; i >= 0; i--) ExecuteEvents.Execute(chain[i], ped, ExecuteEvents.pointerEnterHandler);
-
-            GameObject press = ExecuteEvents.ExecuteHierarchy(go, ped, ExecuteEvents.pointerDownHandler);
-            GameObject clickH = ExecuteEvents.GetEventHandler<IPointerClickHandler>(go);
-            if (press == null) press = clickH;
-            ped.pointerPress = press;
-            ped.rawPointerPress = go;
-
-            if (press != null) ExecuteEvents.Execute(press, ped, ExecuteEvents.pointerUpHandler);
-            if (press != null && press == clickH)
+            // Who would take the press - checked BEFORE any event: it must be the element, inside it,
+            // or an ancestor that owns it; anything else is a different element (blocked).
+            GameObject handler = ExecuteEvents.GetEventHandler<IPointerDownHandler>(over) ?? ExecuteEvents.GetEventHandler<IPointerClickHandler>(over);
+            if (handler == null) return new UiClickResult { Error = "nothing on the element or its parents handles pointerDown/pointerClick" };
+            if (handler != go && !handler.transform.IsChildOf(go.transform) && !go.transform.IsChildOf(handler.transform))
             {
-                ExecuteEvents.Execute(clickH, ped, ExecuteEvents.pointerClickHandler);
+                if (!force) return new UiClickResult { Refuse = "blocked", Top = PathOf(handler.transform) };
+                res.Warn = (res.Warn == null ? "forced: " : res.Warn + "; ") + "press goes to " + UiTap.ShortPath(PathOf(handler.transform));
+            }
+
+            // Enter (HandlePointerExitAndEnter from nothing): the hit and every ancestor, hit first.
+            for (Transform t = over.transform; t != null; t = t.parent)
+            {
+                ExecuteEvents.Execute(t.gameObject, ped, ExecuteEvents.pointerEnterHandler);
+                ped.hovered.Add(t.gameObject);
+            }
+            ped.pointerEnter = over;
+
+            // Press (ProcessMousePress, PressedThisFrame).
+            ped.eligibleForClick = true;
+            ped.delta = Vector2.zero;
+            ped.dragging = false;
+            ped.useDragThreshold = true;
+            ped.pressPosition = ped.position;
+            ped.pointerPressRaycast = ped.pointerCurrentRaycast;
+            GameObject selectH = ExecuteEvents.GetEventHandler<ISelectHandler>(over);
+            if (selectH != es.currentSelectedGameObject) es.SetSelectedGameObject(null, ped);
+            GameObject press = ExecuteEvents.ExecuteHierarchy(over, ped, ExecuteEvents.pointerDownHandler);
+            if (press == null) press = ExecuteEvents.GetEventHandler<IPointerClickHandler>(over);
+            ped.clickCount = 1;
+            ped.pointerPress = press;
+            ped.rawPointerPress = over;
+            ped.clickTime = Time.unscaledTime;
+            ped.pointerDrag = ExecuteEvents.GetEventHandler<IDragHandler>(over);
+            if (ped.pointerDrag != null) ExecuteEvents.Execute(ped.pointerDrag, ped, ExecuteEvents.initializePotentialDrag);
+
+            // Release (ReleasedThisFrame): up to the press target, click only when it is also the
+            // click handler of what is under the pointer - Unity's own rule.
+            if (press != null) ExecuteEvents.Execute(press, ped, ExecuteEvents.pointerUpHandler);
+            GameObject clickH = ExecuteEvents.GetEventHandler<IPointerClickHandler>(over);
+            if (press != null && press == clickH && ped.eligibleForClick)
+            {
+                ExecuteEvents.Execute(press, ped, ExecuteEvents.pointerClickHandler);
                 res.Handler = "pointerClick";
             }
-            else if (clickH == null)
-            {
-                Button b = go.GetComponent<Button>();
-                if (b != null && b.IsInteractable()) { b.onClick.Invoke(); res.Handler = "onClick"; }
-                else if (press != null) res.Handler = "pointerDown";
-                else res.Error = "nothing on the element or its parents handles pointerDown/pointerClick";
-            }
-            else res.Handler = "pointerDown";     // Unity itself clicks only when down and click share a handler
+            else if (press != null) res.Handler = "pointerDown";
+            else res.Error = "nothing on the element or its parents handles pointerDown/pointerClick";
+            if (press != null && press != go) res.Target = PathOf(press.transform);
 
             ped.eligibleForClick = false;
             ped.pointerPress = null;
             ped.rawPointerPress = null;
-            foreach (GameObject h in chain)
+            ped.dragging = false;
+            ped.pointerDrag = null;
+            // The pointer leaves again (a real one stays; ours must not leave hover state behind).
+            foreach (GameObject h in ped.hovered.ToArray())
                 if (h != null) ExecuteEvents.Execute(h, ped, ExecuteEvents.pointerExitHandler);
             ped.hovered.Clear();
             ped.pointerEnter = null;

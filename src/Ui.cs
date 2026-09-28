@@ -26,9 +26,12 @@ namespace Morgott.PPBridge
     /// <summary>What the game half's click did.</summary>
     internal sealed class UiClickResult
     {
-        /// <summary>"pointerClick" | "pointerDown" (no click handler, e.g. slider) | "onClick" (fallback).
+        /// <summary>"pointerClick" | "pointerDown" (press handler is not the click handler).
         /// Null = nothing on the object handles a click - then <see cref="Error"/>.</summary>
         internal string Handler;
+        /// <summary>FULL path of the object that took the press when it is not the element itself
+        /// (a child button, or the ancestor that owns the element).</summary>
+        internal string Target;
         /// <summary>Dispatched anyway (force) although the raycast said "blocked"/"noraycast".</summary>
         internal string Warn;
         internal string Error;
@@ -53,7 +56,8 @@ namespace Morgott.PPBridge
     ///          path must contain; interactable:true drops dis rows; all:true keeps invisible ones.
     ///          p = the last <see cref="PathSegs"/> path segments ("~/" = more above) - pass it back as `path`.
     ///   ui {click:{label|path, index?, force?}, waitFrames?}
-    ///       -> {ok, clicked:p, handler:"pointerClick"|"pointerDown"|"onClick", warn?, frames}
+    ///       -> {ok, clicked:p, handler:"pointerClick"|"pointerDown", target?, warn?, frames}
+    ///          target = p of the object that took the press when it is not the element itself.
     ///          label = exact (case-insensitive, whitespace-collapsed) text; path = a row's p, or any
     ///          '/'-aligned suffix of the full path. index picks among several matches (row order).
     ///          Only visible rows are clickable. A raycast at the element's centre runs FIRST: another
@@ -156,6 +160,7 @@ namespace Morgott.PPBridge
             if (res == null || res.Handler == null)
                 return new JObject { ["ok"] = false, ["code"] = "noclick", ["error"] = Protocol.Clip(res != null && res.Error != null ? res.Error : "nothing on the element handles a pointer click"), ["row"] = Row(pick) };
             JObject reply = new JObject { ["ok"] = true, ["clicked"] = ShortPath(pick.Path), ["handler"] = res.Handler };
+            if (res.Target != null) reply["target"] = ShortPath(res.Target);
             if (res.Warn != null) reply["warn"] = Protocol.Clip(res.Warn);
             if (wait == 0 || FrameNow == null) { reply["frames"] = 0; return reply; }
             return new Pending(reply, wait, FrameNow());

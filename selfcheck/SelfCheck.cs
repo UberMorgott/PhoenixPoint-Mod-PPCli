@@ -1133,7 +1133,7 @@ namespace Morgott.PPBridge
                 if (n.Label == "Options" && !force) return new UiClickResult { Refuse = "blocked", Top = "UIRoot/Overlay/Modal/Panel/Image" };
                 if (n.Path.Contains("Ghost") && !force) return new UiClickResult { Refuse = "noraycast" };
                 clicked = n;
-                return n.Label == "Item" && n.Path.Contains("Row[1]") ? new UiClickResult { Error = "none" } : new UiClickResult { Handler = "pointerClick", Warn = force ? "forced: blocked - ~/Modal/Panel/Image is on top at the centre" : null };
+                return n.Label == "Item" && n.Path.Contains("Row[1]") ? new UiClickResult { Error = "none" } : new UiClickResult { Handler = "pointerClick", Warn = force ? "forced: blocked - ~/Modal/Panel/Image is on top at the centre" : null, Target = n.Label == "NEW GAME" ? n.Path + "/BaseButton" : null };
             };
             UiTap.FrameNow = () => frame;
 
@@ -1193,6 +1193,9 @@ namespace Morgott.PPBridge
             Check("ui-click-noraycast-refused", noray.Contains("\"code\":\"noraycast\"") && !noray.Contains("\"top\"") && clicked == null, noray);
             string forcedGhost = V("ui", "{'click':{'path':'Ghost/GhostButton','force':true},'waitFrames':0}");
             Check("ui-click-force-dispatches", forcedGhost.Contains("\"ok\":true") && forced && clicked != null && forcedGhost.Contains("\"warn\":\"forced:"), forcedGhost);
+            string viaChild = V("ui", "{'click':{'label':'new game'},'waitFrames':0}");
+            Check("ui-click-target-reported", viaChild.Contains("\"clicked\":\"~/MainMenu/Buttons/NewGameButton\"") && viaChild.Contains("\"target\":\"~/Buttons/NewGameButton/BaseButton\""), viaChild);
+            Check("ui-click-no-target-when-self", !byPath.Contains("\"target\""), byPath);
             object started = Start("ui", "{'click':{'label':'options','force':true},'waitFrames':3}");
             IPending p = started as IPending;
             Check("ui-click-waits-frames", p != null && p.Tick(false) == null, Protocol.Compact(started));
