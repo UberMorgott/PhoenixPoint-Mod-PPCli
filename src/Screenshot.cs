@@ -169,10 +169,11 @@ namespace Morgott.PPBridge
                         result = new
                         {
                             ok = true, path, width = tex.width, height = tex.height, bytes = png.Length,
+                            // No `note` (0.3.0): what scenePath means is documented in AGENTS.md
+                            // (`screenshot`) - path = UI over a blank scene, scenePath = the 3D scene
+                            // at the camera's own pre-upscale resolution.
                             scenePath, sceneWidth = rt.width, sceneHeight = rt.height, sceneBytes = scene.Length,
-                            note = "Camera.main renders into targetTexture '" + rt.name + "', so the frame " +
-                                   "above carries UI over a blank scene - the 3D scene is in scenePath, at the " +
-                                   "camera's own (pre-upscale) resolution."
+                            targetTexture = rt.name
                         };
                     }
                 }

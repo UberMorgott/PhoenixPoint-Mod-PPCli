@@ -913,7 +913,7 @@ namespace Morgott.PPBridge
             string ordered = Run("plan", @"{'plan':{'steps':[
                 {'id':'a','verb':'call','args':{'op':'invoke','type':'" + OvType + @"','member':'Bump','args':[]},'save':'A'},
                 {'id':'b','verb':'call','args':{'op':'invoke','type':'" + OvType + @"','member':'Bump','args':[]},'save':'B'}],
-                'output':{'first':'${A.value}','second':'${B.value}'}}}");
+                'output':{'first':'${A.value}','second':'${B.value}'}},'trace':'full'}");
             Check("plan-runs-steps-in-order", ordered.Contains("\"first\":1") && ordered.Contains("\"second\":2"), ordered);
             Check("plan-counts-its-steps", ordered.Contains("\"steps\":2"), ordered);
             Check("plan-traces-every-step", ordered.Contains("\"id\":\"a\"") && ordered.Contains("\"id\":\"b\""), ordered);
@@ -953,14 +953,19 @@ namespace Morgott.PPBridge
             // handed back every number it had measured. The gate is in the engine and not in any plan
             // file, so the next plan author gets it without knowing it exists.
             Check("plan-withholds-output-on-failure",
-                  !failFinally.Contains("\"f\":201") && failFinally.Contains("\"output\":null"), failFinally);
+                  !failFinally.Contains("\"f\":201") && !failFinally.Contains("\"output\":"), failFinally);
             Check("plan-says-the-output-was-withheld",
                   failFinally.Contains("\"outputWithheld\":\"the plan failed at step 'boom'"), failFinally);
             // ...and what replaces it: the failing step's own DTO, so the value that tripped the
             // assertion still reaches the caller. This is how the weapon bench reports the count of
             // wedged or dropped projectiles it refused on.
             Check("plan-returns-the-failing-step-result", failFinally.Contains("\"result\":{"), failFinally);
-            Check("plan-still-publishes-output-on-success", okFinally.Contains("\"outputWithheld\":null"), okFinally);
+            Check("plan-still-publishes-output-on-success", !okFinally.Contains("outputWithheld") && okFinally.Contains("\"output\":{"), okFinally);
+            Check("plan-success-carries-no-null-fields", !okFinally.Contains(":null") && !okFinally.Contains("\"trace\""), okFinally);
+            Check("plan-errors-trace-drops-the-fatal-row", !failFinally.Contains("\"trace\""), failFinally);
+            string contTrace = Run("plan", "{'plan':{'steps':[{'id':'bad','verb':'no-such-verb','onError':'continue'},{'id':'good','verb':'ping'}]}}");
+            Check("plan-errors-trace-keeps-a-continued-failure", contTrace.Contains("\"id\":\"bad\"") && !contTrace.Contains("\"id\":\"good\""), contTrace);
+            Check("plan-trace-mode-refuses-junk", Run("plan", "{'plan':{'steps':[{'verb':'ping'}]},'trace':'all'}").Contains("\"code\":\"args\""), "trace:all accepted");
 
             Ov.Counter = 300;
             string capped = Run("plan", "{'plan':{'maxSteps':3,'steps':[{'verb':'ping'},{'verb':'ping'},{'verb':'ping'},{'verb':'ping'},{'verb':'ping'}],'finally':[" + Bump + "]}}");
@@ -1006,13 +1011,13 @@ namespace Morgott.PPBridge
 
             // --- bounded branching and repetition.
             Check("plan-if-skips-a-step",
-                  Run("plan", "{'plan':{'vars':{'go':false},'steps':[{'id':'s','verb':'ping','if':'${go}'}]}}").Contains("\"skipped\":\"if\""),
+                  Run("plan", "{'plan':{'vars':{'go':false},'steps':[{'id':'s','verb':'ping','if':'${go}'}]},'trace':'full'}").Contains("\"skipped\":\"if\""),
                   "a falsy if still ran the step");
             Check("plan-if-runs-a-step",
                   !Run("plan", "{'plan':{'vars':{'go':true},'steps':[{'id':'s','verb':'ping','if':'${go}'}]}}").Contains("skipped"),
                   "a truthy if skipped the step");
             Check("plan-unless-inverts",
-                  Run("plan", "{'plan':{'vars':{'go':true},'steps':[{'id':'s','verb':'ping','unless':'${go}'}]}}").Contains("\"skipped\":\"unless\""),
+                  Run("plan", "{'plan':{'vars':{'go':true},'steps':[{'id':'s','verb':'ping','unless':'${go}'}]},'trace':'full'}").Contains("\"skipped\":\"unless\""),
                   "unless did not invert");
             Check("plan-onerror-continue",
                   Run("plan", "{'plan':{'steps':[{'id':'bad','verb':'no-such-verb','onError':'continue'},{'id':'good','verb':'ping'}]}}")
@@ -1058,7 +1063,7 @@ namespace Morgott.PPBridge
             Check("restore-issued-nothing-for-a-missing-save", loaded == null, "" + loaded);
             string restored = Run("restore", "{'name':'gate'}");
             Check("restore-issues-load_game", loaded == "load_game gate", "" + loaded);
-            Check("restore-admits-it-cannot-confirm", restored.Contains("no completion signal"), restored);
+            Check("restore-says-it-only-issued", restored.Contains("\"issued\":\"load_game\"") && !restored.Contains("\"note\""), restored);
 
             // --- var: the console's OTHER surface, which the console verb structurally cannot reach.
             Check("var-without-a-runner", Run("var", "{'name':'god_mode'}").Contains("no variable runner"),

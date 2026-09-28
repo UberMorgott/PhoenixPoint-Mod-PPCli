@@ -136,15 +136,9 @@ namespace Morgott.PPBridge
             if (Protocol.SaveExists != null && !Protocol.SaveExists(name))
                 return Bad("state", "no savegame called '" + name + "' - nothing was loaded");
             object console = Protocol.ConsoleRun("load_game", new[] { name });
-            return new
-            {
-                ok = true,
-                issued = "load_game",
-                name,
-                note = "load has no completion signal; follow with wait {\"ready\":true} in tactical " +
-                       "or wait {\"phase\":\"geoscape\"}",
-                console
-            };
+            // No `note` (0.3.0): "load has no completion signal - follow with a wait" is a fixed fact
+            // of the verb, so it lives in AGENTS.md, not in every answer an agent re-reads.
+            return new { ok = true, issued = "load_game", name, console };
         }
 
         // ------------------------------------------------------------------ pendings
@@ -373,6 +367,14 @@ namespace Morgott.PPBridge
             private readonly JObject output;
             private readonly List<Frame> stack = new List<Frame>();
             private readonly List<object> trace = new List<object>();
+            /// <summary>Parallel to <see cref="trace"/>: true for an entry that is a FAILED step.</summary>
+            private readonly List<bool> traceFailed = new List<bool>();
+            /// <summary>trace:"full" = every entry (the pre-0.3.0 answer); "errors" (default) = only
+            /// failed steps, minus the one `step`+`result` already report. A green 80-step plan
+            /// otherwise re-reads 80 {"id","verb","ok":true,"ms"} rows into an agent's context.</summary>
+            private readonly bool fullTrace;
+            private int fatalTrace = -1;
+            private int lastTrace = -1;
             private readonly DateTime started = DateTime.UtcNow;
             private readonly DateTime deadline;
             private readonly int maxSteps;
@@ -387,8 +389,9 @@ namespace Morgott.PPBridge
             private bool inCleanup;
             private object failure;          // the FIRST real failure; cleanup never overwrites it
 
-            private PlanRun(JArray steps, JArray cleanup, JObject output, JObject seed, int timeoutMs, int maxSteps)
+            private PlanRun(JArray steps, JArray cleanup, JObject output, JObject seed, int timeoutMs, int maxSteps, bool fullTrace)
             {
+                this.fullTrace = fullTrace;
                 this.cleanup = cleanup;
                 this.output = output;
                 this.maxSteps = maxSteps;
@@ -412,12 +415,30 @@ namespace Morgott.PPBridge
                 JObject callerVars = a["vars"] as JObject;
                 if (callerVars != null) foreach (KeyValuePair<string, JToken> kv in callerVars) seed[kv.Key] = kv.Value;
 
+                // The caller's choice wins over the plan file's, like vars do.
+                JToken traceTok = a["trace"] ?? p["trace"];
+                string traceMode = traceTok == null || traceTok.Type == JTokenType.Null ? "errors"
+                                 : traceTok.Type == JTokenType.String ? (string)traceTok : null;
+                if (traceMode != "errors" && traceMode != "full")
+                    return Bad("args", "trace must be \"errors\" (the default) or \"full\"");
+
                 return new PlanRun(steps,
                                    p["finally"] as JArray,
                                    p["output"] as JObject,
                                    seed,
                                    Clamp(a["timeoutMs"] ?? p["timeoutMs"], DefaultPlanMs, 1, MaxWaitMs),
-                                   Clamp(a["maxSteps"] ?? p["maxSteps"], DefaultMaxSteps, 1, HardMaxSteps));
+                                   Clamp(a["maxSteps"] ?? p["maxSteps"], DefaultMaxSteps, 1, HardMaxSteps),
+                                   traceMode == "full");
+            }
+
+            /// <summary>Every trace entry goes through here, so the failed-step index stays in step.</summary>
+            private void Trace(object entry, bool failed)
+            {
+                lastTrace = -1;
+                if (trace.Count >= MaxTrace) return;
+                trace.Add(entry);
+                traceFailed.Add(failed);
+                lastTrace = trace.Count - 1;
             }
 
             public object Tick(bool cancelled)
@@ -527,8 +548,8 @@ namespace Morgott.PPBridge
                 // A guard that names an unset variable is a FAILED step, not a silent skip.
                 try
                 {
-                    if (step["if"] != null && !Truthy(Resolve(step["if"]))) { trace.Add(new { id, verb, skipped = "if" }); return null; }
-                    if (step["unless"] != null && Truthy(Resolve(step["unless"]))) { trace.Add(new { id, verb, skipped = "unless" }); return null; }
+                    if (step["if"] != null && !Truthy(Resolve(step["if"]))) { Trace(new { id, verb, skipped = "if" }, false); return null; }
+                    if (step["unless"] != null && Truthy(Resolve(step["unless"]))) { Trace(new { id, verb, skipped = "unless" }, false); return null; }
                 }
                 catch (Exception ex) { return Record(id, verb, Bad("var", ex.Message), 0, onError); }
 
@@ -568,7 +589,7 @@ namespace Morgott.PPBridge
                 JArray body = a == null ? null : a["steps"] as JArray;
                 if (body == null) return Record(id, "repeat", Bad("args", "repeat needs args {times, steps[]}"), 0, "fail");
                 int times = Clamp(a["times"], 1, 1, MaxIterations);
-                trace.Add(new { id, verb = "repeat", times });
+                Trace(new { id, verb = "repeat", times }, false);
                 // Left counts the EXTRA passes: the first one is the frame simply being walked.
                 stack.Add(new Frame { Steps = body, Left = times - 1, While = a["while"] });
                 return null;
@@ -586,11 +607,8 @@ namespace Morgott.PPBridge
                 if (save != null) vars[save] = dto;
 
                 bool ok = Truthy(dto["ok"]);
-                if (trace.Count < MaxTrace)
-                {
-                    if (ok) trace.Add(new { id, verb, ok = true, ms });
-                    else trace.Add(new { id, verb, ok = false, ms, error = Protocol.Clip((string)dto["error"]), code = (string)dto["code"] });
-                }
+                if (ok) Trace(new { id, verb, ok = true, ms }, false);
+                else Trace(new { id, verb, ok = false, ms, error = Protocol.Clip((string)dto["error"]), code = (string)dto["code"] }, true);
                 if (ok || onError == "continue") return null;
                 return Fail(id, verb, dto);
             }
@@ -611,6 +629,8 @@ namespace Morgott.PPBridge
                     step = id,
                     result = dto
                 };
+                // The trace row of THE failure repeats `step`+`result`; errors mode leaves it out.
+                if (!inCleanup && failure == null) fatalTrace = lastTrace;
                 return inCleanup ? null : EnterCleanup(why);
             }
 
@@ -631,7 +651,7 @@ namespace Morgott.PPBridge
                 stack.Clear();
                 if (cleanup == null || cleanup.Count == 0) return Done(null);
                 stack.Add(new Frame { Steps = cleanup });
-                trace.Add(new { verb = "finally", steps = cleanup.Count });
+                Trace(new { verb = "finally", steps = cleanup.Count }, false);
                 return null;                                           // the loop drains it next tick
             }
 
@@ -671,26 +691,36 @@ namespace Morgott.PPBridge
                         catch (Exception ex) { outs[kv.Key] = "unresolved: " + ex.Message; }
                     }
                 }
-                return new
+                // NULL FIELDS ARE LEFT OUT (0.3.0): a green plan used to carry code/error/step/result/
+                // outputWithheld as five nulls on every answer.
+                Dictionary<string, object> dto = new Dictionary<string, object> { { "ok", failure == null } };
+                if (f != null)
                 {
-                    ok = failure == null,
-                    code = f == null ? null : (string)f["code"],
-                    error = f == null ? null : (string)f["error"],
-                    step = f == null ? null : (string)f["step"],
+                    dto["code"] = (string)f["code"];
+                    dto["error"] = (string)f["error"];
+                    if (f["step"] != null) dto["step"] = (string)f["step"];
                     // The failing step's whole DTO. It is what the withheld output is replaced BY, so
                     // the number the assertion tripped on is still in the answer.
-                    result = f == null ? null : f["result"],
-                    steps = inCleanup ? mainSteps : executed,
-                    elapsedMs = (int)(DateTime.UtcNow - started).TotalMilliseconds,
-                    // Two fields, because "the block was entered" and "N steps of it ran" are
-                    // different claims and a plan with an empty finally would otherwise report the
-                    // first as if it were the second.
-                    cleanupRan = inCleanup,
-                    cleanupSteps = inCleanup ? executed : 0,
-                    output = outs,
-                    outputWithheld = withheld,
-                    trace = trace.ToArray()
-                };
+                    if (f["result"] != null) dto["result"] = f["result"];
+                }
+                dto["steps"] = inCleanup ? mainSteps : executed;
+                dto["elapsedMs"] = (int)(DateTime.UtcNow - started).TotalMilliseconds;
+                // Two fields, because "the block was entered" and "N steps of it ran" are
+                // different claims and a plan with an empty finally would otherwise report the
+                // first as if it were the second.
+                dto["cleanupRan"] = inCleanup;
+                dto["cleanupSteps"] = inCleanup ? executed : 0;
+                if (outs != null) dto["output"] = outs;
+                if (withheld != null) dto["outputWithheld"] = withheld;
+                if (fullTrace) dto["trace"] = trace.ToArray();
+                else
+                {
+                    List<object> errors = new List<object>();
+                    for (int i = 0; i < trace.Count; i++)
+                        if (traceFailed[i] && i != fatalTrace) errors.Add(trace[i]);
+                    if (errors.Count > 0) dto["trace"] = errors.ToArray();
+                }
+                return dto;
             }
 
             // -------------------------------------------------------------- substitution
