@@ -758,6 +758,50 @@ namespace Morgott.PPBridge
             Protocol.ConsoleRun = null;
         }
 
+        /// <summary>
+        /// THE TOKEN BUDGET, per verb, in bytes. Every reply lands in a calling agent's context -
+        /// often in a loop - so an unasked-for answer that GROWS is a regression even when every
+        /// field in it is correct. Each figure is the default reply on a deliberately large input;
+        /// raise a budget only on purpose, with the reason in the commit.
+        /// </summary>
+        private static void BudgetChecks()
+        {
+            Func<string, int> B = s => Encoding.UTF8.GetByteCount(s);
+
+            string members = R("members", "{'type':'System.String'}");
+            Check("budget-members-default", B(members) <= 6000, "bytes=" + B(members));
+            string types = R("types", "{'pattern':'System.'}");
+            Check("budget-types-default", B(types) <= 3000, "bytes=" + B(types));
+
+            List<object> defs = new List<object>();
+            for (int i = 0; i < 400; i++) defs.Add(new FakeDef { Guid = System.Guid.NewGuid().ToString(), name = "Crabman" + i + "_Basic_AlienMutationVariationDef" });
+            Protocol.AllDefs = () => defs;
+            string find = R("find", "{'query':'Crabman'}");
+            Check("budget-find-default", B(find) <= 2500, "bytes=" + B(find));
+            string findAll = R("find", "{'all':true}");
+            Check("budget-find-all-default", B(findAll) <= 4500, "bytes=" + B(findAll));
+
+            List<string> steps = new List<string>();
+            for (int i = 0; i < 80; i++) steps.Add("{'id':'p" + i + "','verb':'ping'}");
+            string plan = Run("plan", "{'plan':{'steps':[" + string.Join(",", steps) + "]}}");
+            Check("budget-plan-80-green-steps", B(plan) <= 200, "bytes=" + B(plan) + " " + plan);
+
+            Shots.Arm = on => null;
+            Run("observe", "{'action':'start'}");
+            for (int i = 0; i < Shots.Capacity; i++) Shots.Record(i, 0f, 0f, "Crabman_1", "Torso", 10f, 1f, 1);
+            string observed = Run("observe", "{'action':'read'}");
+            Check("budget-observe-read-default", B(observed) <= 2500, "bytes=" + B(observed));
+            Run("observe", "{'action':'stop'}");
+
+            List<string> lines = new List<string>();
+            for (int i = 0; i < 5000; i++) lines.Add("variable_" + i + " : Boolean = True  [Persistent] some description text here");
+            Protocol.ConsoleRun = (c, a) => new { ok = true, output = lines.ToArray(), truncated = false };
+            string console = Console1("{'command':'vars'}");
+            Check("budget-console-first-page", B(console) <= ConsolePager.DefaultPageBytes + 256, "bytes=" + B(console));
+            Protocol.ConsoleRun = null;
+            ConsolePager.Reset();
+        }
+
         /// <summary>The TOP-LEVEL code of a finished DTO, or the raw text when there is no DTO at all
         /// (a job that never finished is exactly what these checks are hunting).</summary>
         private static string TopCode(string dto)
@@ -1471,6 +1515,7 @@ namespace Morgott.PPBridge
             PlanChecks();
             ShotChecks();
             ConsolePagerChecks();
+            BudgetChecks();
             PipeChecks();
 
             Console.WriteLine(failures == 0 ? "ppcli selfcheck: PASS" : "ppcli selfcheck: " + failures + " FAILURE(S)");
