@@ -1039,7 +1039,7 @@ no way to re-parameterise it without a rebuild. **`src\` was not touched.**
 | `unlock-research.json` | `researchId` | `CompleteResearch` (rewards + cascade), state read back before/after | **VERIFIED** 2026-08-28 — `PX_Alien_Fishman_ResearchDef` went **Hidden → Completed**, same campaign |
 | `aim-and-run.json` | `x` `y` `z` `aimOffsetY` `command` `cmdArgs` `requireActor` | freeze input, aim the cursor, run a cursor-scoped command, restore | verified 2026-08-25 (P3); `requireActor` **VERIFIED** 2026-08-29 both ways — refused on a point 32 m off the camera centre, green on `Facehugger_9` at every offset 0.2–0.8 |
 | `kill-actor.json` | `actorName` `healthDamage` `damageType` `impactForce` `source` | kill ONE named actor through `TacticalActorBase.ApplyDamage`, the same terminal call a bullet makes | **VERIFIED** 2026-08-29 — `Crabman_8` and `Crabman_10` went `IsDead false → true`, ragdoll completed, no exception, with and without a `damageType` |
-| `end-mission.json` | `outcome` `settleMs` | `win`/`lose` → `GameOver()` → battle summary → `GoToGeoscape()` → the campaign | **VERIFIED** 2026-08-29 — from a REAL `GeoScavengingMission`: `UIStateBattleSummary` → `phase:"geoscape"` → `UIStateGeoModal` with `ModalType.GeoScavengeOutcome`, 13.6 s |
+| `end-mission.json` | `outcome` `lobby` `settleMs` | `win`/`lose` → `GameOver()` → battle summary → `GoToGeoscape()` → the campaign; `lobby:true` → `FinishLevelAndGoToLobby(0)` → main menu | **VERIFIED** 2026-08-29 — from a REAL `GeoScavengingMission`: `UIStateBattleSummary` → `phase:"geoscape"` → `UIStateGeoModal` with `ModalType.GeoScavengeOutcome`, 13.6 s. 2026-09-28 (0.3.1): a `start-mission` (loadmap) mission has no geoscape - `GoToGeoscape` RELOADED the same map (turn 1, `left` timeout 180 s); `lobby:true` → `phase:"menu"`, 7.6 s |
 | `geo-fast-forward.json` | `forMs` `scale` | run the geoscape clock at `Scale` for a span of real time, then put `Scale` **and** `Paused` back | **VERIFIED** 2026-08-29 — 30 real s at Scale 3600 advanced `ElaspedTime` `00:00:00 → 1.00:01:37.2`, both values restored |
 | `weapon-test.json` | `shooter` `weaponDef` `enemyDef` `distance` `tolerance` `shots` `attackType` `setSpread` `spread` `seed` `targetHp` | equip a weapon, put an enemy at a distance, fire N shots, report every impact point + dispersion | **VERIFIED** 2026-08-28 — see *The weapon bench* below |
 
@@ -1514,12 +1514,12 @@ fired :657) — subscribe through a handle to the level's `GeoscapeEventSystem`.
 .\ppcli.ps1 connect wait '{"event":{"target":"@tac","event":"NewTurnEvent"},"timeoutMs":120000}'
 ```
 
-## `imgui` — list and press OnGUI buttons (0.3.0, EXPERIMENTAL: offline-tested only)
+## `imgui` — list and press OnGUI buttons (0.3.0; force live-verified, post EXPERIMENTAL + live-failed)
 
 For mod UIs drawn with Unity IMGUI (`OnGUI` + `GUI.Button` / `GUILayout.Button` / `GUI.Toggle` /
 `GUILayout.Toggle`) — e.g. ContentTool's bench. uGUI (the game's own screens) is NOT covered.
-No SendInput: the default press posts window messages into the game's own queue (see mode `"post"`),
-so the user's focus and real cursor are never touched.
+Default press = mode `"force"`. Mode `"post"` (opt-in) posts window messages into the game's own
+queue - no SendInput, the user's focus and real cursor are never touched - but is NOT working live yet (below).
 
 - **Seam, verified on the game's own `UnityEngine.IMGUIModule.dll` (Unity 2019.4.31f1, ilspycmd
   11.0):** `GUILayout.Button(..)` → `GUILayout.DoButton` (`GUI.Button(GUILayoutUtility.GetRect(..),
@@ -1551,7 +1551,10 @@ so the user's focus and real cursor are never touched.
   on one Repaint pass: none → `code:"notfound"` (+`controls`, `labels` ≤ 10 distinct; label/owner echoed in `error` clipped to 120 chars); > 1 without
   `index` → `code:"ambiguous"` (+`candidates` ≤ 10 rows, pass `index` = the row's `i` and/or `owner`);
   drawn disabled → `code:"disabled"`.
-- **mode `"post"` (DEFAULT after 0.3.0, unreleased, EXPERIMENTAL: offline-tested only, needs a live proof):** a
+- **mode `"post"` (OPT-IN, EXPERIMENTAL, live-FAILED 0.3.1):** live 2026-09-28 on `D:\PP-Instance3`
+  (ContentTool bench, unit row) with the game FOREGROUND, borderless 2560x1440: `code:"noevent"`,
+  `stage:"down"`, diag `client`=`screen`=[2560,1440], `pt`=[182,180], `evs:{}` - Unity turned no posted
+  `WM_LBUTTONDOWN` into an IMGUI MouseDown. Minimized window → `offscreen` (`client:[0,0]`). Design intent: a
   real click, delivered like a human one. The resolve pass also records the control centre via
   `GUIUtility.GUIToScreenPoint(rect.center)` (unclips groups/scroll/windows; Y down from the window
   top, no flip). It is scaled into client pixels by client-size / `Screen` size (`offscreen` if
@@ -1572,7 +1575,7 @@ so the user's focus and real cursor are never touched.
   (`mp` = `Event.mousePosition` in GUI space, `f` = frames after arming).
   Unverified live: whether Unity accepts posted mouse messages while the window is unfocused, and
   whether `GUIToScreenPoint` includes a non-identity `GUI.matrix` - `diag` answers both.
-- **mode `"force"` (opt-in, the 0.3.0 behaviour).** Once ARMED, the matched (label, i) gets the forced result ONCE, on the first SAFE pass - `Repaint` or `MouseMove`, and only while `GUIUtility.hotControl == 0`. NEVER on MouseDown/MouseUp/MouseDrag/Key*/Used: forcing a real MouseDown true runs the body, then the native MouseUp on the same control runs it AGAIN and leaves hotControl grabbed (Codex review P1). Layout is skipped (GUILayout's dummy pass; forcing there desyncs the layout). While the user holds a control, the press waits (→ `notfired` if it never frees). Fired →
+- **mode `"force"` (DEFAULT, the 0.3.0 behaviour; live 0.3.1: `rescan` → `fired:true,mode:"force"` with no `mode` passed).** Once ARMED, the matched (label, i) gets the forced result ONCE, on the first SAFE pass - `Repaint` or `MouseMove`, and only while `GUIUtility.hotControl == 0`. NEVER on MouseDown/MouseUp/MouseDrag/Key*/Used: forcing a real MouseDown true runs the body, then the native MouseUp on the same control runs it AGAIN and leaves hotControl grabbed (Codex review P1). Layout is skipped (GUILayout's dummy pass; forcing there desyncs the layout). While the user holds a control, the press waits (→ `notfired` if it never frees). Fired →
   `{ok:true,fired:true,mode:"force",ev:"Repaint|MouseMove|…",frames}`; not drawn again within `waitFrames`
   (default 30, max 600) → `{ok:false,code:"notfired",fired:false}`. The armed target is BOUND to
   the resolved control's full owner type: if the UI reorders and (label, i) is drawn by another type,
@@ -1587,18 +1590,18 @@ so the user's focus and real cursor are never touched.
   exit incl. cancel, 25-row budget ≤ 3600 B) and `imgui-post-*` (MAKELPARAM, client conversion +
   scaling, MOVE+DOWN then UP on a later frame, click only in the real MouseUp pass, never forced,
   noevent/missed/nohwnd/offscreen, up posted on timeout/cancel/scene, diag opt-in) against a fake
-  player modelled on the decompiled `DoControl`. Force mode ran live (0.3.0); post mode NOT yet.
+  player modelled on the decompiled `DoControl`. Force mode ran live (0.3.0, 0.3.1); post mode failed live (`noevent`, above).
 
 ```powershell
 .\ppcli.ps1 connect imgui '{"list":true}'                                  # rows of the frame
 .\ppcli.ps1 connect imgui '{"list":true,"owner":"BenchUI","match":"bench"}'
 .\ppcli.ps1 connect imgui '{"press":{"label":"Run bench"}}'               # fired:true | code:ambiguous
 .\ppcli.ps1 connect imgui '{"press":{"label":"Run bench","index":1},"waitFrames":60}'
-.\ppcli.ps1 connect imgui '{"press":{"label":"Run bench"},"diag":true}'    # post mode + coordinates/events seen
-.\ppcli.ps1 connect imgui '{"press":{"label":"Run bench","mode":"force"}}' # old forced press (layout-mutating buttons can crash)
+.\ppcli.ps1 connect imgui '{"press":{"label":"Run bench","mode":"post"},"diag":true}'  # experimental post + coordinates/events seen
+# default press = force: layout-mutating buttons can crash (see Trap)
 ```
 
-## `act` — play a tactical turn (0.3.1, offline-tested only)
+## `act` — play a tactical turn (0.3.1, live-verified 2026-09-28 on D:\PP-Instance3: squad/list/move/shoot/overwatch/endTurn → NewTurnEvent → turn 2 `mine:true`)
 
 Pure half `src\Act.cs` (args, single-flight gate, timeout/cancel, reply shaping — all in SelfCheck),
 game half `src\ActGame.cs`. Design: Claude base + Codex review (corrections won). Every lever is the
@@ -1664,7 +1667,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 | `wait` | one of `{ready:true}`, `{phase:"tactical\|geoscape\|menu\|summary\|other\|loading"}`, `{call:{...}}`, `{forMs:N}`, `{log:"regex",level?,since?}`, `{event:{sub:N,since?,match?}}`, `{event:{target\|type,event,match?}}` (wait-owned sub, released when wait ends - also on plan cancel/deadline or a refused park). Log/event waits fail AT ONCE, not by timeout: `code:"dropped"` (ring overwrote rows after `since` before they were scanned), `code:"cursor"` (`since` ahead of the ring, at start or after a restart), `code:"regex"` (budget); bad `level` => `code:"args"`; plus `not?` (not for log/event), `timeoutMs?`, `everyFrames?`. log/event default `since` = rows AFTER wait start; `value` = matching row |
 | `log` | `{since?,level?:"log\|warning\|error"(min),match?:regex,pageSize?(25,max 200),pageBytes?(8192),clip?(300,40..1000),stack?}`; `{status:true}` => `{hooked,next,stored,capacity}`. No `since` = newest page. Reply `{ok,rows?:[{s,l:"L\|W\|E\|A\|X",m,st?}],next,hasMore?,dropped?}`; pass `next` as `since`; empty poll `{"ok":true,"next":N}`. Ring 1000 (thread-safe, hooked on ARM). since > newest => `code:"cursor"`. Bad `level` => `code:"args"`. `match` has ONE 100 ms budget per request (a row timing out = same): exceeded => `code:"regex"`, never a silent partial scan. A row alone over `pageBytes` is cut to fit (`clipped:true`, stack dropped) |
 | `events` | `{subscribe:{target\|type,event,handles?}}` => `{sub,event,next,existing?}` (PUBLIC events, any void delegate, cap 16); `{unsubscribe:id\|"all"}`; `{list:true}`; read `{since?,sub?,match?,pageSize?,pageBytes?}` => `{rows?:[{s,sub,a:[args]}],next,hasMore?,dropped?,ended?}`. Args projected SHORT at fire time (scalar; Unity obj `{type,name,id}`; plain obj `{type}`+≤8 public fields, 1 level; no handles unless `handles:true`). ≤8 args per firing (+`{"$moreArgs":N}`); an arg > 1 KiB JSON => `{"$clipped":type,bytes}`; firing OFF the main thread records scalars only, objects as `{"$offMain":type}`. A row alone over `pageBytes` => args dropped, `clipped:<bytes>`. `match` budget as `log` (`code:"regex"`). Unsubscribe whose remove accessor throws => `ok:false,code:"threw",failed[{sub,error}]`, handler STILL attached, sub kept (`list` shows `removeError`), retry unsubscribe. Sub ends on unsubscribe / target destroyed / its scene unloaded => `ended:"unsubscribed\|destroyed\|scene"` |
-| `imgui` | list `{list:true,owner?,match?(substring),page?,pageSize?(25,max 200)}` => `{ok,total,page?,hasMore?,more?,rows:[{l,i?,k?,on?,dis?,o,r:[x,y,w,h]}]}`; press `{press:{label(exact),owner?,index?,mode?("post" default|"force")},waitFrames?(30,max 600),diag?}` => `{ok:true,fired:true,mode,ev,frames}` or `code:"notfound|ambiguous|disabled|nohwnd|offscreen|noevent|missed|notfired|busy|patch"` + `fired:false`. EXPERIMENTAL (post mode offline-tested only). See the `imgui` section above |
+| `imgui` | list `{list:true,owner?,match?(substring),page?,pageSize?(25,max 200)}` => `{ok,total,page?,hasMore?,more?,rows:[{l,i?,k?,on?,dis?,o,r:[x,y,w,h]}]}`; press `{press:{label(exact),owner?,index?,mode?("force" default|"post" experimental)},waitFrames?(30,max 600),diag?}` => `{ok:true,fired:true,mode,ev,frames}` or `code:"notfound|ambiguous|disabled|nohwnd|offscreen|noevent|missed|notfired|busy|patch"` + `fired:false`. EXPERIMENTAL (post mode offline-tested only). See the `imgui` section above |
 | `observe` | start `{action:"start",target?:<actor instanceId int>}`; read `{action:"read",aim?:[x,y,z],page?,pageSize?}` = summary over whole ring + page of impacts NEWEST first (page 0 = last `pageSize`; default 10, max 200, 0 = summary only; `hasMore`); `{action:"stop\|mark\|status"}` |
 | `snapshot` | `{name,timeoutMs?}` |
 | `restore` | `{name}`; issue-only (reply `{ok,issued,name,console}`, no completion signal); follow with `wait {ready:true}` / `wait {phase:"geoscape"}` |

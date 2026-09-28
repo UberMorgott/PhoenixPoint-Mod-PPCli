@@ -213,6 +213,7 @@ not a mission: `start-campaign.json` gets there from the main menu.
 | kill ONE named actor, cleanly, through the real damage pipeline | `.\ppcli.ps1 plan .\plans\kill-actor.json '{"actorName":"Crabman_10"}'` |
 | …and attribute the kill to a killer | add `"source":"HANDLE"` |
 | end the mission and go back to the geoscape | `.\ppcli.ps1 plan .\plans\end-mission.json '{"outcome":"win"}'` |
+| end a `start-mission`/`build-mission` mission (no campaign behind it) → main menu | `.\ppcli.ps1 plan .\plans\end-mission.json '{"outcome":"win","lobby":true}'` — without `lobby` the game RELOADS the same map (live 0.3.1) |
 | age a live campaign — run the geoscape clock fast (geoscape) | `.\ppcli.ps1 plan .\plans\geo-fast-forward.json '{"forMs":60000}'` |
 | add resources (a DELTA, geoscape) | `.\ppcli.ps1 plan .\plans\set-resources.json '{"resource":"Materials","amount":500}'` |
 | complete a research (geoscape) | `.\ppcli.ps1 plan .\plans\unlock-research.json '{"researchId":"fishman research"}'` |
@@ -547,11 +548,12 @@ Stop polling state to learn what happened: read the delta. Every reply carries `
 ## Press a mod's OnGUI button — `imgui`
 
 For IMGUI panels (`OnGUI` + `GUILayout.Button`/`Toggle`, e.g. ContentTool's bench). Not the game's
-own uGUI screens. Default press = a real click posted into the game's own window (PostMessage: the
-real cursor and focus are not touched), confirmed by the real MouseDown/MouseUp. EXPERIMENTAL — offline-tested
-only; confirm the effect (log/state) after `fired:true`. `code:"noevent"` = Unity dropped the posted
-click (window unfocused?); `code:"missed"` = coordinates off → rerun with `"diag":true`. `"mode":"force"`
-= old forced press: it CAN crash a button that rebuilds the layout (ContentTool bench closed). Detail: REFERENCE § `imgui`.
+own uGUI screens. Default press = `force` (the button's result forced on a Repaint): fine for buttons
+that start work, but it CAN crash a button that rebuilds the layout (live 0.3.1: pressing a bench unit row
+closed the ContentTool bench + `ArgumentException` in the log). `"mode":"post"` = a real click posted into the
+game's own window — opt-in, EXPERIMENTAL, NOT working live yet: 0.3.1 run got `code:"noevent"` with the game
+focused (Unity turned no posted `WM_LBUTTONDOWN` into a MouseDown) and `code:"offscreen"` (client 0x0) when
+minimized. Confirm every press by its effect (log/state). Detail: REFERENCE § `imgui`.
 
 | Intent | Command |
 |---|---|
@@ -567,7 +569,7 @@ Toggle press = flip. `code:"notfound"` lists seen labels; `code:"disabled"` = dr
 The game's own levers (the UI's `ability.Activate`), one action at a time; `use` answers only once
 the game has SETTLED (animation, projectiles, reaction fire), so the next call never races it. Actor =
 exact GameObject name (`Sophia_7`), `h:` handle, `@selected` (default) or `@soldier`. 0.3.1,
-offline-tested — live-verify before trusting numbers. Detail: REFERENCE § `act`.
+live-verified (move/shoot/overwatch/endTurn). The AI turns can end a synthetic mission on their own (live: `IsGameOver` during the NJ turn) → `code:"scene"`. Detail: REFERENCE § `act`.
 
 | Intent | Command |
 |---|---|
