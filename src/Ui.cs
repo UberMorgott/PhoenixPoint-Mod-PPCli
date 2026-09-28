@@ -57,8 +57,10 @@ namespace Morgott.PPBridge
     /// budget run offline in the self-check.
     ///
     /// Contract (token-frugal: default 25 rows, absent = default):
-    ///   ui {tree:{match?, root?, interactable?, all?, full?}, page?, pageSize?}
-    ///       -> {ok, total, rows:[{l, p, t, dis?, hid?, r:[x,y,w,h]}], hasMore?}
+    ///   ui {tree:{match?, root?, interactable?, all?, full?}, from?, pageSize?, pageBytes?}
+    ///       -> {ok, total, from?, rows:[{l, p, t, dis?, hid?, off?, r:[x,y,w,h]}], next?}
+    ///          A page ends at pageSize rows (default 25, max 200) OR pageBytes UTF-8 bytes (default
+    ///          8 KiB, 1..64 KiB), whichever first; next = the from of the next page (absent = last).
     ///          match = substring of label OR path (case-insensitive); root = substring a row's FULL
     ///          path must contain; interactable:true drops dis rows; all:true also lists invisible
     ///          rows (hid) AND the elements of switched-off screens (off, via FindObjectsOfTypeAll
@@ -89,6 +91,9 @@ namespace Morgott.PPBridge
     {
         internal const int DefaultPageSize = 25;
         internal const int MaxPageSize = 200;
+        internal const int DefaultPageBytes = 8 * 1024;
+        internal const int MinPageBytes = 1024;
+        internal const int MaxPageBytes = 64 * 1024;
         internal const int DefaultWaitFrames = 1;
         internal const int MaxWaitFrames = 600;
         internal const int LabelClip = 40;
@@ -150,16 +155,19 @@ namespace Morgott.PPBridge
             JObject tree = a["tree"] as JObject;
             JObject click = a["click"] as JObject;
             if ((tree == null) == (click == null) || (a["tree"] != null && tree == null) || (a["click"] != null && click == null))
-                return Bad("args", "ui takes exactly one of {tree:{match?,root?,interactable?,all?,full?}, page?, pageSize?} or {click:{label|path, index?, force?}, waitFrames?}");
+                return Bad("args", "ui takes exactly one of {tree:{match?,root?,interactable?,all?,full?}, from?, pageSize?, pageBytes?} or {click:{label|path, index?, force?}, waitFrames?}");
 
-            int page = 0, size = DefaultPageSize, wait = DefaultWaitFrames, index = -1;
+            int from = 0, size = DefaultPageSize, bytes = DefaultPageBytes, wait = DefaultWaitFrames, index = -1;
             bool diag = false;
             string err = Bool(a, "diag", out diag)
-                         ?? Protocol.IntArg(a, "page", 0, out page)
+                         ?? Protocol.IntArg(a, "from", 0, out from)
                          ?? Protocol.IntArg(a, "pageSize", DefaultPageSize, out size)
+                         ?? Protocol.IntArg(a, "pageBytes", DefaultPageBytes, out bytes)
                          ?? Protocol.IntArg(a, "waitFrames", DefaultWaitFrames, out wait);
-            if (err == null && page < 0) err = "page must be >= 0";
+            if (err == null && a["page"] != null) err = "page is gone - pass from (the previous reply's next)";
+            if (err == null && from < 0) err = "from must be >= 0";
             if (err == null && (size < 1 || size > MaxPageSize)) err = "pageSize must be 1.." + MaxPageSize;
+            if (err == null && (bytes < MinPageBytes || bytes > MaxPageBytes)) err = "pageBytes must be " + MinPageBytes + ".." + MaxPageBytes;
             if (err == null && (wait < 0 || wait > MaxWaitFrames)) err = "waitFrames must be 0.." + MaxWaitFrames;
             if (err != null) return Bad("args", err);
 
@@ -172,7 +180,7 @@ namespace Morgott.PPBridge
                 List<UiNode> nodes;
                 try { nodes = Scanned(all); }
                 catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
-                JObject tr = Tree(nodes, match, root, inter, all, page, size, full);
+                JObject tr = Tree(nodes, match, root, inter, all, from, size, bytes, full);
                 if (diag) tr["diag"] = Diag();
                 return tr;
             }
@@ -237,7 +245,7 @@ namespace Morgott.PPBridge
 
         // ------------------------------------------------------------------ pure logic
 
-        internal static JObject Tree(List<UiNode> nodes, string match, string root, bool interactableOnly, bool all, int page, int size, bool full = false)
+        internal static JObject Tree(List<UiNode> nodes, string match, string root, bool interactableOnly, bool all, int from, int size, int pageBytes, bool full = false)
         {
             List<UiNode> hit = new List<UiNode>();
             foreach (UiNode n in nodes)
@@ -250,13 +258,43 @@ namespace Morgott.PPBridge
                 hit.Add(n);
             }
             JObject r = new JObject { ["ok"] = true, ["total"] = hit.Count };
-            if (page > 0) r["page"] = page;
+            if (from > 0) r["from"] = from;
             JArray rows = new JArray();
-            long from = (long)page * size;
-            for (long i = from; i < hit.Count && i < from + size; i++) rows.Add(Row(hit[(int)i], full));
+            // pageSize rows OR pageBytes UTF-8 bytes, whichever ends first. Slack covers the envelope
+            // (ok/total/from/next/diag); a row alone over the budget is clipped to fit, never skipped.
+            long budget = pageBytes - EnvelopeSlack, used = 0;
+            int i = from;
+            for (; i < hit.Count && rows.Count < size; i++)
+            {
+                JObject row = Row(hit[i], full);
+                long cost = Encoding.UTF8.GetByteCount(row.ToString(Newtonsoft.Json.Formatting.None)) + 1;
+                if (used + cost > budget)
+                {
+                    if (rows.Count > 0) break;
+                    row = FitRow(row, budget);
+                    cost = budget;
+                }
+                rows.Add(row);
+                used += cost;
+            }
             r["rows"] = rows;
-            if (from + size < hit.Count) r["hasMore"] = true;
+            if (i < hit.Count) r["next"] = i;
             return r;
+        }
+
+        /// <summary>Budget left for the reply envelope around rows (ok, total, from, next, diag).</summary>
+        internal const int EnvelopeSlack = 160;
+
+        /// <summary>One row that alone overflows the page: keep the tail of p (the clickable end) and the
+        /// head of l, marked "~", so it fits.</summary>
+        private static JObject FitRow(JObject row, long budget)
+        {
+            string l = (string)row["l"] ?? "", p = (string)row["p"] ?? "";
+            long room = Math.Max(16, budget - 64 - Encoding.UTF8.GetByteCount((string)row["t"] ?? ""));
+            int lMax = (int)Math.Min(l.Length, room / 8), pMax = (int)Math.Min(p.Length, room / 2);
+            if (lMax < l.Length) row["l"] = l.Substring(0, lMax) + "~";
+            if (pMax < p.Length) row["p"] = "~/" + p.Substring(p.Length - pMax);
+            return row;
         }
 
         /// <summary>Label/path -> exactly one visible node, or the refusal DTO.</summary>

@@ -1105,7 +1105,7 @@ namespace Morgott.PPBridge
             foreach (string bad in new[] { "{}", "{'tree':{},'click':{'label':'x'}}", "{'tree':3}", "{'click':'Back'}", "{'click':{}}",
                                            "{'click':{'label':'a','path':'b'}}", "{'click':{'label':''}}", "{'click':{'label':'a','index':-1}}",
                                            "{'click':{'label':'a','index':'1'}}", "{'click':{'label':'a','index':1.5}}", "{'tree':{},'pageSize':0}",
-                                           "{'tree':{},'pageSize':201}", "{'tree':{},'page':'1'}", "{'click':{'label':'a'},'waitFrames':601}",
+                                           "{'tree':{},'pageSize':201}", "{'tree':{},'page':'1'}", "{'tree':{},'page':1}", "{'tree':{},'from':-1}", "{'tree':{},'pageBytes':1023}", "{'tree':{},'pageBytes':65537}", "{'tree':{},'from':'2'}", "{'click':{'label':'a'},'waitFrames':601}",
                                            "{'click':{'label':'a'},'waitFrames':-1}", "{'click':{'label':'a','force':1}}","{'tree':{'interactable':'yes'}}", "{'tree':{'match':5}}" })
                 Check("ui-args " + bad, V("ui", bad).Contains("\"code\":\"args\""), V("ui", bad));
 
@@ -1143,14 +1143,30 @@ namespace Morgott.PPBridge
 
             string tree = V("ui", "{'tree':{}}");
             JObject tj = JObject.Parse(tree);
-            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 90, tree.Substring(0, Math.Min(300, tree.Length)));
+            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (int)tj["next"] == 25 && tj["from"] == null && (int)tj["total"] == 90, tree.Substring(0, Math.Min(300, tree.Length)));
             Check("ui-tree-hidden-dropped", !tree.Contains("LoadButton"), "hidden row listed");
             Check("ui-tree-row-frugal", tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None) == "{\"l\":\"NEW GAME\",\"p\":\"~/MainMenu/Buttons/NewGameButton\",\"t\":\"PhoenixGeneralButton\",\"r\":[10,20,200,40]}",
                   tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None));
             Check("ui-tree-dis-flag", tree.Contains("\"l\":\"Continue\",\"p\":\"~/MainMenu/Buttons/ContinueButton\",\"t\":\"PhoenixGeneralButton\",\"dis\":true"), tree.Substring(0, 600));
             Check("budget-ui-tree-default", B(tree) <= 5000, "bytes=" + B(tree));
             string tree200 = V("ui", "{'tree':{'all':true},'pageSize':200}");
-            Check("budget-ui-tree-max-page", B(tree200) <= 30000 && tree200.Contains("\"hid\":true"), "bytes=" + B(tree200));
+            Check("budget-ui-tree-max-page", B(tree200) <= UiTap.DefaultPageBytes && tree200.Contains("\"hid\":true") && JObject.Parse(tree200)["next"] != null, "bytes=" + B(tree200));
+            // Walk every page by next: each within pageBytes, every row exactly once, even full:true.
+            int walked = 0, pages = 0, maxB = 0, total = -1; long fromAt = 0; bool dup = false;
+            HashSet<string> seenP = new HashSet<string>();
+            while (pages < 100)
+            {
+                string pg = V("ui", "{'tree':{'all':true,'full':true},'pageSize':200,'pageBytes':2048,'from':" + fromAt + "}");
+                JObject pj = JObject.Parse(pg); pages++; maxB = Math.Max(maxB, B(pg)); total = (int)pj["total"];
+                foreach (JToken rw in (JArray)pj["rows"]) { walked++; if (!seenP.Add((string)rw["p"])) dup = true; }
+                if (pj["next"] == null) break;
+                fromAt = (long)pj["next"];
+            }
+            Check("ui-tree-bytes-paging-walk", walked == total && !dup && maxB <= 2048 && pages > 1, "walked=" + walked + "/" + total + " pages=" + pages + " maxB=" + maxB);
+            nodes.Add(UN("Huge", "UIRoot/" + new string('x', 3000) + "/HugeButton"));
+            string huge = V("ui", "{'tree':{'match':'HugeButton','full':true},'pageBytes':1024}");
+            Check("ui-tree-oversize-row-fits", B(huge) <= 1024 && huge.Contains("HugeButton") && ((JArray)JObject.Parse(huge)["rows"]).Count == 1, "bytes=" + B(huge));
+            nodes.RemoveAt(nodes.Count - 1);
             string research = V("ui", "{'tree':{'match':'research'},'pageSize':1}");
             Check("ui-tree-label-clip", research.Contains("\"l\":\"Research project with a rather long loca~\"") && research.Contains("ResearchElementWithAVeryLongPref~[0]"), research);
             string clipped = V("ui", "{'click':{'path':'~/Content/ResearchElementWithAVeryLongPref~[7]/Button'},'waitFrames':0}");
@@ -1227,7 +1243,7 @@ namespace Morgott.PPBridge
             UiTap.Scan = inact => { scans++; return inact ? nodesAll : nodes; };
             frame = 500;
             string d1 = V("ui", "{'tree':{},'pageSize':1,'diag':true}");
-            string d2 = V("ui", "{'tree':{},'pageSize':1,'page':1,'diag':true}");
+            string d2 = V("ui", "{'tree':{},'pageSize':1,'from':1,'diag':true}");
             Check("ui-diag-scanms", d1.Contains("\"diag\":{\"scanMs\":") && d1.Contains("\"cached\":false") && d1.Contains("\"nodes\":" + nodes.Count), d1);
             Check("ui-scan-cached-per-frame", scans == 1 && d2.Contains("\"cached\":true"), "scans=" + scans + " " + d2);
             V("ui", "{'click':{'label':'NEW GAME'},'waitFrames':0}");
