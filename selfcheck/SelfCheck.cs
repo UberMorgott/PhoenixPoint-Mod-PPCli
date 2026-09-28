@@ -1132,7 +1132,7 @@ namespace Morgott.PPBridge
                 JObject p;
                 try { p = JObject.Parse(File.ReadAllText(f)); }
                 catch (Exception ex) { Check(name + "-parses", false, ex.Message); continue; }
-                Check(name + "-has-a-finally", p["finally"] is JArray fin && fin.Count > 0, "no cleanup block");
+                Check(name + "-has-a-finally", p["finally"] is JArray fin && (fin.Count > 0 || p["//finally"] != null), "no cleanup block (an empty one must say why in //finally)");
                 Check(name + "-declares-its-outputs", p["output"] is JObject o && o.Count > 0, "no output block");
                 // The client derives its own ceiling from this, so a plan without one silently gets
                 // the 300 s default back and long plans are cancelled mid-run again.
@@ -1164,7 +1164,7 @@ namespace Morgott.PPBridge
             if (file == null) return;
             Check(name + "-parses", true, "");
             JArray fin = file["finally"] as JArray;
-            Check(name + "-has-a-finally", fin != null && fin.Count > 0, "no cleanup block");
+            Check(name + "-has-a-finally", fin != null && (fin.Count > 0 || file["//finally"] != null), "no cleanup block (an empty one must say why in //finally)");
             Check(name + "-declares-its-outputs", file["output"] is JObject o && o.Count > 0, "no output block");
             if (fin == null) return;
 
