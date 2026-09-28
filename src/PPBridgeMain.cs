@@ -129,6 +129,7 @@ namespace Morgott.PPBridge
             Reflect.NewEpoch();          // nothing may keep a strong lease on a game object past this
             Protocol.StateProbe = null;
             Protocol.ConsoleRun = null;
+            ConsolePager.Reset();        // captured output is memory; a disabled mod holds none
             Protocol.VarRun = null;
             Protocol.RootsProbe = null;
             Protocol.DefByGuid = null;
@@ -390,6 +391,7 @@ namespace Morgott.PPBridge
         {
             internal readonly List<string> Lines = new List<string>();
             internal bool Truncated;
+            private long chars;
 
             public object Context { get { return null; } }
 
@@ -407,8 +409,12 @@ namespace Morgott.PPBridge
                 catch (FormatException) { s = format; }
                 foreach (string part in (s ?? "").Split('\n'))
                 {
-                    if (Lines.Count >= Protocol.MaxOutputLines) { Truncated = true; return; }
-                    Lines.Add(Protocol.Clip(part));
+                    string line = Protocol.Clip(part);
+                    // Both bounds are MEMORY bounds on the snapshot ConsolePager keeps - a reply is
+                    // paged separately. Hitting either is the only thing `truncated:true` means.
+                    if (Lines.Count >= Protocol.MaxOutputLines || chars + line.Length > Protocol.MaxCaptureChars) { Truncated = true; return; }
+                    chars += line.Length;
+                    Lines.Add(line);
                 }
             }
         }

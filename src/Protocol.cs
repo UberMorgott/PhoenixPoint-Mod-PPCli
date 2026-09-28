@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using Newtonsoft.Json;
@@ -52,8 +53,12 @@ namespace Morgott.PPBridge
         // these caps exists so a malformed or hostile file costs a refusal instead of the process.
         internal const int MaxFileBytes = 256 * 1024;
         internal const int MaxJobs = 256;
-        internal const int MaxOutputLines = 200;
+        /// <summary>What one console run may CAPTURE. Paged out by <see cref="ConsolePager"/>, so this
+        /// is a memory bound on the snapshot, not the size of a reply.</summary>
+        internal const int MaxOutputLines = 20000;
         internal const int MaxOutputLineChars = 2000;
+        /// <summary>Captured characters per run, the second half of the memory bound (~2 MB UTF-16).</summary>
+        internal const int MaxCaptureChars = 1024 * 1024;
         private static readonly Regex IdOk = new Regex("^[A-Za-z0-9_.-]{1,64}$");
 
         /// <summary>Installed by the game half. Null offline, which is what the self-check exercises.</summary>
@@ -197,11 +202,19 @@ namespace Morgott.PPBridge
         {
             if (ConsoleRun == null) return Fail("no console runner installed");
             string command = args == null ? null : (string)args["command"];
-            if (string.IsNullOrEmpty(command)) return Fail("console needs {command, args[]}");
+            JToken cursor = args == null ? null : args["cursor"];
+            bool haveCursor = cursor != null && cursor.Type != JTokenType.Null;
+            if (haveCursor && !string.IsNullOrEmpty(command))
+                return new { ok = false, code = "args", error = "console takes {command,...} OR {cursor}, not both - a cursor pages a run that already happened" };
+            int lines, bytes;
+            object refusal = ConsolePager.PageArgs(args, out lines, out bytes);
+            if (refusal != null) return refusal;
+            if (haveCursor) return ConsolePager.Next(cursor.Type == JTokenType.String ? (string)cursor : null, lines, bytes);
+            if (string.IsNullOrEmpty(command)) return Fail("console needs {command, args[]}, or {cursor} for the next page");
             List<string> list = new List<string>();
             JArray a = args["args"] as JArray;
             if (a != null) foreach (JToken t in a) list.Add(t == null || t.Type == JTokenType.Null ? "" : t.ToString());
-            return ConsoleRun(command, list.ToArray());
+            return ConsolePager.First(ConsoleRun(command, list.ToArray()), lines, bytes);
         }
 
         /// <summary>
@@ -258,6 +271,184 @@ namespace Morgott.PPBridge
             if (line == null) return "";
             line = line.Replace("\r", "");
             return line.Length > MaxOutputLineChars ? line.Substring(0, MaxOutputLineChars) + " ...(clipped)" : line;
+        }
+    }
+
+    /// <summary>
+    /// Console output, paged. A command RUNS ONCE; its captured lines become a snapshot and the
+    /// reply carries the first page plus an opaque <c>cursor</c> for the rest. A cursor read never
+    /// re-runs the command - `give_item` twice is not "the next page" - so an expired or unknown
+    /// cursor is a refusal (<c>code:"cursor"</c>), never a silent re-run.
+    ///
+    /// Bounded three ways, because a snapshot is memory the game process holds for a caller that may
+    /// never come back: at most <see cref="MaxSnapshots"/> live at once (oldest evicted), each dies
+    /// <see cref="TtlSeconds"/> after its last read, and all of them together stay under
+    /// <see cref="MaxStoreChars"/>. A page is limited by lines AND by UTF-8 bytes of its JSON (the
+    /// pipe frame is 256 KiB, Wire.cs:17), and always carries at least one line so paging can never
+    /// stall on a long one. Main thread only, like every verb.
+    /// </summary>
+    internal static class ConsolePager
+    {
+        internal const int DefaultPageLines = 50;
+        internal const int MaxPageLines = 2000;
+        internal const int DefaultPageBytes = 8 * 1024;
+        internal const int MinPageBytes = 1024;
+        /// <summary>192 KiB: the rest of the 256 KiB frame is headroom for the envelope.</summary>
+        internal const int MaxPageBytes = 192 * 1024;
+        internal const int TtlSeconds = 120;
+        internal const int MaxSnapshots = 4;
+        internal const long MaxStoreChars = 4L * 1024 * 1024;
+
+        /// <summary>The clock. A field so the offline check can expire a cursor without sleeping.</summary>
+        internal static Func<DateTime> Now = () => DateTime.UtcNow;
+
+        private sealed class Snap
+        {
+            internal string Id;
+            internal string[] Lines;
+            internal long Chars;
+            internal DateTime Touched;
+        }
+
+        private static readonly List<Snap> snaps = new List<Snap>();
+        private static readonly Random rng = new Random();
+
+        internal static int Live { get { Prune(); return snaps.Count; } }
+
+        internal static void Reset() { snaps.Clear(); }
+
+        internal static object PageArgs(JObject a, out int lines, out int bytes)
+        {
+            lines = DefaultPageLines;
+            bytes = DefaultPageBytes;
+            try
+            {
+                if (a != null && a["pageLines"] != null && a["pageLines"].Type != JTokenType.Null) lines = (int)a["pageLines"];
+                if (a != null && a["pageBytes"] != null && a["pageBytes"].Type != JTokenType.Null) bytes = (int)a["pageBytes"];
+            }
+            catch (Exception) { return new { ok = false, code = "args", error = "pageLines and pageBytes must be integers" }; }
+            if (lines < 1 || lines > MaxPageLines)
+                return new { ok = false, code = "args", error = "pageLines must be 1.." + MaxPageLines };
+            if (bytes < MinPageBytes || bytes > MaxPageBytes)
+                return new { ok = false, code = "args", error = "pageBytes must be " + MinPageBytes + ".." + MaxPageBytes };
+            return null;
+        }
+
+        /// <summary>The first page of a run that just happened. Every other field of the runner's
+        /// DTO (ok, error, truncated) is kept; only `output` is paged.</summary>
+        internal static object First(object result, int pageLines, int pageBytes)
+        {
+            JObject dto;
+            try { dto = JObject.FromObject(result); }
+            catch (Exception) { return result; }
+            JArray output = dto["output"] as JArray;
+            if (output == null) return dto;                       // a refusal with no output at all
+
+            string[] lines = new string[output.Count];
+            long chars = 0;
+            for (int i = 0; i < lines.Length; i++) { lines[i] = (string)output[i] ?? ""; chars += lines[i].Length; }
+            // `truncated` now means one thing only: the CAPTURE hit its bound and lines were lost.
+            // "There is more to read" is `hasMore`, and a false truncated is left out.
+            JToken tr = dto["truncated"];
+            if (tr != null && tr.Type == JTokenType.Boolean && !(bool)tr) dto.Remove("truncated");
+
+            int taken = Take(lines, 0, pageLines, pageBytes);
+            JArray page = new JArray();
+            for (int i = 0; i < taken; i++) page.Add(lines[i]);
+            dto["output"] = page;
+            dto["total"] = lines.Length;
+            dto["hasMore"] = taken < lines.Length;
+            if (taken < lines.Length)
+            {
+                Snap s = Store(lines, chars);
+                dto["cursor"] = s.Id + ":" + taken;
+            }
+            return dto;
+        }
+
+        /// <summary>The page after a cursor. Reading the last page frees the snapshot.</summary>
+        internal static object Next(string cursor, int pageLines, int pageBytes)
+        {
+            Prune();
+            string id;
+            int offset;
+            if (!Parse(cursor, out id, out offset))
+                return new { ok = false, code = "cursor", error = "'" + cursor + "' is not a console cursor - pass the `cursor` string a console reply handed back, unchanged" };
+            Snap s = snaps.Find(x => x.Id == id);
+            if (s == null || offset > s.Lines.Length)
+                return new
+                {
+                    ok = false, code = "cursor",
+                    error = "console cursor '" + cursor + "' is unknown or expired - a snapshot lives " + TtlSeconds +
+                            " s after its last read and at most " + MaxSnapshots + " are kept. Nothing was re-run; " +
+                            "run the command again if you still want its output"
+                };
+            s.Touched = Now();
+            int taken = Take(s.Lines, offset, pageLines, pageBytes);
+            string[] page = new string[taken];
+            Array.Copy(s.Lines, offset, page, 0, taken);
+            bool more = offset + taken < s.Lines.Length;
+            if (!more) snaps.Remove(s);
+            Dictionary<string, object> dto = new Dictionary<string, object>
+            {
+                { "ok", true }, { "output", page }, { "offset", offset }, { "total", s.Lines.Length }, { "hasMore", more }
+            };
+            if (more) dto["cursor"] = s.Id + ":" + (offset + taken);
+            return dto;
+        }
+
+        /// <summary>How many lines from <paramref name="from"/> fit: at most pageLines, and the JSON
+        /// of the page at most pageBytes UTF-8 bytes - but never zero while any are left.</summary>
+        private static int Take(string[] lines, int from, int pageLines, int pageBytes)
+        {
+            long used = 2;                                            // the enclosing []
+            int n = 0;
+            for (int i = from; i < lines.Length && n < pageLines; i++)
+            {
+                // The line as it will be SERIALISED: quotes, escapes and \uXXXX all count.
+                long cost = Encoding.UTF8.GetByteCount(JsonConvert.ToString(lines[i])) + 1;
+                if (n > 0 && used + cost > pageBytes) break;
+                used += cost;
+                n++;
+            }
+            return n;
+        }
+
+        private static Snap Store(string[] lines, long chars)
+        {
+            Prune();
+            while (snaps.Count > 0 && (snaps.Count >= MaxSnapshots || Total() + chars > MaxStoreChars))
+                snaps.RemoveAt(0);                                    // oldest first; they are kept in creation order
+            byte[] b = new byte[6];
+            lock (rng) rng.NextBytes(b);
+            Snap s = new Snap { Id = BitConverter.ToString(b).Replace("-", "").ToLowerInvariant(), Lines = lines, Chars = chars, Touched = Now() };
+            snaps.Add(s);
+            return s;
+        }
+
+        private static long Total()
+        {
+            long t = 0;
+            foreach (Snap s in snaps) t += s.Chars;
+            return t;
+        }
+
+        private static void Prune()
+        {
+            DateTime cut = Now().AddSeconds(-TtlSeconds);
+            snaps.RemoveAll(s => s.Touched < cut);
+        }
+
+        private static bool Parse(string cursor, out string id, out int offset)
+        {
+            id = null;
+            offset = 0;
+            if (string.IsNullOrEmpty(cursor)) return false;
+            int colon = cursor.IndexOf(':');
+            if (colon <= 0) return false;
+            id = cursor.Substring(0, colon);
+            return int.TryParse(cursor.Substring(colon + 1), System.Globalization.NumberStyles.None,
+                                System.Globalization.CultureInfo.InvariantCulture, out offset);
         }
     }
 }

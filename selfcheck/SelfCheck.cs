@@ -667,6 +667,97 @@ namespace Morgott.PPBridge
                          maxTicks, cancelAt, sleepMs);
         }
 
+        private static string Console1(string json)
+        {
+            return Protocol.Compact(Protocol.Dispatch(new Job { Id = "k", Verb = "console", Args = JObject.Parse(json) }));
+        }
+
+        /// <summary>
+        /// Stage B: a console command RUNS ONCE, the reply is a small first page plus a cursor, the
+        /// cursor pages the SAME capture (the command is never re-run), and an expired or unknown
+        /// cursor is a named refusal. Pages are bounded by lines AND by UTF-8 bytes.
+        /// </summary>
+        private static void ConsolePagerChecks()
+        {
+            ConsolePager.Reset();
+            int runs = 0;
+            List<string> big = new List<string>();
+            for (int i = 0; i < 1000; i++) big.Add("line " + i + " " + new string('x', 60));
+            Protocol.ConsoleRun = (c, a) =>
+            {
+                runs++;
+                if (c == "boom") return new { ok = false, output = new[] { "partial" }, error = "NullReferenceException: x" };
+                if (c == "wide") { List<string> w = new List<string>(); for (int i = 0; i < 100; i++) w.Add(new string('я', 1500)); return new { ok = true, output = w.ToArray(), truncated = false }; }
+                if (c == "few") return new { ok = true, output = new[] { "a", "b" }, truncated = false };
+                return new { ok = true, output = big.ToArray(), truncated = false };
+            };
+
+            string first = Console1("{'command':'many'}");
+            JObject f = JObject.Parse(first);
+            Check("console-first-page-is-small", ((JArray)f["output"]).Count == ConsolePager.DefaultPageLines &&
+                  (int)f["total"] == 1000 && (bool)f["hasMore"] && f["cursor"] != null, first.Substring(0, 200));
+            Check("console-false-truncated-is-left-out", f["truncated"] == null, first.Substring(0, 200));
+            Check("console-first-page-under-the-byte-default", Encoding.UTF8.GetByteCount(first) <= ConsolePager.DefaultPageBytes + 256,
+                  "bytes=" + Encoding.UTF8.GetByteCount(first));
+
+            string cur = (string)f["cursor"];
+            string second = Console1("{'cursor':'" + cur + "','pageLines':100}");
+            JObject s = JObject.Parse(second);
+            Check("console-cursor-pages-the-same-capture", runs == 1 && (string)((JArray)s["output"])[0] == big[50] &&
+                  (int)s["offset"] == 50, second.Substring(0, Math.Min(200, second.Length)));
+
+            // Drain it. The last page frees the snapshot, and the drained cursor is then unknown.
+            string last = null; string c2 = (string)s["cursor"]; int reads = 0; int seen = 50 + ((JArray)s["output"]).Count;
+            while (c2 != null && reads++ < 100)
+            {
+                last = Console1("{'cursor':'" + c2 + "','pageLines':2000,'pageBytes':196608}");
+                JObject l = JObject.Parse(last);
+                seen += ((JArray)l["output"]).Count;
+                c2 = (string)l["cursor"];
+            }
+            Check("console-cursor-reaches-the-end", seen == 1000 && last.Contains("\"hasMore\":false") && runs == 1, "seen=" + seen + " runs=" + runs);
+            Check("console-drained-snapshot-is-freed", ConsolePager.Live == 0, "live=" + ConsolePager.Live);
+            string gone = Console1("{'cursor':'" + cur + "'}");
+            Check("console-unknown-cursor-refused", gone.Contains("\"ok\":false") && gone.Contains("\"code\":\"cursor\"") && runs == 1, gone);
+            Check("console-garbage-cursor-refused", Console1("{'cursor':'nope'}").Contains("\"code\":\"cursor\""), Console1("{'cursor':'nope'}"));
+
+            // TTL: a cursor read after 120 s of silence is refused and NOTHING is re-run.
+            DateTime t0 = DateTime.UtcNow;
+            ConsolePager.Now = () => t0;
+            string fresh = (string)JObject.Parse(Console1("{'command':'many'}"))["cursor"];
+            ConsolePager.Now = () => t0.AddSeconds(ConsolePager.TtlSeconds + 1);
+            string expired = Console1("{'cursor':'" + fresh + "'}");
+            Check("console-expired-cursor-refused", expired.Contains("\"code\":\"cursor\"") && expired.Contains("Nothing was re-run") && runs == 2, expired);
+            ConsolePager.Now = () => DateTime.UtcNow;
+
+            // At most four snapshots; the fifth run evicts the oldest.
+            ConsolePager.Reset();
+            string oldest = (string)JObject.Parse(Console1("{'command':'many'}"))["cursor"];
+            for (int i = 0; i < ConsolePager.MaxSnapshots; i++) Console1("{'command':'many'}");
+            Check("console-snapshot-count-is-bounded", ConsolePager.Live == ConsolePager.MaxSnapshots, "live=" + ConsolePager.Live);
+            Check("console-oldest-snapshot-evicted", Console1("{'cursor':'" + oldest + "'}").Contains("\"code\":\"cursor\""), "oldest survived");
+
+            // BYTES, not lines: 1500 two-byte chars a line is ~3 KB, so the 8 KB default holds 2.
+            string wide = Console1("{'command':'wide'}");
+            Check("console-page-bounded-by-utf8-bytes", ((JArray)JObject.Parse(wide)["output"]).Count == 2 &&
+                  Encoding.UTF8.GetByteCount(wide) <= ConsolePager.DefaultPageBytes + 256, "bytes=" + Encoding.UTF8.GetByteCount(wide));
+            string one = Console1("{'command':'wide','pageBytes':1024}");
+            Check("console-page-never-empty", ((JArray)JObject.Parse(one)["output"]).Count == 1, one.Substring(0, 120));
+
+            string small = Console1("{'command':'few'}");
+            Check("console-short-output-has-no-cursor", !small.Contains("cursor") && small.Contains("\"hasMore\":false"), small);
+            string failed = Console1("{'command':'boom'}");
+            Check("console-failure-keeps-its-output", failed.Contains("\"ok\":false") && failed.Contains("partial") && failed.Contains("NullReference"), failed);
+
+            Check("console-page-lines-refused-not-clamped", Console1("{'command':'few','pageLines':0}").Contains("\"code\":\"args\"") &&
+                  Console1("{'command':'few','pageLines':2001}").Contains("\"code\":\"args\""), Console1("{'command':'few','pageLines':0}"));
+            Check("console-page-bytes-refused-not-clamped", Console1("{'command':'few','pageBytes':196609}").Contains("\"code\":\"args\""),
+                  Console1("{'command':'few','pageBytes':196609}"));
+            Check("console-command-and-cursor-refused", Console1("{'command':'few','cursor':'" + oldest + "'}").Contains("\"code\":\"args\""), "both accepted");
+            ConsolePager.Reset();
+            Protocol.ConsoleRun = null;
+        }
+
         /// <summary>The TOP-LEVEL code of a finished DTO, or the raw text when there is no DTO at all
         /// (a job that never finished is exactly what these checks are hunting).</summary>
         private static string TopCode(string dto)
@@ -1379,6 +1470,7 @@ namespace Morgott.PPBridge
             ReflectChecks();
             PlanChecks();
             ShotChecks();
+            ConsolePagerChecks();
             PipeChecks();
 
             Console.WriteLine(failures == 0 ? "ppcli selfcheck: PASS" : "ppcli selfcheck: " + failures + " FAILURE(S)");
