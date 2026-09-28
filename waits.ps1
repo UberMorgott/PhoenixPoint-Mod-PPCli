@@ -86,19 +86,23 @@ function Test-ModFrame([string] $Line) {
 # stranger with a different mod set got no fast-fail whatsoever. A non-empty -Pattern narrows to that
 # regex instead, which is what you want when you already know which mod you are chasing.
 #
-# Returns the exception header plus the frames that named the mod, or $null.
-function Get-LogFault($Mark, [string] $Pattern = '', [int] $Frames = 8) {
+# Returns the exception header plus AT MOST $Keep frames - the ones that named the mod (or matched
+# -Pattern) first - or $null. $Frames is how far below the header to LOOK; $Keep is how much of it
+# lands in the refusal an agent reads (0.3.0: 3, was the whole 8-frame block). The full stack stays
+# in the log, whose path the refusal names.
+function Get-LogFault($Mark, [string] $Pattern = '', [int] $Frames = 8, [int] $Keep = 3) {
     if (-not $Mark -or -not $Mark.path -or -not (Test-Path $Mark.path)) { return $null }
     $lines = @(Get-Content -Path $Mark.path -ErrorAction SilentlyContinue)
     for ($i = $Mark.lines; $i -lt $lines.Count; $i++) {
         if ($lines[$i] -notmatch '^\s*[\w\.]*Exception(:|\s*$)') { continue }
         $last = [Math]::Min($i + $Frames, $lines.Count - 1)
-        $block = $lines[$i..$last]
-        if ($Pattern) {
-            if (($block -join "`n") -match $Pattern) { return ($block -join "`n") }
-            continue
-        }
-        foreach ($line in $block) { if (Test-ModFrame $line) { return ($block -join "`n") } }
+        $block = @($lines[$i..$last])
+        $below = @(if ($block.Count -gt 1) { $block[1..($block.Count - 1)] })
+        $hit = @(if ($Pattern) { $below | Where-Object { $_ -match $Pattern } }
+                 else { $below | Where-Object { Test-ModFrame $_ } })
+        if ($Pattern -and $hit.Count -eq 0 -and $block[0] -match $Pattern) { $hit = @($below | Select-Object -First $Keep) }
+        if ($hit.Count -eq 0) { continue }
+        return (@($block[0]) + @($hit | Select-Object -First $Keep)) -join "`n"
     }
     $null
 }

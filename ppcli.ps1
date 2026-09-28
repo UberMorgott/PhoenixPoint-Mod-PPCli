@@ -60,13 +60,16 @@ param(
     # Where `index` writes the def catalog and where `plan` resolves names from. A parameter only so
     # the offline tests can point at a fixture; nothing else has a reason to move it.
     [string] $CatalogDir = (Join-Path $PSScriptRoot 'catalog'),
-    # Drop the ROUTINE notes (install/pipe banner, polling, launch progress). Warnings, refusals and
-    # errors still print. Env PPCLI_QUIET=1 does the same for every call of a session.
+    # QUIET IS THE DEFAULT since 0.3.0: the ROUTINE notes (install/pipe banner, polling, launch
+    # progress) are dropped unless -Verbose (common parameter) or env PPCLI_VERBOSE=1 asks for them.
+    # Warnings, refusals and errors always print. -Quiet / PPCLI_QUIET=1 still force quiet, and win
+    # over PPCLI_VERBOSE, so a pre-0.3.0 caller that passes them keeps working unchanged.
     [switch] $Quiet
 )
 
 $ErrorActionPreference = 'Stop'
-$script:quiet = $Quiet -or $env:PPCLI_QUIET -eq '1'
+$script:quiet = $Quiet -or $env:PPCLI_QUIET -eq '1' -or
+                -not ([bool]$PSBoundParameters['Verbose'] -or $env:PPCLI_VERBOSE -eq '1')
 # Diagnostics go to the process stderr directly, NEVER as PowerShell ErrorRecords: a record per
 # banner polluted $Error and turned a caller's explicit -ErrorAction Stop into a throw on the first
 # note. The price: in-process (`& .\ppcli.ps1`) `2>$null` cannot silence them - `-Quiet` /
@@ -434,6 +437,13 @@ function Invoke-Verb([string] $verb, $verbArgs, $ep) {
             }
         }
     }
+    # A FINISHED reply loses its transport ids (0.3.0): `id` is always the client's own 'c1' and the
+    # jobId of a job that is done can be used for nothing, yet both rode every answer an agent read.
+    # A timeout keeps its jobId - that one is the handle for `connect status` / `cancel`.
+    if ($reply.status -eq 'done' -and $reply -is [psobject]) {
+        $reply.PSObject.Properties.Remove('id')
+        $reply.PSObject.Properties.Remove('jobId')
+    }
     $reply
 }
 
@@ -699,8 +709,8 @@ exit ($script:AnyRefusal ? 1 : 0)
 catch {
     # THE CONTRACT IS ONE JSON OBJECT, ALWAYS - a refusal included. A bare throw here left stdout
     # completely empty, so `ppcli.ps1 ... | ConvertFrom-Json` gave a caller nothing to read and the
-    # reason was only ever on stderr. The exit code still says it failed.
+    # reason was only ever on stderr. The exit code still says it failed. ONCE, on stdout: the same
+    # text on stderr as well doubled every refusal an agent that captures both streams read.
     [ordered]@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
-    Note $_.Exception.Message
     exit 1
 }

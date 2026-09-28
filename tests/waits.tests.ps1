@@ -123,6 +123,16 @@ Assert-Value 'a mod exception after the mark is a fault' `
 Assert-Value 'the fault carries the frame that named the mod' `
     ($(if ($fault -like '*TFTVCommonMethods.OnLevelStart*') { 'quoted' } else { "wrong:$fault" })) 'quoted'
 
+# A fault quotes the header and at most THREE frames (0.3.0) - the mod's first - not the whole block.
+$deep = Join-Path $scratch 'deep.log'
+Set-Content -Path $deep -Encoding utf8NoBOM -Value (@('NullReferenceException', '  at Base.Core.A.B ()') +
+    @(1..8 | ForEach-Object { "  at TFTV.Deep.F$_ ()" }))
+$deepFault = [string](Get-LogFault @{ path = $deep; lines = 0 })
+Assert-Value 'a fault quotes the header plus three mod frames' `
+    (@($deepFault -split "`n").Count) '4'
+Assert-Value 'the quoted frames are the mod frames, not the engine one' `
+    ($(if ($deepFault -like '*TFTV.Deep.F1*' -and $deepFault -notlike '*Base.Core.A.B*') { 'mod' } else { "wrong:$deepFault" })) 'mod'
+
 # THE MARK IS THE WHOLE POINT. The same fault, already in the log before the wait began, must not
 # fail a fresh run - otherwise one bad load poisons every call for the rest of the session.
 Assert-Value 'a fault older than the mark is ignored' `

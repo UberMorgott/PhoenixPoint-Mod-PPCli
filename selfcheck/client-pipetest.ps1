@@ -109,6 +109,9 @@ Write-Host "client pipetest ($(if ($Falsify) { 'FALSIFY' } else { 'normal' }))"
 Assert-Match 'an inline done is unwrapped to its result' $out1 '"phase"\s*:\s*"menu"'
 Assert-Value 'the inline result parses as an object'  (& { if ($out1) { (ConvertFrom-Json $out1).result.phase } }) 'menu'
 Assert-Value 'accepted is polled through to done'     (& { if ($out2) { [string](ConvertFrom-Json $out2).result.slow } }) 'True'
+# A finished reply carries no transport ids (0.3.0): `id` is always 'c1' and a done job's id is dead.
+Assert-Value 'a done reply drops id and jobId' (& { if ($out1) { $o = ConvertFrom-Json $out1; "$($null -eq $o.PSObject.Properties['id'])/$($null -eq $o.PSObject.Properties['jobId'])" } }) 'True/True'
+Assert-Value 'a polled done reply drops them too' (& { if ($out2) { [string]($null -eq (ConvertFrom-Json $out2).PSObject.Properties['jobId']) } }) 'True'
 Assert-Value 'the ping reply is returned too'         (& { if ($out3) { [string](ConvertFrom-Json $out3).result.echo } }) 'one'
 
 # ---------------------------------------------------------------- what went OUT on the wire
@@ -150,6 +153,10 @@ Assert-Value 'a refused verb exits non-zero'        $code5 '1'
 # to send row 1 to. If the check ever slides back into the execution loop this reads
 # 'no live PPBridge endpoint' instead, and row 1 will have been sent (and executed) first.
 $bad = (& $cli connect multi '[{"id":"a","verb":"state"},{"id":"b"}]' -PPRoot $fake 2>$null) -join "`n"
+# QUIET BY DEFAULT and the error ONCE (0.3.0): PPCLI_QUIET is unset here, and stdout+stderr together
+# must still be exactly the one JSON line - no banner, no second copy of the refusal on stderr.
+$both = @(& pwsh -NoProfile -File $cli connect multi '[{"id":"a","verb":"state"},{"id":"b"}]' -PPRoot $fake 2>&1)
+Assert-Value 'an unasked-for run prints one line in total' $both.Count '1'
 Assert-Match 'a malformed row is caught before anything is sent' $bad "request 2 .*'verb'"
 
 # ---------------------------------------------------------------- the endpoint directory
