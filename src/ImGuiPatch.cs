@@ -55,7 +55,7 @@ namespace Morgott.PPBridge
                 EventType t = e.type;
                 if (t == EventType.Layout) return;
                 bool toggle = style != null && style.name != null && style.name.IndexOf("toggle", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (ImGuiTap.Observe(Time.frameCount, t == EventType.Repaint, t.ToString(), Label(content),
+                if (ImGuiTap.Observe(Time.frameCount, t == EventType.Repaint, EvName(t), Label(content),
                                      position.x, position.y, position.width, position.height,
                                      GUI.enabled, toggle, on, OwnerFn, GUIUtility.hotControl == 0))
                 {
@@ -64,6 +64,27 @@ namespace Morgott.PPBridge
                 }
             }
             catch (Exception) { }
+        }
+
+        /// <summary>Canonical event name. NOT t.ToString(): EventType carries obsolete lowercase
+        /// aliases with the same values (repaint = Repaint, mouseMove = MouseMove), and on the game's
+        /// Mono ToString() returns the ALIAS ("repaint") - live-verified 2026-09-28, where it made
+        /// SafePass never match and every press end code:"notfired".</summary>
+        internal static string EvName(EventType t)
+        {
+            switch (t)
+            {
+                case EventType.Repaint: return "Repaint";
+                case EventType.MouseMove: return "MouseMove";
+                case EventType.MouseDown: return "MouseDown";
+                case EventType.MouseUp: return "MouseUp";
+                case EventType.MouseDrag: return "MouseDrag";
+                case EventType.KeyDown: return "KeyDown";
+                case EventType.KeyUp: return "KeyUp";
+                case EventType.ScrollWheel: return "ScrollWheel";
+                case EventType.Used: return "Used";
+                default: return t.ToString();
+            }
         }
 
         private static string Label(GUIContent c)
