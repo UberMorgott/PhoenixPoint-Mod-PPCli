@@ -4,7 +4,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 
 ## Invariants
 
-- PowerShell 7. One compact JSON object on stdout; diagnostics/progress → stderr. Safe: `.\ppcli.ps1 ... | ConvertFrom-Json`.
+- PowerShell 7. One compact JSON object on stdout; diagnostics/progress → process stderr (`[Console]::Error`, not ErrorRecords: in-process `2>$null` can't silence). `-Quiet` / env `PPCLI_QUIET=1` drops routine notes (install/pipe banner, polling); warnings/refusals/errors stay. Safe: `.\ppcli.ps1 ... | ConvertFrom-Json`.
 - Endpoint opt-in: `<PPRoot>\Mods\PPBridge\ppcli-enabled` must sit beside `PPBridge.dll`. `deploy` never creates it. Delete marker = disarm; relaunch = re-arm.
 - Install selection: `-PPRoot`; else `ppcli-install.txt`; else Steam discovery. Pin file beside `ppcli.ps1`, gitignored: line 1 absolute install path, optional line 2 SteamID64 profile; blank/comment lines ignored.
 - Session gate: send nothing until `.\ppcli.ps1 connect state -PPRoot $PPRoot` answers. `index` only after gate.
@@ -24,7 +24,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 
 `run`/`batch`: need PPBridge activated in selected profile, restore `Options.jopt` byte-exact after session, delete per-run log before launch, refuse already-running target install, kill only own PID. Use automation copy.
 
-Parameters: `-PPRoot ''`; `-ProfileId ''`; `-TimeoutSeconds 300`; `-InitTimeoutSeconds 90`; `-PipeTimeoutSeconds 30`; `-FaultPattern ''` (any mod frame); `-IgnoreLogFaults`; `-CatalogDir .\catalog`; deploy-only `-Force`, `-AllowRunning`. `plan` without explicit `-TimeoutSeconds` raises client ceiling to plan's `timeoutMs` + 60 s when needed. Direct `deploy.ps1` also accepts `-RefRoot` for stripped target lacking `ModSDK`.
+Parameters: `-PPRoot ''`; `-ProfileId ''`; `-TimeoutSeconds 300`; `-InitTimeoutSeconds 90`; `-PipeTimeoutSeconds 30`; `-FaultPattern ''` (any mod frame); `-IgnoreLogFaults`; `-CatalogDir .\catalog`; `-Quiet`; deploy-only `-Force`, `-AllowRunning`. `plan` without explicit `-TimeoutSeconds` raises client ceiling to plan's `timeoutMs` + 60 s when needed. Direct `deploy.ps1` also accepts `-RefRoot` for stripped target lacking `ModSDK`.
 
 ## Live verbs: exact argument envelopes
 

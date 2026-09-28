@@ -112,6 +112,6 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
 - Attempted (ContentTool UI audit, Instance2): drive ContentTool bench, which is Unity IMGUI (`GUILayout.Button`).
 - Happened: PPCLI has no verb to click an IMGUI control / inject a mouse click at screen x,y. Worked around by `call set` on private statics (`FitBench.tab`, `ModelDoctor.browserOpen`, `panelScroll`) + `invoke` of internal pick methods.
 - Expected: `connect click '{"x":..,"y":..}'` (synthesized Event for OnGUI) or IMGUI button-by-label press.
-- Severity: medium (blocks screenshot-driven UI testing without source knowledge). Banner half of this entry fixed by fc8f364 (diagnostics on stream 2).
+- Severity: medium (blocks screenshot-driven UI testing without source knowledge). Banner half of this entry fixed in v0.2.3 (`-Quiet` / `PPCLI_QUIET=1`).
 
 <!-- Append new entries above this line. Keep them evidence-backed. -->

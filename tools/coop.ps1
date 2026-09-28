@@ -91,7 +91,7 @@ $perPeerCommitGB = if ($Lite -and -not $PSBoundParameters.ContainsKey('MinFreeCo
 
 function Note($m) { [Console]::Error.WriteLine("[coop] $m") }
 function Pp([string]$root, [string[]]$a) {
-    $out = & $cli @a -PPRoot $root 2>$null 6>$null
+    $out = & $cli @a -PPRoot $root -Quiet 2>$null 6>$null
     # A refused verb exits 1 (e.g. no live endpoint on a peer that is not running). That is a RESULT
     # here, not this script's exit code: probes like MpLogPath ask peers that may be down.
     $global:LASTEXITCODE = 0

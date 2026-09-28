@@ -59,18 +59,21 @@ param(
     [switch] $Window,
     # Where `index` writes the def catalog and where `plan` resolves names from. A parameter only so
     # the offline tests can point at a fixture; nothing else has a reason to move it.
-    [string] $CatalogDir = (Join-Path $PSScriptRoot 'catalog')
+    [string] $CatalogDir = (Join-Path $PSScriptRoot 'catalog'),
+    # Drop the ROUTINE notes (install/pipe banner, polling, launch progress). Warnings, refusals and
+    # errors still print. Env PPCLI_QUIET=1 does the same for every call of a session.
+    [switch] $Quiet
 )
 
 $ErrorActionPreference = 'Stop'
-# Diagnostics ride PowerShell's ERROR stream (2). [Console]::Error bypasses stream redirection when
-# the script runs in-process (`& .\ppcli.ps1 ...`), so `2>$null` / `2>&1` could not touch the
-# per-call banner; a child `pwsh -File` still prints stream 2 on process stderr. Local 'Continue':
-# the script runs under 'Stop', which would turn a note into a throw.
-function Note([string] $m) {
-    $ErrorActionPreference = 'Continue'
-    $PSCmdlet.WriteError([Management.Automation.ErrorRecord]::new([Exception]::new($m), 'ppcli', 'NotSpecified', $null))
-}
+$script:quiet = $Quiet -or $env:PPCLI_QUIET -eq '1'
+# Diagnostics go to the process stderr directly, NEVER as PowerShell ErrorRecords: a record per
+# banner polluted $Error and turned a caller's explicit -ErrorAction Stop into a throw on the first
+# note. The price: in-process (`& .\ppcli.ps1`) `2>$null` cannot silence them - `-Quiet` /
+# PPCLI_QUIET=1 does. stdout stays exactly one JSON object either way.
+function Note([string] $m) { [Console]::Error.WriteLine($m) }
+# A routine note: progress a caller does not need, dropped under -Quiet / PPCLI_QUIET=1.
+function Info([string] $m) { if (-not $script:quiet) { Note $m } }
 . (Join-Path $PSScriptRoot 'names.ps1')
 . (Join-Path $PSScriptRoot 'paths.ps1')
 . (Join-Path $PSScriptRoot 'waits.ps1')
@@ -134,7 +137,7 @@ function Invoke-Jobs([string] $jobsJson) {
     # Which build the session RAN is not which build is on disk. The mod stamps the SHA-1 of the DLL
     # it loaded; this is the same hash, computed here.
     $expected = (Get-FileHash -Algorithm SHA1 $dll).Hash.ToLower().Substring(0, 8)
-    Note "expecting build=$expected"
+    Info "expecting build=$expected"
 
     # The log name carries the install and this script's PID: a shared name lets a parallel run
     # truncate this one's evidence, and an empty log reads exactly like "the mod printed nothing".
@@ -152,7 +155,7 @@ function Invoke-Jobs([string] $jobsJson) {
         # -mods turns PPModLoader on; -logFile keeps this run out of the shared LocalLow log.
         # -PassThru is load-bearing: $game.Id is the only handle Stop-Process may ever use.
         $game = Start-Process -FilePath $exe -ArgumentList '-mods', '-logFile', $logPath -PassThru
-        Note "launched PID $($game.Id) (the only process this run may stop)"
+        Info "launched PID $($game.Id) (the only process this run may stop)"
 
         $start = Get-Date; $inited = $false
         # This log did not exist a moment ago, so the mark is 0 and every line in it belongs to
@@ -190,7 +193,7 @@ function Invoke-Jobs([string] $jobsJson) {
     if (-not (Test-Path $logPath)) { throw "no log was written to $logPath" }
     $stale = $stamp -ne $expected
     if ($stale) { Note "THE SESSION RAN build=$stamp, NOT the deployed $expected - every result below is a ghost" }
-    else { Note "confirmed build=$stamp" }
+    else { Info "confirmed build=$stamp" }
 
     # Only PPCLI markers, never the log's own noise. Everything from 'PPCLI|' onward, so whatever
     # prefix Unity or the mod logger puts in front cannot shift the fields.
@@ -251,7 +254,7 @@ function Get-Endpoint {
             $live += $ep; continue
         }
         Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue
-        Note "swept stale endpoint $($f.Name)"
+        Info "swept stale endpoint $($f.Name)"
     }
     if ($live.Count -eq 0) {
         throw ("REFUSED: no live PPBridge endpoint. Launch $PPRoot with -mods (or use 'run'), and check " +
@@ -266,7 +269,7 @@ function Get-Endpoint {
     }
     if ($mine.Count -gt 1) {
         $mine = @($mine | Sort-Object started -Descending)
-        Note "$($mine.Count) endpoints for $PPRoot, using the newest game (pid $($mine[0].pid))"
+        Info "$($mine.Count) endpoints for $PPRoot, using the newest game (pid $($mine[0].pid))"
     }
     $mine[0]
 }
@@ -388,7 +391,7 @@ function Invoke-Pipe($ep, $body) {
 function Invoke-Verb([string] $verb, $verbArgs, $ep) {
     if (-not $ep) {
         $ep = Get-Endpoint
-        Note "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol))"
+        Info "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol))"
     }
 
     $req = [ordered]@{ token = $ep.token; id = 'c1'; verb = $verb }
@@ -397,7 +400,7 @@ function Invoke-Verb([string] $verb, $verbArgs, $ep) {
 
     if ($reply.status -eq 'accepted') {
         $jobId = $reply.jobId
-        Note "job $jobId accepted, polling"
+        Info "job $jobId accepted, polling"
         $started  = Get-Date
         $deadline = $started.AddSeconds($TimeoutSeconds)
         # A job that is dead is not slow. The mark is taken BEFORE the first poll, so only what the
@@ -462,7 +465,7 @@ function Resolve-PlanVars($vars, [string[]] $Skip = @()) {
 
 try {
 # Inside the try so a discovery refusal still leaves exactly one JSON object on stdout.
-if (-not $PPRoot) { $PPRoot = Find-PPInstall; Note "install: $PPRoot ($(Format-InstallOrigin (Get-PPPinnedInstall)))" }
+if (-not $PPRoot) { $PPRoot = Find-PPInstall; Info "install: $PPRoot ($(Format-InstallOrigin (Get-PPPinnedInstall)))" }
 $modDir   = Join-Path $PPRoot 'Mods\PPBridge'
 $exe      = Join-Path $PPRoot 'PhoenixPointWin64.exe'
 $jobsPath = Join-Path $modDir 'ppcli-jobs.json'
@@ -529,7 +532,7 @@ switch ($Command) {
             }
 
             $ep = Get-Endpoint
-            Note "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol)) - $($reqs.Count) requests"
+            Info "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol)) - $($reqs.Count) requests"
 
             $out = New-Object Collections.Generic.List[object]
             $failed = 0
@@ -557,7 +560,7 @@ switch ($Command) {
             if (-not $path) {
                 $path = Join-Path $PPRoot ("Mods\PPBridge\ppcli-shot-" + (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + "-window.png")
             }
-            Note "window capture of pid $($ep.pid) (post-present, what the player sees)"
+            Info "window capture of pid $($ep.pid) (post-present, what the player sees)"
             Invoke-WindowShot $ep $path | ConvertTo-Json -Depth 8 -Compress
         }
         else {
@@ -585,7 +588,7 @@ switch ($Command) {
             # +60 s so the plan's own deadline fires first and its `finally` runs - a client cancel
             # gets the same cleanup, but the plan's own timeout says which step it died on.
             $want = [int]($planObj.timeoutMs / 1000) + 60
-            if ($want -gt $TimeoutSeconds) { $TimeoutSeconds = $want; Note "client ceiling raised to ${TimeoutSeconds}s for this plan's own $($planObj.timeoutMs) ms deadline" }
+            if ($want -gt $TimeoutSeconds) { $TimeoutSeconds = $want; Info "client ceiling raised to ${TimeoutSeconds}s for this plan's own $($planObj.timeoutMs) ms deadline" }
         }
         $body = [ordered]@{ plan = $planObj }
         # Caller vars override the plan file's own defaults - that is what parameterises a stored
@@ -606,7 +609,7 @@ switch ($Command) {
         # Pages `find {all:true}` against an ALREADY-RUNNING game and writes the two catalog files.
         # One-time (per game build); everything after it is offline.
         $ep = Get-Endpoint
-        Note "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol))"
+        Info "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol))"
 
         # Every def, or a refusal. The paging and its three snapshot-integrity refusals live in
         # index.ps1 so tests\index.tests.ps1 can drive them with no game.
