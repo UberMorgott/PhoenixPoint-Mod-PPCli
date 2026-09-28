@@ -766,7 +766,17 @@ namespace Morgott.PPBridge
             Check("observe-ring-is-bounded",
                   full.Contains("\"stored\":" + Shots.Capacity) && full.Contains("\"dropped\":40") &&
                   full.Contains("\"recorded\":" + (Shots.Capacity + 40)), full);
-            Check("observe-listing-is-capped", full.Contains("\"returned\":" + Shots.MaxRows), full);
+            Check("observe-default-page-is-small", full.Contains("\"returned\":" + Shots.DefaultRows) && full.Contains("\"hasMore\":true"), full);
+            string fullMax = Run("observe", "{'action':'read','pageSize':" + Shots.MaxRows + "}");
+            Check("observe-listing-is-capped", fullMax.Contains("\"returned\":" + Shots.MaxRows), fullMax);
+            // page 0 is the NEWEST end: the last impact recorded was x = Capacity+39.
+            Check("observe-page-0-is-the-newest", full.Contains("\"x\":" + (Shots.Capacity + 39) + ".0"), full);
+            string summaryOnly = Run("observe", "{'action':'read','pageSize':0}");
+            Check("observe-summary-only", summaryOnly.Contains("\"impacts\":[]") && summaryOnly.Contains("\"n\":" + Shots.Capacity), summaryOnly);
+            Check("observe-page-size-refused-not-clamped", Run("observe", "{'action':'read','pageSize':201}").Contains("\"ok\":false"),
+                  Run("observe", "{'action':'read','pageSize':201}"));
+            string lastPage = Run("observe", "{'action':'read','page':51,'pageSize':10}");
+            Check("observe-last-page", lastPage.Contains("\"returned\":2") && lastPage.Contains("\"hasMore\":false"), lastPage);
             // The stats are computed over EVERYTHING stored, not over the trimmed listing.
             Check("observe-stats-use-the-whole-ring", full.Contains("\"n\":" + Shots.Capacity), full);
             // ...which is exactly why truncation may not be invisible. Statistics over the retained

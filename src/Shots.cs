@@ -182,8 +182,21 @@ namespace Morgott.PPBridge
             return new { ok = true, observing = false, recorded = total, stored, dropped, recovered = Recovered, unpatchError = error };
         }
 
+        /// <summary>Impact rows an unasked-for read carries. The summary is the answer; rows are detail.</summary>
+        internal const int DefaultRows = 10;
+
         private static object Read(JObject a)
         {
+            int page = 0, size = DefaultRows;
+            try
+            {
+                if (a != null && a["page"] != null && a["page"].Type != JTokenType.Null) page = (int)a["page"];
+                if (a != null && a["pageSize"] != null && a["pageSize"].Type != JTokenType.Null) size = (int)a["pageSize"];
+            }
+            catch (Exception) { return Bad("page and pageSize must be integers"); }
+            if (page < 0) return Bad("page must be >= 0");
+            // 0 is legal: the summary alone, no rows.
+            if (size < 0 || size > MaxRows) return Bad("pageSize must be 0.." + MaxRows);
             List<Impact> items = Snapshot();
             float[] aim = Aim(a);
             int hits = 0, targetHits = 0;
@@ -209,11 +222,15 @@ namespace Morgott.PPBridge
             }
 
             List<object> rows = new List<object>();
-            // The OLDEST rows are dropped from the listing, not the newest: when a run overflows the
-            // response cap it is the last shots that are being asked about.
-            for (int i = Math.Max(0, items.Count - MaxRows); i < items.Count; i++)
+            // PAGED FROM THE NEWEST END (0.3.0). The summary above is over EVERYTHING the ring holds;
+            // the listing is a page of it, and page 0 is the LAST pageSize impacts - when a run is
+            // longer than one page it is the last shots that are being asked about. Rows inside a
+            // page stay in arrival order. pageSize:200 page:0 is exactly the pre-0.3.0 listing.
+            long first = (long)items.Count - (long)(page + 1) * size;
+            long end = (long)items.Count - (long)page * size;
+            for (long i = Math.Max(0, first); i < end && i < items.Count; i++)
             {
-                Impact m = items[i];
+                Impact m = items[(int)i];
                 rows.Add(new
                 {
                     x = m.HasGeometry ? (object)m.X : null,
@@ -266,7 +283,10 @@ namespace Morgott.PPBridge
                 noGeometry = items.Count - placed.Count,
                 aim = aim == null ? null : new { x = aim[0], y = aim[1], z = aim[2] },
                 dispersion = Stats(placed, aim),
+                page,
+                pageSize = size,
                 returned = rows.Count,
+                hasMore = first > 0,
                 impacts = rows.ToArray()
             };
         }

@@ -355,7 +355,7 @@
       "id": "aim-point", "verb": "call", "save": "AIM",
       "args": { "op": "invoke", "target": "${TGT.value.h}", "member": "GetWorkingPosition", "args": [] } },
     { "id": "impacts", "verb": "observe", "save": "SHOTS",
-      "args": { "action": "read", "aim": [ "${AIM.value.x}", "${AIM.value.y}", "${AIM.value.z}" ] } },
+      "args": { "action": "read", "pageSize": 200, "aim": [ "${AIM.value.x}", "${AIM.value.y}", "${AIM.value.z}" ] } },
 
     { "//NO SILENT REPAIR": "FATAL, and deliberately so. `recovered` counts projectiles that a throw inside the game's own OnTrajectoryEnd left stuck in flight and that ShotPatch.Unwedge had to release for the volley to continue (see its comment). WHO threw is not knowable from here: the stack is cut at the Harmony wrapper, so it names the patched method and never the patch. The release keeps the MISSION playable, which is worth having - but it also means the game threw in the middle of damage resolution while these numbers were being taken, so the hit and damage figures are measured across a repair. Reporting them anyway would be the same silent-wrong-answer this plan spent its whole life removing. FAILING was never enough on its own: the plan engine used to resolve `output` whether or not the run had failed, so this assertion fired and the figures were handed back regardless. Plan.cs now WITHHOLDS the whole output block on any failure (see PlanRun.Done), which is why every figure below can be trusted to belong to a run that held together. The predicate reads Shots.Recovered directly rather than the snapshot copy, so the failure DTO carries the COUNT in its `last` field - the number survives even though the output does not.",
       "id": "assert-nothing-wedged", "verb": "wait",
