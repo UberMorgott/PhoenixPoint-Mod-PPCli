@@ -163,7 +163,7 @@ namespace Morgott.PPBridge
             return string.Join("/", segs.ToArray());
         }
 
-        private static UiClickResult Click(UiNode node)
+        private static UiClickResult Click(UiNode node, bool force)
         {
             GameObject go = node.Ref as GameObject;
             if (go == null || !go.activeInHierarchy) return new UiClickResult { Error = "the element is gone or inactive since the scan" };
@@ -186,9 +186,17 @@ namespace Morgott.PPBridge
             List<RaycastResult> hits = new List<RaycastResult>();
             try { es.RaycastAll(ped, hits); } catch (Exception) { hits.Clear(); }
             GameObject top = hits.Count > 0 ? hits[0].gameObject : null;
-            if (top == null) res.Warn = "noraycast: nothing raycastable at the centre - a real mouse click would miss";
+            // Refuse BEFORE any event goes out: what a real mouse would not reach is not clicked.
+            if (top == null)
+            {
+                if (!force) return new UiClickResult { Refuse = "noraycast" };
+                res.Warn = "forced: noraycast - nothing raycastable at the centre, a real mouse click would miss";
+            }
             else if (!top.transform.IsChildOf(go.transform) && ExecuteEvents.GetEventHandler<IPointerClickHandler>(top) != go)
-                res.Warn = "blocked: " + UiTap.ShortPath(PathOf(top.transform)) + " is on top at the centre";
+            {
+                if (!force) return new UiClickResult { Refuse = "blocked", Top = PathOf(top.transform) };
+                res.Warn = "forced: blocked - " + UiTap.ShortPath(PathOf(top.transform)) + " is on top at the centre";
+            }
             RaycastResult rr = new RaycastResult { gameObject = go, screenPosition = centre, module = hits.Count > 0 ? hits[0].module : null };
             ped.pointerCurrentRaycast = rr;
             ped.pointerPressRaycast = rr;

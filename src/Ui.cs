@@ -29,9 +29,14 @@ namespace Morgott.PPBridge
         /// <summary>"pointerClick" | "pointerDown" (no click handler, e.g. slider) | "onClick" (fallback).
         /// Null = nothing on the object handles a click - then <see cref="Error"/>.</summary>
         internal string Handler;
-        /// <summary>Raycast at the centre hit something else first ("blocked:&lt;path&gt;") or nothing.</summary>
+        /// <summary>Dispatched anyway (force) although the raycast said "blocked"/"noraycast".</summary>
         internal string Warn;
         internal string Error;
+        /// <summary>Refused BEFORE any event went out: "blocked" (something else is on top at the
+        /// centre) or "noraycast" (nothing raycastable there) - a real mouse click would not land.</summary>
+        internal string Refuse;
+        /// <summary>FULL path of the object the raycast hit first (blocked), for the reply's top.</summary>
+        internal string Top;
     }
 
     /// <summary>
@@ -47,14 +52,17 @@ namespace Morgott.PPBridge
     ///          match = substring of label OR path (case-insensitive); root = substring a row's FULL
     ///          path must contain; interactable:true drops dis rows; all:true keeps invisible ones.
     ///          p = the last <see cref="PathSegs"/> path segments ("~/" = more above) - pass it back as `path`.
-    ///   ui {click:{label|path, index?}, waitFrames?}
+    ///   ui {click:{label|path, index?, force?}, waitFrames?}
     ///       -> {ok, clicked:p, handler:"pointerClick"|"pointerDown"|"onClick", warn?, frames}
     ///          label = exact (case-insensitive, whitespace-collapsed) text; path = a row's p, or any
     ///          '/'-aligned suffix of the full path. index picks among several matches (row order).
-    ///          Only visible rows are clickable. The click is a real pointer sequence (enter, down,
-    ///          up, click, exit) executed on the element; waitFrames (default 1) lets the UI react
-    ///          before the reply.
-    /// Refusals: args, ui (offline), notfound(+near), ambiguous(+candidates), disabled(+row), noclick, threw.
+    ///          Only visible rows are clickable. A raycast at the element's centre runs FIRST: another
+    ///          element on top -> blocked(+top), nothing raycastable -> noraycast, both before any
+    ///          event is sent; force:true dispatches anyway (warn says why it would have refused).
+    ///          The click is a real pointer sequence (enter, down, up, click, exit); waitFrames
+    ///          (default 1) lets the UI react before the reply.
+    /// Refusals: args, ui (offline), notfound(+near), ambiguous(+candidates), disabled(+row),
+    ///           blocked(+top,row), noraycast(+row), noclick, threw.
     /// Main thread only, like every verb.
     /// </summary>
     internal static class UiTap
@@ -71,8 +79,9 @@ namespace Morgott.PPBridge
 
         /// <summary>Game half: every clickable uGUI element in the loaded scenes, draw order.</summary>
         internal static Func<List<UiNode>> Scan;
-        /// <summary>Game half: run the pointer sequence on node.Ref.</summary>
-        internal static Func<UiNode, UiClickResult> ClickRun;
+        /// <summary>Game half: run the pointer sequence on node.Ref. bool = force (dispatch even when
+        /// the raycast at the centre is blocked or empty).</summary>
+        internal static Func<UiNode, bool, UiClickResult> ClickRun;
         /// <summary>Game half: Time.frameCount.</summary>
         internal static Func<int> FrameNow;
 
@@ -87,7 +96,7 @@ namespace Morgott.PPBridge
             JObject tree = a["tree"] as JObject;
             JObject click = a["click"] as JObject;
             if ((tree == null) == (click == null) || (a["tree"] != null && tree == null) || (a["click"] != null && click == null))
-                return Bad("args", "ui takes exactly one of {tree:{match?,root?,interactable?,all?}, page?, pageSize?} or {click:{label|path, index?}, waitFrames?}");
+                return Bad("args", "ui takes exactly one of {tree:{match?,root?,interactable?,all?}, page?, pageSize?} or {click:{label|path, index?, force?}, waitFrames?}");
 
             int page = 0, size = DefaultPageSize, wait = DefaultWaitFrames, index = -1;
             string err = Protocol.IntArg(a, "page", 0, out page)
@@ -110,8 +119,8 @@ namespace Morgott.PPBridge
                 return Tree(nodes, match, root, inter, all, page, size);
             }
 
-            string label = null, path = null;
-            err = Str(click, "label", out label) ?? Str(click, "path", out path);
+            string label = null, path = null; bool force = false;
+            err = Str(click, "label", out label) ?? Str(click, "path", out path) ?? Bool(click, "force", out force);
             if (err == null && (label == null) == (path == null)) err = "click takes exactly one of label or path";
             if (err == null && click["index"] != null && click["index"].Type != JTokenType.Null)
             {
@@ -129,8 +138,21 @@ namespace Morgott.PPBridge
             if (refusal != null) return refusal;
 
             UiClickResult res;
-            try { res = ClickRun(pick); }
+            try { res = ClickRun(pick, force); }
             catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
+            if (res != null && res.Refuse != null)
+            {
+                JObject no = new JObject
+                {
+                    ["ok"] = false, ["code"] = res.Refuse,
+                    ["error"] = res.Refuse == "blocked"
+                        ? "another element is on top at the centre - a real mouse click would land there; nothing was dispatched (force:true clicks anyway)"
+                        : "nothing raycastable at the centre (raycasts off, e.g. CanvasGroup.blocksRaycasts=false) - a real mouse click would miss; nothing was dispatched (force:true clicks anyway)"
+                };
+                if (res.Top != null) no["top"] = ShortPath(res.Top);
+                no["row"] = Row(pick);
+                return no;
+            }
             if (res == null || res.Handler == null)
                 return new JObject { ["ok"] = false, ["code"] = "noclick", ["error"] = Protocol.Clip(res != null && res.Error != null ? res.Error : "nothing on the element handles a pointer click"), ["row"] = Row(pick) };
             JObject reply = new JObject { ["ok"] = true, ["clicked"] = ShortPath(pick.Path), ["handler"] = res.Handler };

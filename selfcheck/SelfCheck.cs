@@ -1106,7 +1106,7 @@ namespace Morgott.PPBridge
                                            "{'click':{'label':'a','path':'b'}}", "{'click':{'label':''}}", "{'click':{'label':'a','index':-1}}",
                                            "{'click':{'label':'a','index':'1'}}", "{'click':{'label':'a','index':1.5}}", "{'tree':{},'pageSize':0}",
                                            "{'tree':{},'pageSize':201}", "{'tree':{},'page':'1'}", "{'click':{'label':'a'},'waitFrames':601}",
-                                           "{'click':{'label':'a'},'waitFrames':-1}", "{'tree':{'interactable':'yes'}}", "{'tree':{'match':5}}" })
+                                           "{'click':{'label':'a'},'waitFrames':-1}", "{'click':{'label':'a','force':1}}","{'tree':{'interactable':'yes'}}", "{'tree':{'match':5}}" })
                 Check("ui-args " + bad, V("ui", bad).Contains("\"code\":\"args\""), V("ui", bad));
 
             List<UiNode> nodes = new List<UiNode>
@@ -1118,6 +1118,7 @@ namespace Morgott.PPBridge
                 UN("Continue", "UIRoot/MainMenu/Buttons/ContinueButton", inter: false),
                 UN("Load", "UIRoot/MainMenu/Buttons/LoadButton", vis: false),
                 UN("Item", "UIRoot/List/Viewport/Content/Row/Item", type: "Toggle"),
+                UN("Ghost", "UIRoot/Ghost/GhostButton"),
                 UN("Item", "UIRoot/List/Viewport/Content/Row[1]/Item", type: "Toggle"),
             };
             for (int i = 0; i < 80; i++) nodes.Add(UN("Research project with a rather long localized title number " + i, "UIRoot/GeoscapeModule/ResearchPanel/ListView/Viewport/Content/ResearchElementWithAVeryLongPrefabName(Clone)[" + i + "]/Button"));
@@ -1125,12 +1126,20 @@ namespace Morgott.PPBridge
             UiNode clicked = null;
             int frame = 100;
             UiTap.Scan = () => nodes;
-            UiTap.ClickRun = n => { clicked = n; return n.Label == "Item" && n.Path.Contains("Row[1]") ? new UiClickResult { Error = "none" } : new UiClickResult { Handler = "pointerClick", Warn = n.Label == "Options" ? "blocked: ~/Overlay/Panel/Image is on top at the centre" : null }; };
+            bool forced = false;
+            UiTap.ClickRun = (n, force) =>
+            {
+                forced = force;
+                if (n.Label == "Options" && !force) return new UiClickResult { Refuse = "blocked", Top = "UIRoot/Overlay/Modal/Panel/Image" };
+                if (n.Path.Contains("Ghost") && !force) return new UiClickResult { Refuse = "noraycast" };
+                clicked = n;
+                return n.Label == "Item" && n.Path.Contains("Row[1]") ? new UiClickResult { Error = "none" } : new UiClickResult { Handler = "pointerClick", Warn = force ? "forced: blocked - ~/Modal/Panel/Image is on top at the centre" : null };
+            };
             UiTap.FrameNow = () => frame;
 
             string tree = V("ui", "{'tree':{}}");
             JObject tj = JObject.Parse(tree);
-            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 87, tree.Substring(0, Math.Min(300, tree.Length)));
+            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 88, tree.Substring(0, Math.Min(300, tree.Length)));
             Check("ui-tree-hidden-dropped", !tree.Contains("LoadButton"), "hidden row listed");
             Check("ui-tree-row-frugal", tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None) == "{\"l\":\"NEW GAME\",\"p\":\"~/MainMenu/Buttons/NewGameButton\",\"t\":\"PhoenixGeneralButton\",\"r\":[10,20,200,40]}",
                   tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None));
@@ -1175,12 +1184,21 @@ namespace Morgott.PPBridge
             string idxOut = V("ui", "{'click':{'label':'Item','index':5}}");
             Check("ui-click-index-out-of-range", idxOut.Contains("\"code\":\"notfound\"") && idxOut.Contains("only 2"), idxOut);
 
-            object started = Start("ui", "{'click':{'label':'options'},'waitFrames':3}");
+            clicked = null;
+            string blocked = V("ui", "{'click':{'label':'options'}}");
+            JObject bj = JObject.Parse(blocked);
+            Check("ui-click-blocked-refused", (string)bj["code"] == "blocked" && (string)bj["top"] == "~/Modal/Panel/Image" && bj["row"] != null && clicked == null && !forced, blocked);
+            Check("budget-ui-blocked", B(blocked) <= 600, "bytes=" + B(blocked));
+            string noray = V("ui", "{'click':{'path':'Ghost/GhostButton'}}");
+            Check("ui-click-noraycast-refused", noray.Contains("\"code\":\"noraycast\"") && !noray.Contains("\"top\"") && clicked == null, noray);
+            string forcedGhost = V("ui", "{'click':{'path':'Ghost/GhostButton','force':true},'waitFrames':0}");
+            Check("ui-click-force-dispatches", forcedGhost.Contains("\"ok\":true") && forced && clicked != null && forcedGhost.Contains("\"warn\":\"forced:"), forcedGhost);
+            object started = Start("ui", "{'click':{'label':'options','force':true},'waitFrames':3}");
             IPending p = started as IPending;
             Check("ui-click-waits-frames", p != null && p.Tick(false) == null, Protocol.Compact(started));
             frame += 3;
             string waited = p == null ? "" : Protocol.Compact(p.Tick(false));
-            Check("ui-click-reply", waited.Contains("\"ok\":true") && waited.Contains("\"frames\":3") && waited.Contains("\"warn\":\"blocked:"), waited);
+            Check("ui-click-reply", waited.Contains("\"ok\":true") && waited.Contains("\"frames\":3") && waited.Contains("\"warn\":\"forced: blocked"), waited);
             Check("budget-ui-click-reply", B(waited) <= 300, "bytes=" + B(waited));
             p = Start("ui", "{'click':{'label':'NEW GAME'},'waitFrames':5}") as IPending;
             string canc = p == null ? "" : Protocol.Compact(p.Tick(true));
@@ -1189,7 +1207,7 @@ namespace Morgott.PPBridge
             UiTap.Scan = () => { throw new InvalidOperationException("scan boom"); };
             Check("ui-scan-throw", V("ui", "{'tree':{}}").Contains("\"code\":\"threw\""), V("ui", "{'tree':{}}"));
             UiTap.Scan = () => nodes;
-            UiTap.ClickRun = n => { throw new InvalidOperationException("click boom"); };
+            UiTap.ClickRun = (n, f) => { throw new InvalidOperationException("click boom"); };
             Check("ui-click-throw", V("ui", "{'click':{'label':'NEW GAME'}}").Contains("\"code\":\"threw\""), V("ui", "{'click':{'label':'NEW GAME'}}"));
             Check("ui-clean-text", UiTap.CleanText("  <b>Save</b>\n  <color=#fff>Game</color> ") == "Save Game", UiTap.CleanText("  <b>Save</b>\n  <color=#fff>Game</color> "));
             UiTap.Shutdown();
