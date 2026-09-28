@@ -106,12 +106,12 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   hands out one port per client (`34242`, `34243`). Attempted a WAN run → had to replicate Do-Lobby by hand (`OnGateJoin`
   per client with its own address, NEW GAME, READY, confirm). Expected: `-JoinAddress` per client (list) or `-Relay` switch
   reading the relay's `clientJoin`. Severity: medium.
-## 2026-09-28 — client banner lines not suppressible; no way to press an IMGUI (OnGUI) control
 
-- Attempted (ContentTool UI audit, Instance2, pwsh 7): `.\ppcli.ps1 connect call '<json>' 2>$null 6>$null | select -Last 1` inside a loop (~70 calls).
-- Happened: `install: D:\PP-Instance2 (pinned ...)` + `pipe ppcli-... (pid ...)` still printed to the console for every call despite `2>$null 6>$null` → floods an agent's context in any loop. JSON on stdout itself was fine.
-- Expected: banner goes to a redirectable stream (or `-Quiet` switch), as PLAYBOOK says "rest on stderr".
-- Second gap: ContentTool bench is Unity IMGUI (`GUILayout.Button`); PPCLI has no verb to click an IMGUI control / inject a mouse click at screen x,y. Worked around by `call set` on private statics (`FitBench.tab`, `ModelDoctor.browserOpen`, `panelScroll`) + `invoke` of internal pick methods. Expected: `connect click '{"x":..,"y":..}'` (synthesized Event for OnGUI) or IMGUI button-by-label press.
-- Severity: low (banner) / medium (IMGUI click — blocks screenshot-driven UI testing without source knowledge).
+## 2026-09-28 — no way to press an IMGUI (OnGUI) control (feature request, target v0.3.0)
+
+- Attempted (ContentTool UI audit, Instance2): drive ContentTool bench, which is Unity IMGUI (`GUILayout.Button`).
+- Happened: PPCLI has no verb to click an IMGUI control / inject a mouse click at screen x,y. Worked around by `call set` on private statics (`FitBench.tab`, `ModelDoctor.browserOpen`, `panelScroll`) + `invoke` of internal pick methods.
+- Expected: `connect click '{"x":..,"y":..}'` (synthesized Event for OnGUI) or IMGUI button-by-label press.
+- Severity: medium (blocks screenshot-driven UI testing without source knowledge). Banner half of this entry fixed by fc8f364 (diagnostics on stream 2).
 
 <!-- Append new entries above this line. Keep them evidence-backed. -->
