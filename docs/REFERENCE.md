@@ -248,6 +248,16 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
   must be 1..200"}` with NO `items` key at all and exit 1. `pageSize` is deliberately NOT clamped: a
   silent clamp makes a caller that pages by its requested size skip records. An empty-but-valid sweep
   returns `"items":[]` with exit 0.
+- **Frugal defaults (0.3.0).** Every reply lands in an agent's context, so the default is the small
+  answer and the big one is opt-in: small first pages (`members`/`inspect` 50, `find`/`types` 25,
+  `console` 50 lines / 8 KiB, `observe read` 10 rows, `log`/`events` 25 rows / 8 KiB), no request
+  echo, `null` fields omitted, stacks ≤ 3 frames. `truncated` is gone from paged verbs — **`hasMore`**
+  says there is another page (`console` keeps `truncated` only for a capture that hit its memory cap).
+  Invalid `page`/`pageSize` is refused `code:"args"`, never clamped. Byte budgets per default reply are
+  enforced by the offline SelfCheck (`budget-*`).
+- **Delta reads by cursor.** `console` pages ONE run by an opaque `cursor` (TTL 120 s, ≤ 4 snapshots;
+  unknown/expired → `code:"cursor"`, command never re-run). `log` / `events` page by a numeric `since`
+  (the `next` of the previous reply); an empty poll is `{"ok":true,"next":N}` (~22 bytes).
 
 ## Verbs
 
@@ -255,22 +265,24 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 |---|---|---|
 | `ping` | — | `{ok, protocol, build}` handshake |
 | `state` | — | `{ok, phase, scene, level, levelState}`; `phase` ∈ `menu` (the level that accepts a new game, or the gap between levels), `loading`, `geoscape`, `tactical`, `summary` (the game-over screen), `other` (any other playing level, e.g. the intro) |
-| `console` | `{command, args[]}` | command result or structured error |
+| `console` | `{command, args[], pageLines?, pageBytes?}` / `{cursor, pageLines?, pageBytes?}` | runs ONCE; `{ok, output[first page], total, hasMore, cursor?, truncated?}` — default 50 lines / 8 KiB (limits 1..2000 lines, 1024..196608 bytes); the `cursor` pages the same capture |
 | `var` | `{name}` / `{name, value}` | the console's **variable** surface — `console` cannot reach it |
 | `call` | `{op, assembly, type, target, member, sig, typeArgs, args, value}` | `{ok, value}` / `{ok, void}` / `{ok, code, error}` |
 | `roots` | — | `{ok, roots{alias: value}}` — late-bound entrances |
-| `types` | `{pattern, assembly}` | matching type full names, capped at 100 |
-| `members` | `{type\|h, assembly, filter, page, pageSize}` | declared + inherited members. `filter` is a substring, or a **glob** when it carries `*`/`?` (`"*Coefficient*"`), matched against the whole formatted line. **Paged**, 400 per page: `total` is the full filtered count and `hasMore`/`truncated` say there is another page — nothing is silently cut any more |
+| `types` | `{pattern, assembly, page, pageSize, generated?}` | `{ok, total, page, pageSize, hasMore, hidden?, types}` sorted ordinal, default 25 / max 100; compiler-generated types hidden unless `generated:true` |
+| `members` | `{type\|h, assembly, filter, page, pageSize}` | declared + inherited members. `filter` is a substring, or a **glob** when it carries `*`/`?` (`"*Coefficient*"`), matched against the whole formatted line. **Paged**, default 50 / max 400: `total` is the full filtered count and `hasMore` says there is another page. Members declared on a `System.*`/`UnityEngine.*` base are hidden unless `inherited:true`, compiler-generated (`<…>`) unless `generated:true`; `hidden:N` counts them |
 | `inspect` | `{h, filter, page, pageSize, values}` | the handle's identity **and** its type's members. `h` takes a handle, a root alias (`"@tac"`) or a def by name (`"@def:NJ_Heavy_LeftArm_BodyPartDef"`). `values:true` returns a `values` dump instead of the member list — see below |
 | `items` | `{h, page, pageSize}` | one explicitly requested page of a collection — **`page` is 0-based** (`Reflect.cs:1112,1117`); `page:1` on a 14-item collection with `pageSize:20` returns nothing |
 | `release` | `{h}` | `{ok, released, held}` |
-| `find` | `{query, type, assembly}` | defs by name substring or exact guid → `{name, guid, type}`, capped at 100 |
-| `find` (enumerate) | `{all:true, page, pageSize, query?, type?}` | the whole repository, ordinally sorted and paged → `+{total, page, pageSize, hasMore}`. **`all` is required and must be a real boolean** — a missing/empty `query` on its own still refuses, so a typo'd variable can never become a repository dump. `pageSize` defaults to 200 (≈30 KB, well inside the 64 KB response cap) and is capped at 200. This is what `ppcli.ps1 index` pages. |
-| `wait` | `{ready\|phase\|call, not, timeoutMs, everyFrames}` | `{ok, waitedMs, polls, value}` or `{code:"timeout", last, lastError, predicate}` |
-| `observe` | `{action: start\|stop\|mark\|read\|status, aim[3]}` | where every projectile LANDED, plus hit/miss counts and dispersion |
+| `find` | `{query, type, assembly, page, pageSize, guids?}` | defs by name substring or exact guid → `{ok, count, total, page, pageSize, hasMore, defs[{name, type, guid?}]}`, default 25 / max 100; `guid` only with `guids:true` |
+| `find` (enumerate) | `{all:true, page, pageSize, query?, type?}` | the whole repository, ordinally sorted and paged → `+{total, page, pageSize, hasMore}`. **`all` is required and must be a real boolean** — a missing/empty `query` on its own still refuses, so a typo'd variable can never become a repository dump. `pageSize` defaults to 50 and is capped at 200. This is what `ppcli.ps1 index` pages. |
+| `wait` | `{ready\|phase\|call\|forMs\|log\|event, not, timeoutMs, everyFrames}` | `{ok, waitedMs, polls, value}` or `{code:"timeout", last, lastError, predicate}` |
+| `observe` | `{action: start\|stop\|mark\|read\|status, aim[3], page?, pageSize?}` | where every projectile LANDED, plus hit/miss counts and dispersion; `read` = summary over the whole ring + newest-first page of impacts (default 10, `pageSize` 0..200, 0 = summary only) |
+| `log` | `{since?, level?, match?, pageSize?, pageBytes?, clip?, stack?}` / `{status:true}` | Unity log since the bridge armed: `{ok, rows?[{s,l,m,st?}], next, hasMore?, dropped?}` — see *Observability* |
+| `events` | `{subscribe:{target\|type, event, handles?}}` / `{unsubscribe:id\|"all"}` / `{list:true}` / `{since?, sub?, match?, pageSize?, pageBytes?}` | public C# events recorded as they fire: `{ok, rows?[{s,sub,a[]}], next, hasMore?, dropped?, ended?}` — see *Observability* |
 | `snapshot` | `{name, timeoutMs}` | `{ok, name}` — waits for the save to actually finish |
-| `restore` | `{name}` | `{ok, issued:"load_game", note}` — issue only; load has no completion signal |
-| `plan` | `{plan:{steps,finally,vars,output}, vars}` | one request, one structured result, per-step trace |
+| `restore` | `{name}` | `{ok, issued:"load_game", name, console}` — issue only; load has no completion signal, follow it with a `wait` |
+| `plan` | `{plan:{steps,finally,vars,output}, vars, trace?}` | one request, one structured result; `trace` = `"errors"` (default: failed steps only) or `"full"` |
 | `screenshot` | `{path?}` | capture at end of frame (Unity `WaitForEndOfFrame` + `ScreenCapture.CaptureScreenshotAsTexture` + `EncodeToPNG`); returns `{ok, path, width, height, bytes}`. Default output: `<ModDir>\ppcli-shot-<utc yyyyMMdd-HHmmss>-<seq>.png`. Optional `path` must be absolute (a relative path is refused: *screenshot's "path" must be an absolute path*); parent directory is created. Returns an `IPending` — the JSON response is never sent before the PNG bytes are on disk. Timeout 10 s → `code:"timeout"`; a cancelled or timed-out capture never writes the file. **Upscaler:** when `Camera.main` has a `targetTexture` (DLSS/FSR render there and blit at present time, after end of frame) the backbuffer PNG carries UI over a blank scene, so the render texture is written beside it and the reply adds `scenePath, sceneWidth, sceneHeight, sceneBytes, note`. **D3D12 + `timeScale == 0`:** refused (it wedges the process at `WaitForEndOfFrame`) — use `timeScale` `0.0001`, or `{"force":true}` to try anyway. **`-Window`** (a CLIENT switch, nothing is sent to the game): grabs the window with `PrintWindow(PW_RENDERFULLCONTENT)`, i.e. AFTER present — the frame the player sees, upscaler blit and every post-upscale pass (LUT, sharpen, colour correction) included, in device pixels (a 853×480 DPI-virtualized client at 150% is written as the real 1262×712). Returns `{ok, mode:"window", path, width, height, bytes}`; refuses a minimized or windowless process. Works even when the in-engine capture is refused |
 | `status` / `cancel` | `{jobId}` | job-table questions, answered on the pipe thread |
 
@@ -782,7 +794,10 @@ or raise `-TimeoutSeconds` when a long plan is intended.
 | `{"phase":"tactical"}` | the `state` verb's own phase (`menu`/`loading`/`geoscape`/`tactical`/`summary`/`other`) |
 | `{"call":{...}}` | any `call`, truthy result, re-evaluated each poll |
 | `{"forMs":N}` | **no predicate**: yield N ms of REAL time, then succeed |
-| `+ "not": true` | the same predicate, inverted |
+| `{"log":"regex", "level"?, "since"?}` | the first Unity log row after `since` (default: rows logged AFTER the wait started) whose message matches; `value` = that row. Not negatable |
+| `{"event":{"sub":N, "since"?, "match"?}}` | the first firing of live subscription N after `since` (default: after the wait started), optionally matching a regex over its args JSON. A sub that ends (scene unload, destroyed target) fails the wait with `lastError` "subscription N ended: scene" |
+| `{"event":{"target"\|"type", "event", "match"?}}` | the same on a subscription the wait takes itself and releases when it ends, however it ends (an already-live identical sub is reused and left alone) |
+| `+ "not": true` | the same predicate, inverted (not for `log` / `event`) |
 
 **`forMs` is the one wait with nothing to poll**, and it exists for fast-forwarding. Geoscape time is
 driven by real time through `Base.Core.Timing.Scale` (`Timing.cs:79`), so "let the campaign run for
@@ -907,9 +922,10 @@ everything computational is already a `call`.
 - **Caps that are not advice:** `timeoutMs` 60 s default / 600 s hard, `maxSteps` 200 default / 2000
   hard, 16 steps per frame before the plan yields, 500 trace entries. An unbounded plan on the main
   thread would hang the game, so none of these are optional.
-- **Result:** `{ok, code, error, step, result, steps, elapsedMs, cleanupRan, cleanupSteps, output,
-  outputWithheld, trace}`. The trace is one compact line per step (`id`, `verb`, `ok`, `ms`, `error`)
-  so a failed plan says exactly which step failed and why. Full step results are **not** returned —
+- **Result:** `{ok, code?, error?, step?, result?, steps, elapsedMs, cleanupRan, cleanupSteps, output?,
+  outputWithheld?, trace?}` — null fields are omitted (0.3.0). `trace` defaults to `"errors"`: only
+  failed steps, minus the fatal one already in `step`/`result`, key absent when empty; `trace:"full"`
+  (plan args or plan file) = one compact line per step (`id`, `verb`, `ok`, `ms`, `error`). Full step results are **not** returned —
   ask for what you want through `output`, which is what keeps a 21-step plan inside the response
   budget.
 - **A FAILED plan publishes NO `output`.** The gate is in the engine, not in any plan file
@@ -1247,9 +1263,9 @@ whatever happened to it — all three flight paths end there (`:125`, `:160`/`:1
   The prefix cannot throw.
 
 **The ring is bounded, and the answer says by how much.** It holds **512** impacts (`Shots.Capacity`)
-and overwrites the oldest beyond that; `observe read` lists at most **200** rows (`Shots.MaxRows`),
-again dropping the oldest from the listing, because when a run overflows it is the last shots that
-are being asked about. So `impacts` is not "every impact" — read it against the three counters in the
+and overwrites the oldest beyond that; `observe read` lists a newest-first page of rows — default **10**, `pageSize` up to **200**
+(`Shots.MaxRows`), `page` 0-based from the newest end, `pageSize:0` = summary only — because when a
+run overflows it is the last shots that are being asked about. So `impacts` is not "every impact" — read it against the three counters in the
 same answer: `recorded` is everything the prefix saw, `stored` is how many the ring still holds,
 `dropped` is how many it overwrote, and `returned` is how many rows the listing carries. Every hit,
 damage and dispersion figure is computed over `stored`, not over `recorded`.
@@ -1404,6 +1420,79 @@ sum equalled the HP delta exactly — and its one miss was recorded landing in
   `spawn-at-coordinate.json` first if the mission has none.
 - **Spawned enemies are left in place on purpose** (watching the tracers is half the point), so
   repeated runs litter the map. Reload the save between measurements.
+
+## Observability — `log` and `events` (0.3.0)
+
+Stop polling state to find out what happened: the bridge records it as it happens, and a reader asks
+for the delta. Both verbs share one shape (`src\Taps.cs`, `SeqRing<T>`): every row gets the next
+sequence number, the reply's `next` is the seq to pass as `since` on the next read, and the ring is
+bounded (oldest overwritten; a reader that fell behind gets `dropped:N`).
+
+| Read arg | Meaning |
+|---|---|
+| no `since` | the TAIL: the newest page; `next` = newest seq, so the following read is a pure delta |
+| `since:N` | rows with seq > N, oldest first; a full page stops at its last row (`hasMore:true`, `next` = that row) |
+| `since` > newest | `code:"cursor"` — the game restarted or the ring was cleared; re-read with `since:0` |
+| `pageSize` | 1..200, default 25; `pageBytes` 1024..196608, default 8192 (a page always carries ≥ 1 row) |
+| `match` | .NET regex (50 ms timeout per row = non-match); bad pattern → `code:"args"` |
+
+Reply: `{ok, rows?, next, hasMore?, dropped?}` — `rows` absent when empty, so an idle poll is
+`{"ok":true,"next":1234}`.
+
+### `log`
+
+- Source: `Application.logMessageReceivedThreaded`, hooked when the bridge ARMS (not on a merely
+  enabled mod), unhooked on disable. Every thread's messages; the callback locks and never throws.
+- Ring: 1000 rows (`LogTap.Capacity`); message stored clipped to 1000 chars, stack to 1500. The
+  bridge's own `PPCLI|<id>|…` batch markers are skipped.
+- Row: `{"s":seq, "l":"L|W|E|A|X", "m":"…"}` (log / warning / error / assert / exception). `m` is
+  clipped to `clip` chars (default 300, 40..1000) with `...(+N)` = chars cut. `st` (stack) only with
+  `stack:true`.
+- `level`: MINIMUM severity — `log` (all), `warning` (W,E,A,X), `error` (E,A,X).
+- `log {"status":true}` → `{ok, hooked, next, stored, capacity}`; `hooked:false` = the bridge is not
+  armed, so an empty ring is not a quiet game.
+
+```powershell
+.\ppcli.ps1 connect log '{}'                                   # newest 25 lines, next=N
+.\ppcli.ps1 connect log '{"since":N,"level":"error"}'          # only new errors
+.\ppcli.ps1 connect wait '{"log":"NullReferenceException","level":"error","timeoutMs":60000}'
+```
+
+### `events`
+
+- `{"subscribe":{"target":"@tac"|"h:…"|{"$h":…}, "event":"ActorDeathEvent"}}` (or `"type":"X"` for a
+  static event) → `{ok, sub, event, next, existing?}`. Only PUBLIC events. An unknown name is refused
+  `code:"member"` listing the type's events (≤ 40). Same target+event again → the live sub,
+  `existing:true`.
+- The handler is built with `System.Linq.Expressions` for the event's own delegate signature (any
+  arity, generic `Action<…>` included; non-void or `ref`/`out` delegates refused `code:"type"`), and
+  never throws into the game's invocation. `Expression.Compile` verified on the game's Mono 2026-09-28
+  (`Expression.Lambda(Constant(42)).Compile().DynamicInvoke()` → 42 via `call`).
+- Row: `{"s":seq, "sub":id, "a":[args]}`. Args are projected SHORT at fire time (`Reflect.Brief`) —
+  the objects may be gone by the read, and no handle is minted: a scalar is its value (enum = name,
+  string ≤ 160 chars), a Unity object `{type, name, id}`, any other object `{type}` + up to 8 public
+  FIELDS (no getter runs) one level down (a nested plain object keeps ≤ 4 scalar fields), null/false
+  dropped. `DeathReport` → `{"type":"DeathReport","Actor":{type,name,id},"Killer":{…},"FromFire":true,
+  "ImpactForce":{x,y,z}}`. `handles:true` on subscribe = full `Project` with live handles (heavy).
+- Caps: 16 live subs (`code:"cap"`), 1000-row ring.
+- A sub ENDS on `{"unsubscribe":id|"all"}`, when its target is destroyed (checked on every `events`
+  request), or when the scene holding its target unloads (a non-Unity target: any scene unload; a
+  static event: never). A read with `sub` then carries `ended:"unsubscribed|destroyed|scene"`.
+- `{"list":true}` → `{ok, subs[{sub, event, on, fired}], next}`.
+
+Events verified to exist as C# `event`s in the decompile (`TacticalLevelController.cs`):
+`ActorDeathEvent` (`ActorDeathHandler(DeathReport)`, :277, fired :795), `NewTurnEvent`
+(`(TacticalFaction prev, TacticalFaction next)`, :303, fired :716), `AbilityExecutedEvent`
+(`(TacticalAbility, object parameter)`, :311, fired :1182), `ActorDamageDealtEvent`
+(`(TacticalActor, IDamageDealer)`, :337); also `ActorWoundedReportEvent`, `ActorMovedEvent`, … (≈30).
+`GeoscapeEventSystem.GeoscapeEventRaised` is `event Action<GeoscapeEvent>` (`GeoscapeEventSystem.cs:110`,
+fired :657) — subscribe through a handle to the level's `GeoscapeEventSystem`.
+
+```powershell
+.\ppcli.ps1 connect events '{"subscribe":{"target":"@tac","event":"ActorDeathEvent"}}'   # sub 1, next N
+.\ppcli.ps1 connect events '{"since":N,"sub":1}'
+.\ppcli.ps1 connect wait '{"event":{"target":"@tac","event":"NewTurnEvent"},"timeoutMs":120000}'
+```
 
 ## Measured on the development machine
 

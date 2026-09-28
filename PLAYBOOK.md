@@ -436,6 +436,10 @@ co-op geoscape in ~2.5 min from cold.
 | go back to the default geoscape screen | `.\ppcli.ps1 connect call '{"op":"invoke","target":"@view","member":"ResetViewState","args":[null]}'` |
 | read a named UI module of the open screen | `.\ppcli.ps1 connect inspect '{"h":"@modules","filter":"*Module*"}'` |
 | yield for a span of real time inside a plan | a step `{"verb":"wait","args":{"forMs":30000}}` |
+| what did the game LOG (errors, exceptions) — instead of reading Player.log | `.\ppcli.ps1 connect log '{"level":"error"}'` → newest 25 + `next`; later `connect log '{"since":<next>}'` = only new lines (idle = `{"ok":true,"next":N}`). `stack:true` for stacks, `match:"regex"` to filter |
+| block until a log line appears | `.\ppcli.ps1 connect wait '{"log":"NullReferenceException","level":"error","timeoutMs":60000}'` (only lines logged AFTER the wait starts) |
+| who died / whose turn — record game events instead of polling | `.\ppcli.ps1 connect events '{"subscribe":{"target":"@tac","event":"ActorDeathEvent"}}'` → `sub`,`next`; then `connect events '{"since":<next>,"sub":<sub>}'`. Also `NewTurnEvent`, `AbilityExecutedEvent`, `ActorDamageDealtEvent`. Ends by itself when the mission unloads |
+| block until an event fires (plan step or one-shot) | `{"verb":"wait","args":{"event":{"target":"@tac","event":"ActorDeathEvent","match":"Crabman"},"timeoutMs":60000}}` — subscribes for the wait only |
 | find a def by name | `.\ppcli.ps1 connect find '{"query":"Crabman"}'` |
 | enumerate the def repository, one page | `.\ppcli.ps1 connect find '{"all":true,"page":0,"pageSize":200}'` |
 | any of the 344 native console commands | `.\ppcli.ps1 connect console '{"command":"info","args":[]}'` |
