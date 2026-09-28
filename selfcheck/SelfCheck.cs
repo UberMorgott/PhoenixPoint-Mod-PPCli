@@ -166,6 +166,12 @@ namespace Morgott.PPBridge
         public int ReturnsHandlers { get { return Returns == null ? 0 : Returns.GetInvocationList().Length; } }
     }
 
+    internal sealed class ThrowingRelease : IPending, IReleasable
+    {
+        public object Tick(bool cancelled) { return null; }
+        public void Release() { throw new InvalidOperationException("release threw"); }
+    }
+
     internal static class SelfCheck
     {
         private static int failures;
@@ -1029,6 +1035,19 @@ namespace Morgott.PPBridge
             string cx = Protocol.Compact(pc.Tick(true));
             Check("imgui-cancel-releases", cx.Contains("\"code\":\"cancelled\"") && !ImGuiTap.Active && disarms == arms, cx + " arms=" + arms + " disarms=" + disarms);
 
+            // P2 cleanup: a job the Runner drops without completing (Tick threw, refused park, Runner
+            // destroyed) goes through Plan.Drop, which must release the patch; Abort always unpatches.
+            IPending pd = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'list':true}") });
+            Plan.Drop(pd);
+            Check("imgui-drop-releases", !ImGuiTap.Active && disarms == arms && !V("imgui", "{'list':true}").Contains("busy"), "arms=" + arms + " disarms=" + disarms);
+            ImGuiTap.Abort();
+            bool dropSafe = true;
+            try { Plan.Drop(new ThrowingRelease()); Plan.Drop(null); } catch (Exception) { dropSafe = false; }
+            Check("plan-drop-never-throws", dropSafe, "Drop threw");
+            IPending pa = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'list':true}") });
+            ImGuiTap.Abort();
+            Check("imgui-abort-unpatches", !ImGuiTap.Active && disarms == arms, "arms=" + arms + " disarms=" + disarms);
+            GC.KeepAlive(pa);
             // budget: 25 default rows of 80-char labels stay small.
             string[] fat = new string[400];
             for (int i = 0; i < fat.Length; i++) fat[i] = new string('w', 200) + i;

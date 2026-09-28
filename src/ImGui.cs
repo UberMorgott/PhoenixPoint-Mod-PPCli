@@ -251,6 +251,9 @@ namespace Morgott.PPBridge
             try { if (Arm != null) Arm(false); } catch (Exception) { }
         }
 
+        /// <summary>Runner destroyed: drop any request state and remove the patch, keep the delegates.</summary>
+        internal static void Abort() { Reset(); }
+
         internal static void Shutdown()
         {
             Reset();

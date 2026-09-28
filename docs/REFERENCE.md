@@ -1529,7 +1529,7 @@ In-process, semantic press: no SendInput, so the user's focus and cursor are nev
   "button clicked" (on=false → true) or "toggle's new value" (`!on`); a press forces `!on` and sets
   `GUI.changed`. RepeatButton / Toolbar / SelectionGrid are other paths and are not seen.
 - **Lazy patch:** installed when a request starts, removed when it ends (success, refusal, timeout,
-  cancel), like `observe`. One imgui request at a time (`code:"busy"`).
+  cancel), like `observe`. Also removed when the Runner drops the job (a Tick that threw, a refused park, Runner destroyed - `Plan.Drop` releases every releasable job there, and a destroyed Runner fails each parked job). One imgui request at a time (`code:"busy"`).
 - **Identity:** row `i` = how many controls with the SAME label came before it in that event pass
   (absent = 0). `list` and press-resolution read ONE complete Repaint pass (the frame before the
   current Update; a request waits 1-3 frames, none drawn → `total:0`).

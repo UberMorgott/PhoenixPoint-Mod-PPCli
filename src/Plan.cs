@@ -77,6 +77,16 @@ namespace Morgott.PPBridge
             return new { ok = false, code, error = Protocol.Clip(message) };
         }
 
+        /// <summary>Lets go of whatever a dropped job holds (a wait-owned sub, the imgui patch) - for
+        /// every path that drops a job WITHOUT ticking it to completion: a Tick that threw, a refused
+        /// park, a Runner being destroyed. Never throws.</summary>
+        internal static void Drop(IPending work)
+        {
+            IReleasable rel = work as IReleasable;
+            if (rel == null) return;
+            try { rel.Release(); } catch (Exception) { }
+        }
+
         internal static bool Truthy(JToken t)
         {
             if (t == null) return false;

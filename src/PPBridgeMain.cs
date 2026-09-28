@@ -689,8 +689,7 @@ namespace Morgott.PPBridge
                     {
                         // The refused job is never ticked again: whatever it already holds (a
                         // wait {event} subscribes BEFORE it is parked) must be let go here.
-                        IReleasable rel = work as IReleasable;
-                        if (rel != null) rel.Release();
+                        Plan.Drop(work);
                         Finish(job, Protocol.Fail("too many jobs already waiting (" + MaxPending +
                                                   ") - cancel one or wait for it to finish"));
                         return;
@@ -715,7 +714,12 @@ namespace Morgott.PPBridge
                     Parked p = parked[i];
                     object result;
                     try { result = p.Work.Tick(p.Job.Cancelled); }
-                    catch (Exception ex) { result = Protocol.Fail("a waiting job THREW " + ex.Message); }
+                    catch (Exception ex)
+                    {
+                        // Dropped without completing: release what it holds (sub, imgui patch).
+                        Plan.Drop(p.Work);
+                        result = Protocol.Fail("a waiting job THREW " + ex.Message);
+                    }
                     if (result == null) continue;
                     parked.RemoveAt(i);
                     Finish(p.Job, result);
@@ -732,7 +736,19 @@ namespace Morgott.PPBridge
             }
 
             private void OnApplicationQuit() { StopPipe(); }
-            private void OnDestroy() { if (instance == this) instance = null; }
+            /// <summary>Parked jobs die with the Runner: each one lets go of what it holds, and the
+            /// imgui patch is removed even if no request owned it any more.</summary>
+            private void OnDestroy()
+            {
+                if (instance == this) instance = null;
+                foreach (Parked p in parked)
+                {
+                    Plan.Drop(p.Work);
+                    try { Finish(p.Job, Protocol.Fail("the bridge runner was destroyed before this job finished")); } catch (Exception) { }
+                }
+                parked.Clear();
+                ImGuiTap.Abort();
+            }
         }
     }
 }
