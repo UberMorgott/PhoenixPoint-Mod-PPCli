@@ -18,6 +18,7 @@ PPCLI directory against a **running** game. Do not dig the decompile first. Dept
 | read a value / call a method / does member exist | [Ask the game](#ask-the-game-something) |
 | see Unity log lines / errors as they happen | [Log and events](#watch-the-log-and-game-events--log-events) |
 | know when an actor died / turn changed / ability fired | [Log and events](#watch-the-log-and-game-events--log-events) |
+| click a game screen's button (menu, geoscape tabs, Back, popups, TFTV panels) | [UI](#click-a-game-screens-button--ui) |
 | click a mod's OnGUI (IMGUI) button, e.g. a bench | [IMGUI](#press-a-mods-ongui-button--imgui) |
 | screenshot | [Ask the game](#ask-the-game-something) |
 | something failed / hangs | [When it goes wrong](#when-it-goes-wrong) |
@@ -278,7 +279,9 @@ screen is open, `@modules` reaches the named module holders (`ModalModule`,
 `DeploymentMissionBriefingModule`, `FactionDataTracker`, …), and ordinary `get`/`inspect` read the
 text a module is showing.
 
-To CHANGE screen, invoke the view's **own public `To*State()` method** —
+To CHANGE screen the simplest way is to press the screen's own button:
+[`ui`](#click-a-game-screens-button--ui) (`{"click":{"path":"Tabs/Tab_Research"}}`). Without a button,
+invoke the view's **own public `To*State()` method** —
 `ToResearchState`, `ToDiplomacyState`, `ToPhoenixpediaState`, `ToBaseLayoutState`,
 `ToManufacturingState`, `ToMemorialState`, `ToRosterState`, … and `ResetViewState(null)` to go back:
 
@@ -544,6 +547,27 @@ Stop polling state to learn what happened: read the delta. Every reply carries `
 | drop subscriptions | `.\ppcli.ps1 connect events '{"unsubscribe":"all"}'` |
 
 `code:"cursor"` = game restarted, re-read with `since:0`. `code:"dropped"` on a wait = ring overwrote rows.
+
+## Click a game screen's button — `ui`
+
+The game's own uGUI: every visible button/toggle/slider/clickable row, as a human sees it. The click is
+a real pointer sequence (enter, down, up, click, exit) on the element — the game's own handler runs,
+no reflection into view states. Simpler than `invoke @viewstate OnCancel`-style hacks or coop dismiss
+loops when a button exists. Labels are LOCALIZED (Russian client → `"НАЗАД"`), so prefer `path`
+(GameObject names, language-free). `click` is MUTATING: refused on the played install without `-AllowMutate`.
+
+| Intent | Command |
+|---|---|
+| what can be clicked now | `.\ppcli.ps1 connect ui '{"tree":{"interactable":true}}'` → rows `{l,p,t,dis?,r:[x,y,w,h]}` |
+| narrow down | `.\ppcli.ps1 connect ui '{"tree":{"match":"back"}}'` (label or path substring); `"root":"GeoSectionBarModule"` |
+| click by path (row's `p`, or any tail) | `.\ppcli.ps1 connect ui '{"click":{"path":"Tabs/Tab_Research"},"waitFrames":30}'` → `{clicked,handler}` |
+| click by visible text | `.\ppcli.ps1 connect ui '{"click":{"label":"НАЗАД"}}'` |
+| several match | `code:"ambiguous"` lists candidates → longer path or `"index":N` |
+
+`warn:"blocked: …"` = something else is on top at the centre (a real mouse would hit it) — the click
+still ran. `code:"notfound"` carries `near` rows; `disabled` = not interactable. Confirm by effect
+(`roots` viewstate, next `ui tree`, `screenshot`). Live 0.3.2: menu Options → close, geoscape
+`Tab_Research` → `UIStateResearch`, crew slot → `UIStateEditSoldier`, `UI_Button_Back` → `UIStateVehicleSelected`.
 
 ## Press a mod's OnGUI button — `imgui`
 
