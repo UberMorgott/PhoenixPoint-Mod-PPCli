@@ -562,12 +562,19 @@ loops when a button exists. Labels are LOCALIZED (Russian client → `"НАЗА�
 | narrow down | `.\ppcli.ps1 connect ui '{"tree":{"match":"back"}}'` (label or path substring); `"root":"GeoSectionBarModule"` |
 | click by path (row's `p`, or any tail) | `.\ppcli.ps1 connect ui '{"click":{"path":"Tabs/Tab_Research"},"waitFrames":30}'` → `{clicked,handler}` |
 | click by visible text | `.\ppcli.ps1 connect ui '{"click":{"label":"НАЗАД"}}'` |
-| several match | `code:"ambiguous"` lists candidates → longer path or `"index":N` |
+| several match | `code:"ambiguous"` lists candidates (each with full `path`) → longer path or `"index":N` |
+| long label clipped `…~` in the tree | paste it as is (prefix match), or `"tree":{"full":true}` for whole labels/paths |
+| more rows | reply `next` → `'{"tree":{},"from":<next>}'` (pages also stop at `pageBytes`, default 8 KiB) |
+| screens that are switched off right now | `'{"tree":{"all":true,"match":"Back"}}'` → `off:true` rows (slow: ~0.4 s on geoscape; not clickable) |
 
-`warn:"blocked: …"` = something else is on top at the centre (a real mouse would hit it) — the click
-still ran. `code:"notfound"` carries `near` rows; `disabled` = not interactable. Confirm by effect
-(`roots` viewstate, next `ui tree`, `screenshot`). Live 0.3.2: menu Options → close, geoscape
-`Tab_Research` → `UIStateResearch`, crew slot → `UIStateEditSoldier`, `UI_Button_Back` → `UIStateVehicleSelected`.
+A raycast at the element's centre runs FIRST: `code:"blocked"` (+`top` = what a real mouse would hit, e.g. a
+modal's `InputConsumer`) or `code:"noraycast"` → NOTHING was sent; close the popup first, or `"force":true`
+to click anyway. `target` in the reply = the child that actually took the press (container clicked).
+`ok:true` = events DISPATCHED; `code:"threw"` = a handler crashed (click still happened) — confirm by effect
+(`roots` viewstate, next `ui tree`, `screenshot`). Slider/Scrollbar → `code:"unsupported"` (set `.value` via
+`call`). `notfound` carries `near` rows; `disabled` = not interactable. Live 0.3.2: menu Options → close,
+geoscape `Tab_Research` → `UIStateResearch`, crew slot → `UIStateEditSoldier`, `UI_Button_Back` →
+`UIStateVehicleSelected`, delete-save confirm modal → slot `blocked`.
 
 ## Press a mod's OnGUI button — `imgui`
 

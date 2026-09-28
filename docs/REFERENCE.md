@@ -1674,27 +1674,41 @@ TFTV-disabled states read sensibly, overwatch cone lands where aimed.
 Pure half `src\Ui.cs` (args, matching, paths, paging, refusals, budgets — all in SelfCheck), game half
 `src\UiGame.cs`. Reads/clicks in ONE frame on the main thread; `waitFrames` only delays the reply.
 
-- `ui {tree:{match?,root?,interactable?,all?},page?,pageSize?}` → `{ok,total,rows:[{l,p,t,dis?,hid?,r}],hasMore?}`.
-  Default 25 rows, max 200. `match` = case-insensitive substring of label OR full path; `root` = substring
-  the full path must contain; `interactable:true` drops `dis`; `all:true` keeps `hid` (invisible) rows.
-- `ui {click:{label|path,index?},waitFrames?}` → `{ok,clicked,handler,warn?,frames}`. `waitFrames` default 1, 0..600.
+- `ui {tree:{match?,root?,interactable?,all?,full?},from?,pageSize?,pageBytes?,diag?}` →
+  `{ok,total,from?,rows:[{l,p,t,dis?,hid?,off?,r}],next?,diag?}`. A page ends at `pageSize` rows (default 25,
+  max 200) OR `pageBytes` UTF-8 bytes (default 8 KiB, 1024..65536), whichever first; `next` = `from` of the
+  next page (absent = last page; `page` is refused - byte-cut pages would skip rows). `match` =
+  case-insensitive substring of label OR full path; `root` = substring the full path must contain;
+  `interactable:true` drops `dis`; `all:true` also lists `hid` rows AND elements of switched-off screens
+  (`off`, via `Resources.FindObjectsOfTypeAll<Canvas>` filtered to loaded scenes - live 369 ms / 4662 nodes
+  on geoscape, so opt-in only); `full:true` = whole `l` and whole path in `p`.
+- `ui {click:{label|path,index?,force?},waitFrames?,diag?}` → `{ok,clicked,handler,target?,warn?,frames,diag?}`.
+  `waitFrames` default 1, 0..600. `target` = `p` of the object that took the press when not the element
+  itself (container → child button). `ok:true` = events DISPATCHED and no handler threw - NOT that the
+  screen changed: confirm by effect (`roots` viewstate, next `ui tree`, `screenshot`).
+- `diag:true` → `diag:{scanMs,nodes,cached}`. One scan per frame is shared by every `ui` request in that
+  frame; a click drops it.
 - Codes: `args`, `ui` (offline half), `notfound` (+`near` ≤8 rows matching the label / last path segment;
-  `index` past the matches), `ambiguous` (+`candidates` ≤8), `disabled` (+`row`), `noclick` (nothing handles
-  a pointer click/down; +`row`), `threw`. Cancel during `waitFrames` → `cancelled`, click NOT undone.
+  `index` past the matches), `ambiguous` (+`candidates` ≤8, each with full `path`), `disabled` (+`row`),
+  `blocked` (+`top`,`row`), `noraycast` (+`row`), `unsupported` (Slider/Scrollbar, +`row`), `noclick`
+  (nothing handles a pointer click/down; +`row`), `threw` (scan/click threw, OR a handler exception
+  ExecuteEvents swallowed into the log: `clicked`+`handler`, click NOT undone). Cancel during
+  `waitFrames` → `cancelled`, click NOT undone.
 
 | Piece | Rule |
 |---|---|
-| scan | `Selectable.allSelectablesArray` (active+enabled) ∪ every enabled `MonoBehaviour` implementing `IPointerClickHandler` on a `RectTransform` (`FindObjectsOfType`) — catches `PhoenixGeneralButton` (PhoenixGeneralButton.cs:11), `UINavigationalElementsHolder`, list rows, TFTV panels. One row per GameObject, sorted top→bottom, left→right. |
+| scan | `Selectable.allSelectablesArray` (active+enabled) ∪ enabled `IPointerClickHandler` components under root Canvases (`FindObjectsOfType<Canvas>` + `GetComponentsInChildren<IPointerClickHandler>`) on a `RectTransform` — catches `PhoenixGeneralButton` (PhoenixGeneralButton.cs:11), `UINavigationalElementsHolder`, list rows, TFTV panels. One row per GameObject, sorted top→bottom, left→right. Live 1-2.5 ms (menu 21 nodes, geoscape 19-66). |
 | `t` | `PhoenixGeneralButton` if present, else the Selectable's type, else the first click-handler type. |
-| `l` | first non-empty `UnityEngine.UI.Text` / `TMPro.TMP_Text` (reflection) in children that is NOT inside another clickable row, rich-text tags stripped, whitespace collapsed, clip 40 + `~`; else the GO name. LOCALIZED. Click `label` = exact after the same cleaning, case-insensitive. |
+| `l` | first non-empty `UnityEngine.UI.Text` / `TMPro.TMP_Text` (reflection) in children that is NOT inside another clickable row, rich-text tags stripped, whitespace collapsed, clip 40 + `~` (unless `full`); else the GO name. LOCALIZED (`off` rows may show the prefab's English text). Click `label` = exact after the same cleaning, case-insensitive; no exact hit and it ends `~` → prefix match, so a row's `l` always pastes back. |
 | `p` | last 3 segments of the full hierarchy path, `~/` = more above; `Name[k]` = k-th same-named sibling (k>0); segment clip 32 + `~`, `[k]` kept. Click `path` = `/`-aligned tail of the full path; a clipped `Name~` segment matches by prefix, so a row's `p` always pastes back. |
 | `r` | screen rect `[x,y,w,h]`, top-left origin, Y down (= screenshot pixels), from `GetWorldCorners` + `RectTransformUtility.WorldToScreenPoint` (null camera for overlay canvases). |
-| `hid` | zero-size, off every screen pixel, canvas disabled, or effective `CanvasGroup` alpha ≤ 0.01. Hidden rows are never clickable (`notfound`). |
+| `hid` | zero-size, off every screen pixel, canvas disabled, effective `CanvasGroup` alpha ≤ 0.01, or `off`. Hidden rows are never clickable (`notfound`). |
 | `dis` | `Selectable.IsInteractable()` false (CanvasGroup-aware), or `PhoenixGeneralButton` `!IsEnabled` / selected-and-non-interactable (its `OnPointerClick` returns early there). |
-| click | `PointerEventData{Left, position=centre, clickCount 1, eligibleForClick}`; `hovered` = element + all ancestors (`PhoenixGeneralButton.OnPointerClick` ignores a click whose `hovered` lacks its `BaseButton` GO); enter (root→leaf) → `ExecuteHierarchy(pointerDown)` → up on the press handler → `pointerClick` only when press handler == `GetEventHandler<IPointerClickHandler>` (Unity's own rule) → exit. No click handler: `Button.onClick.Invoke()` → `handler:"onClick"`; press-only (slider) → `"pointerDown"`. |
-| warn | `EventSystem.RaycastAll` at the centre: nothing → `noraycast: …`; top hit neither inside the element nor routed to it → `blocked: <p> is on top`. Warning, not refusal. |
+| refuse first | `EventSystem.RaycastAll` at the centre BEFORE any event: nothing → `noraycast`; first hit neither inside the element nor click-routed to it → `blocked` (`top` = its `p`); press handler of the hit (`GetEventHandler<IPointerDownHandler>` ?? click) not the element / inside it / its ancestor → `blocked`. `force:true` dispatches anyway (from the element, `warn:"forced: …"`). Slider/Scrollbar → `unsupported` (value moves by drag; set `.value` via `call`). |
+| click | StandaloneInputModule's sequence from the actual raycast hit: enter on hit + every ancestor (→ `hovered`, which `PhoenixGeneralButton.OnPointerClick` requires to contain its `BaseButton`) → deselect-if-changed → `ExecuteHierarchy(pointerDown)` (?? click handler) → `pointerPress`/`rawPointerPress`/`pointerDrag` + `initializePotentialDrag` → up on the press handler → `pointerClick` only when press handler == `GetEventHandler<IPointerClickHandler>(hit)` and `eligibleForClick` (Unity's rule), else `handler:"pointerDown"` → exit. `Application.logMessageReceived` is hooked for the dispatch: a `LogType.Exception` → `threw`. |
 
-Budgets (SelfCheck): default tree ≤ 5000 B, 200-row ≤ 30000 B, click reply ≤ 300 B, ambiguous ≤ 1200 B,
+Budgets (SelfCheck): default tree ≤ 5000 B, 200-row tree ≤ `pageBytes` (every page of a `from`/`next` walk
+too; a single oversize row is clipped to fit), click reply ≤ 300 B, blocked ≤ 600 B, ambiguous ≤ 1200 B,
 notfound ≤ 2500 B. **Client guard:** `ui {click}` is mutating like `act use/endTurn` (`Test-ActMutates`
 walks plans/multi/batch) → refused on a `\steamapps\common\` install without `-AllowMutate`.
 
@@ -1702,7 +1716,13 @@ Live 2026-09-28 (D:\PP-Instance3, 2560x1440, RU locale): main menu 19 rows; `Men
 options screen, `ModuleTitle/UIButton_Icon_Small` → back to menu; after `start-campaign.json`: 40
 interactable geoscape rows, `Tabs/Tab_Research` → `UIStateResearch`, `Tabs/Tab_Geoscape` back, crew slot
 `UnitOnBoard_Empty` → `UIStateEditSoldier`, `UI_Button_Back` → `UIStateVehicleSelected`. All `handler:"pointerClick"`.
-Not yet exercised live: tactical HUD, TFTV panels, modal popups, `warn`.
+Re-verified after the review fixes (same day): menu Options → close; label `MenuPanel` (container) →
+`target:"~/MainMenuButtonsModule/MenuPanel/LoadGame"`, load screen opened; save-delete confirm modal up →
+`autosave` slot and its LOAD both `blocked`, `top:"GameController/SystemMessageCanvas/InputConsumer"`, nothing
+dispatched, Cancel → save kept; geoscape `Tabs/Tab_Research` under the replenish popup → `blocked`
+(`ReplenishModule/Blocking`), popup OK → `Tab_Research` → `UIStateResearch`, `Tab_Geoscape` →
+`UIStateVehicleSelected`; options volume `Slider` → `unsupported`. Not exercised live: `noraycast`, a
+handler that throws (offline only), tactical HUD, TFTV panels.
 
 ```powershell
 .\ppcli.ps1 connect ui '{"tree":{"interactable":true}}'
