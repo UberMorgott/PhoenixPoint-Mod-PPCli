@@ -84,15 +84,12 @@ namespace Morgott.PPBridge
 
         internal static object Args(JObject a, out long since, out bool haveSince, out int size, out int bytes)
         {
-            since = 0; haveSince = false; size = DefaultPageSize; bytes = DefaultPageBytes;
-            try
-            {
-                JToken s = a == null ? null : a["since"];
-                if (s != null && s.Type != JTokenType.Null) { since = (long)s; haveSince = true; }
-                if (a != null && a["pageSize"] != null && a["pageSize"].Type != JTokenType.Null) size = (int)a["pageSize"];
-                if (a != null && a["pageBytes"] != null && a["pageBytes"].Type != JTokenType.Null) bytes = (int)a["pageBytes"];
-            }
-            catch (Exception) { return Bad("args", "since, pageSize and pageBytes must be integers"); }
+            JToken s = a == null ? null : a["since"];
+            haveSince = s != null && s.Type != JTokenType.Null;
+            string e1 = Protocol.LongArg(a, "since", 0, out since);
+            string e2 = Protocol.IntArg(a, "pageSize", DefaultPageSize, out size);
+            string e3 = Protocol.IntArg(a, "pageBytes", DefaultPageBytes, out bytes);
+            if (e1 != null || e2 != null || e3 != null) return Bad("args", e1 ?? e2 ?? e3);
             if (since < 0) return Bad("args", "since must be >= 0 (0 = from the oldest row kept)");
             if (size < 1 || size > MaxPageSize) return Bad("args", "pageSize must be 1.." + MaxPageSize);
             if (bytes < MinPageBytes || bytes > MaxPageBytes) return Bad("args", "pageBytes must be " + MinPageBytes + ".." + MaxPageBytes);
@@ -242,9 +239,9 @@ namespace Morgott.PPBridge
             Regex rx; object refusal;
             if (!TapPage.TryRegex(a == null ? null : (string)a["match"], out rx, out refusal)) return refusal;
             bool stack = a != null && Plan.Truthy(a["stack"]);
-            int clip = DefaultClip;
-            try { if (a != null && a["clip"] != null && a["clip"].Type != JTokenType.Null) clip = (int)a["clip"]; }
-            catch (Exception) { return TapPage.Bad("args", "clip must be an integer"); }
+            int clip;
+            string clipErr = Protocol.IntArg(a, "clip", DefaultClip, out clip);
+            if (clipErr != null) return TapPage.Bad("args", clipErr);
             if (clip < 40 || clip > StoreMsgChars) return TapPage.Bad("args", "clip must be 40.." + StoreMsgChars);
 
             long lost, newest;
@@ -547,9 +544,9 @@ namespace Morgott.PPBridge
             long since; bool haveSince; int size, bytes;
             object bad = TapPage.Args(a, out since, out haveSince, out size, out bytes);
             if (bad != null) return bad;
-            int subId = 0;
-            try { if (a != null && a["sub"] != null && a["sub"].Type != JTokenType.Null) subId = (int)a["sub"]; }
-            catch (Exception) { return TapPage.Bad("args", "sub must be an integer id"); }
+            int subId;
+            string subErr = Protocol.IntArg(a, "sub", 0, out subId);
+            if (subErr != null) return TapPage.Bad("args", subErr);
             Regex rx; object refusal;
             if (!TapPage.TryRegex(a == null ? null : (string)a["match"], out rx, out refusal)) return refusal;
 

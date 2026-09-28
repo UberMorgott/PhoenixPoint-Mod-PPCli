@@ -154,6 +154,7 @@ namespace Morgott.PPBridge
         }
 
         private static object Bad(string message) { return new { ok = false, code = "observe", error = message }; }
+        private static object BadArgs(string message) { return new { ok = false, code = "args", error = message }; }
 
         private static object Start(JObject a)
         {
@@ -187,16 +188,14 @@ namespace Morgott.PPBridge
 
         private static object Read(JObject a)
         {
-            int page = 0, size = DefaultRows;
-            try
-            {
-                if (a != null && a["page"] != null && a["page"].Type != JTokenType.Null) page = (int)a["page"];
-                if (a != null && a["pageSize"] != null && a["pageSize"].Type != JTokenType.Null) size = (int)a["pageSize"];
-            }
-            catch (Exception) { return Bad("page and pageSize must be integers"); }
-            if (page < 0) return Bad("page must be >= 0");
+            int page, size;
+            string err = Protocol.IntArg(a, "page", 0, out page);
+            string err2 = Protocol.IntArg(a, "pageSize", DefaultRows, out size);
+            // code:"args", like every other paged verb's page refusal.
+            if (err != null || err2 != null) return BadArgs(err ?? err2);
+            if (page < 0) return BadArgs("page must be >= 0");
             // 0 is legal: the summary alone, no rows.
-            if (size < 0 || size > MaxRows) return Bad("pageSize must be 0.." + MaxRows);
+            if (size < 0 || size > MaxRows) return BadArgs("pageSize must be 0.." + MaxRows);
             List<Impact> items = Snapshot();
             float[] aim = Aim(a);
             int hits = 0, targetHits = 0;
@@ -226,7 +225,8 @@ namespace Morgott.PPBridge
             // the listing is a page of it, and page 0 is the LAST pageSize impacts - when a run is
             // longer than one page it is the last shots that are being asked about. Rows inside a
             // page stay in arrival order. pageSize:200 page:0 is exactly the pre-0.3.0 listing.
-            long first = (long)items.Count - (long)(page + 1) * size;
+            // ((long)page + 1): page+1 in int wraps at page:2147483647 to an empty page with hasMore.
+            long first = (long)items.Count - ((long)page + 1) * size;
             long end = (long)items.Count - (long)page * size;
             for (long i = Math.Max(0, first); i < end && i < items.Count; i++)
             {

@@ -1464,14 +1464,9 @@ namespace Morgott.PPBridge
         /// clamped: a clamped page is a smaller answer the caller did not ask for and cannot see.</summary>
         private static object PageArgs(JObject a, int defaultSize, int maxSize, out int page, out int size)
         {
-            page = 0;
-            size = defaultSize;
-            try
-            {
-                if (a != null && a["page"] != null && a["page"].Type != JTokenType.Null) page = (int)a["page"];
-                if (a != null && a["pageSize"] != null && a["pageSize"].Type != JTokenType.Null) size = (int)a["pageSize"];
-            }
-            catch (Exception) { return Bad("args", "page and pageSize must be integers"); }
+            string err = Protocol.IntArg(a, "page", 0, out page);
+            string err2 = Protocol.IntArg(a, "pageSize", defaultSize, out size);
+            if (err != null || err2 != null) return Bad("args", err ?? err2);
             if (page < 0) return Bad("args", "page must be >= 0");
             if (size < 1 || size > maxSize) return Bad("args", "pageSize must be 1.." + maxSize);
             return null;
@@ -1746,12 +1741,15 @@ namespace Morgott.PPBridge
             IEnumerable seq = target as IEnumerable;
             if (seq == null || target is string) return Bad("args", handle + " is a " + target.GetType().Name + ", which is not enumerable");
 
-            int page = a["page"] == null ? 0 : (int)a["page"];
-            int size = a["pageSize"] == null ? DefaultPageSize : (int)a["pageSize"];
+            int page, size;
+            string err = Protocol.IntArg(a, "page", 0, out page);
+            string err2 = Protocol.IntArg(a, "pageSize", DefaultPageSize, out size);
+            if (err != null || err2 != null) return Bad("args", err ?? err2);
             if (page < 0) return Bad("args", "page must be >= 0");
             if (size < 1 || size > MaxPageSize) return Bad("args", "pageSize must be 1.." + MaxPageSize);
 
-            int skip = page * size;
+            // long: page * pageSize overflows int for a large page.
+            long skip = (long)page * size;
             List<object> items = new List<object>();
             bool hasMore = false;
 
@@ -1759,12 +1757,12 @@ namespace Morgott.PPBridge
             IList list = target as IList;
             if (list != null)
             {
-                for (int i = skip; i < list.Count && items.Count < size; i++) items.Add(Project(list[i]));
+                for (long i = skip; i < list.Count && items.Count < size; i++) items.Add(Project(list[(int)i]));
                 hasMore = skip + items.Count < list.Count;
             }
             else
             {
-                int seen = 0;
+                long seen = 0;
                 foreach (object o in seq)
                 {
                     if (seen++ < skip) continue;

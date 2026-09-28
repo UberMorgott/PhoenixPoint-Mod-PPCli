@@ -272,7 +272,37 @@ namespace Morgott.PPBridge
         {
             if (line == null) return "";
             line = line.Replace("\r", "");
-            return line.Length > MaxOutputLineChars ? line.Substring(0, MaxOutputLineChars) + " ...(clipped)" : line;
+            return line.Length > MaxOutputLineChars ? line.Substring(0, MaxOutputLineChars) + ClipMark : line;
+        }
+
+        internal const string ClipMark = " ...(clipped)";
+
+        /// <summary>
+        /// STRICT integer arg, shared by every paged verb. Absent/null = <paramref name="def"/>; a
+        /// JSON integer inside the target range = its value; anything else - "2", true, 1.5, a
+        /// number past Int32/Int64 - is an error message (caller refuses with code:"args"). A plain
+        /// (int)JToken cast accepts all three of those, rounding 1.5 to 2.
+        /// </summary>
+        internal static string LongArg(JObject a, string key, long def, out long value)
+        {
+            value = def;
+            JToken t = a == null ? null : a[key];
+            if (t == null || t.Type == JTokenType.Null) return null;
+            if (t.Type != JTokenType.Integer || !(((JValue)t).Value is long || ((JValue)t).Value is int))
+                return key + " must be a JSON integer (not a string, boolean or fraction)";
+            value = Convert.ToInt64(((JValue)t).Value, System.Globalization.CultureInfo.InvariantCulture);
+            return null;
+        }
+
+        internal static string IntArg(JObject a, string key, int def, out int value)
+        {
+            value = def;
+            long l;
+            string err = LongArg(a, key, def, out l);
+            if (err != null) return err;
+            if (l < int.MinValue || l > int.MaxValue) return key + " is out of range";
+            value = (int)l;
+            return null;
         }
     }
 
@@ -321,14 +351,9 @@ namespace Morgott.PPBridge
 
         internal static object PageArgs(JObject a, out int lines, out int bytes)
         {
-            lines = DefaultPageLines;
-            bytes = DefaultPageBytes;
-            try
-            {
-                if (a != null && a["pageLines"] != null && a["pageLines"].Type != JTokenType.Null) lines = (int)a["pageLines"];
-                if (a != null && a["pageBytes"] != null && a["pageBytes"].Type != JTokenType.Null) bytes = (int)a["pageBytes"];
-            }
-            catch (Exception) { return new { ok = false, code = "args", error = "pageLines and pageBytes must be integers" }; }
+            string e1 = Protocol.IntArg(a, "pageLines", DefaultPageLines, out lines);
+            string e2 = Protocol.IntArg(a, "pageBytes", DefaultPageBytes, out bytes);
+            if (e1 != null || e2 != null) return new { ok = false, code = "args", error = e1 ?? e2 };
             if (lines < 1 || lines > MaxPageLines)
                 return new { ok = false, code = "args", error = "pageLines must be 1.." + MaxPageLines };
             if (bytes < MinPageBytes || bytes > MaxPageBytes)
