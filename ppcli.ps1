@@ -64,7 +64,10 @@ param(
     # progress) are dropped unless -Verbose (common parameter) or env PPCLI_VERBOSE=1 asks for them.
     # Warnings, refusals and errors always print. -Quiet / PPCLI_QUIET=1 still force quiet, and win
     # over PPCLI_VERBOSE, so a pre-0.3.0 caller that passes them keeps working unchanged.
-    [switch] $Quiet
+    [switch] $Quiet,
+    # `act {use}` / `act {endTurn}` (alone, in `multi`, a batch or a plan) against the Steam install
+    # you PLAY is refused unless this is passed: it would play your real turn.
+    [switch] $AllowMutate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -96,6 +99,16 @@ function Assert-NoLogFault($mark) {
            "waiting, so the wait was abandoned instead of run to its full budget. Kill that game " +
            "process and relaunch it; pass -IgnoreLogFaults to wait anyway, or -FaultPattern to " +
            "change what counts. Log: $($mark.path)`n" + $fault)
+}
+
+# The user's own game (a Steam library copy) is read-only to `act` unless -AllowMutate: a `use` or an
+# `endTurn` plays the real turn of a real save. Checked BEFORE the endpoint is even looked up.
+function Assert-MutateAllowed($Node, [string] $Verb = '') {
+    if ($AllowMutate -or -not (Test-PPMainInstall $PPRoot)) { return }
+    if (-not (Test-ActMutates $Node $Verb)) { return }
+    throw ("REFUSED: this request contains an `act` use/endTurn and $PPRoot is a Steam install - the game " +
+           "you PLAY. It would take a real action in your real save. Point -PPRoot at an automation copy " +
+           "(ppcli-install.txt), or pass -AllowMutate if you mean it. Nothing was sent.")
 }
 
 function Invoke-Jobs([string] $jobsJson) {
@@ -493,6 +506,7 @@ switch ($Command) {
         $args1 = $null
         # -NoEnumerate: a top-level JSON array of args would otherwise arrive as a scalar.
         if ($Arg2) { $args1 = ConvertFrom-Json $Arg2 -NoEnumerate }   # fails loudly here, not in the game
+        Assert-MutateAllowed $args1 $Arg1
         $job = [ordered]@{ id = 'r1'; verb = $Arg1 }
         if ($null -ne $args1) { $job.args = $args1 }
         Invoke-Jobs (ConvertTo-Json @($job) -Depth 12 -Compress) | ConvertTo-Json -Depth 12 -Compress
@@ -504,6 +518,7 @@ switch ($Command) {
         # -NoEnumerate: without it a one-job array arrives as a scalar and a valid batch is refused.
         $parsed = ConvertFrom-Json $text -NoEnumerate       # refuse a malformed batch before launching
         if ($parsed -isnot [array]) { throw "$Arg1 must be a JSON ARRAY of {id,verb,args} objects" }
+        Assert-MutateAllowed $parsed
         # The bridge reads at most 256 jobs from a file and DROPS the rest (Protocol.MaxJobs), which
         # from here looks like a run that simply answered fewer rows - outer ok stays true. Refused
         # before the launch instead, because a cold run costs ~17 s to find that out.
@@ -543,6 +558,7 @@ switch ($Command) {
                 if ($r -isnot [psobject] -or $null -eq $r.PSObject.Properties['verb']) { throw "request $n is not an object with a 'verb'" }
                 if (-not $r.verb) { throw "request $n has no 'verb'" }
             }
+            Assert-MutateAllowed $reqs
 
             $ep = Get-Endpoint
             Info "pipe $($ep.pipe) (pid $($ep.pid), build=$($ep.build), $($ep.protocol)) - $($reqs.Count) requests"
@@ -580,6 +596,7 @@ switch ($Command) {
             $args1 = $null
             # -NoEnumerate: a top-level JSON array of args would otherwise arrive as a scalar.
             if ($Arg2) { $args1 = ConvertFrom-Json $Arg2 -NoEnumerate }   # fails loudly here, not in the game
+            Assert-MutateAllowed $args1 $Arg1
             Send-Verb $Arg1 $args1
         }
     }
@@ -590,6 +607,7 @@ switch ($Command) {
         # inside the game five seconds later.
         $planObj = ConvertFrom-Json (Get-Content -Raw $Arg1) -NoEnumerate -Depth 64
         if (-not $planObj.steps) { throw "$Arg1 has no 'steps' array" }
+        Assert-MutateAllowed $planObj
         # THE CLIENT MUST NOT BE THE SHORTER CLOCK. -TimeoutSeconds defaults to 300, and six shipped
         # plans declare a longer timeoutMs than that (start-campaign 900 s, build-mission and
         # start-mission 600, load-mission/situation/weapon-test 540) - so the very first thing a

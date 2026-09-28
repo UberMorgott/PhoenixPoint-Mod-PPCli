@@ -83,6 +83,42 @@ function Format-InstallOrigin([string] $Pinned) {
             'automation? Put its path in ppcli-install.txt beside ppcli.ps1 and it becomes the default')
 }
 
+<#
+  The install a human PLAYS: any Steam library copy (`...\steamapps\common\...`). Automation runs on a
+  side-by-side copy (ppcli-install.txt, e.g. D:\PP-Instance2); a mutating `act` against this one would
+  play the user's real turn, so the client refuses it unless -AllowMutate.
+#>
+function Test-PPMainInstall([string] $Path) {
+    if (-not $Path) { return $false }
+    return ([IO.Path]::GetFullPath($Path) -replace '/', '\') -match '(?i)\\steamapps\\common\\'
+}
+
+<#
+  Does this request (a verb + args, a `multi` array, a plan object, a batch array) contain an `act`
+  that CHANGES the game - `use` or `endTurn`? `list`/`squad` are reads. Walks every nested object, so
+  a plan's steps, `repeat` bodies and `finally` are all covered.
+#>
+function Test-ActMutates($Node, [string] $Verb = '') {
+    if ($Verb -eq 'act' -and $null -ne $Node) {
+        foreach ($k in 'use', 'endTurn') { if ($Node.PSObject.Properties[$k] -or ($Node -is [hashtable] -and $Node.ContainsKey($k))) { return $true } }
+        return $false
+    }
+    if ($null -eq $Node -or $Node -is [string] -or $Node -is [ValueType]) { return $false }
+    if ($Node -is [Collections.IEnumerable] -and $Node -isnot [Collections.IDictionary]) {
+        foreach ($e in $Node) { if (Test-ActMutates $e) { return $true } }
+        return $false
+    }
+    $props = if ($Node -is [Collections.IDictionary]) { @($Node.Keys | ForEach-Object { [pscustomobject]@{ Name = $_; Value = $Node[$_] } }) }
+             else { @($Node.PSObject.Properties) }
+    $v = @($props | Where-Object Name -eq 'verb')
+    if ($v.Count -eq 1 -and $v[0].Value -eq 'act') {
+        $a = @($props | Where-Object Name -eq 'args')
+        if ($a.Count -eq 1 -and (Test-ActMutates $a[0].Value 'act')) { return $true }
+    }
+    foreach ($p in $props) { if (Test-ActMutates $p.Value) { return $true } }
+    return $false
+}
+
 function Find-PPInstall([string[]] $Roots) {
     if (-not $Roots) {
         $pinned = Get-PPPinnedInstall

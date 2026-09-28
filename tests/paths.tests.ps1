@@ -191,6 +191,42 @@ try { $armErr = [string]::Join('', @($armOut)) | ConvertFrom-Json } catch { }
 Assert-Value 'an unarmed install is refused by name, before anything is launched' `
     ($(if ($armErr.error -like '*ppcli-enabled*') { 'named' } else { "wrong:$armOut" })) 'named'
 
+# MUTATE GUARD. `act` use/endTurn against a Steam library install (the game the user PLAYS) is
+# refused before any endpoint lookup; reads are not; the walk reaches nested plan bodies.
+Assert-Value 'a steamapps\common install is the main install' ([string](Test-PPMainInstall $installA)) 'True'
+Assert-Value 'an automation copy is not the main install' ([string](Test-PPMainInstall 'D:\PP-Instance2')) 'False'
+Assert-Value 'act use mutates' ([string](Test-ActMutates ('{"use":{"ability":"move"}}' | ConvertFrom-Json) 'act')) 'True'
+Assert-Value 'act squad is a read' ([string](Test-ActMutates ('{"squad":true}' | ConvertFrom-Json) 'act')) 'False'
+Assert-Value 'a use nested in repeat/finally of a plan is found' `
+    ([string](Test-ActMutates ('{"steps":[{"verb":"repeat","args":{"steps":[{"verb":"ping"}]}}],"finally":[{"verb":"act","args":{"endTurn":true}}]}' | ConvertFrom-Json -NoEnumerate))) 'True'
+Assert-Value 'a plan of reads is not a mutation' `
+    ([string](Test-ActMutates ('{"steps":[{"verb":"act","args":{"list":{}}},{"verb":"call","args":{"use":1}}]}' | ConvertFrom-Json -NoEnumerate))) 'False'
+Assert-Value 'a multi array with an endTurn is found' `
+    ([string](Test-ActMutates ('[{"verb":"state"},{"verb":"act","args":{"endTurn":true}}]' | ConvertFrom-Json -NoEnumerate))) 'True'
+
+$mutOut = & pwsh -NoProfile -File (Join-Path $root 'ppcli.ps1') connect act '{"endTurn":true}' -PPRoot $installA 2>$null
+$mutErr = $null
+try { $mutErr = [string]::Join('', @($mutOut)) | ConvertFrom-Json } catch { }
+Assert-Value 'act endTurn on the played install is refused, naming -AllowMutate' `
+    ($(if ($mutErr.error -like '*-AllowMutate*') { 'refused' } else { "wrong:$mutOut" })) 'refused'
+$readOut = & pwsh -NoProfile -File (Join-Path $root 'ppcli.ps1') connect act '{"squad":true}' -PPRoot $installA 2>$null
+$readErr = $null
+try { $readErr = [string]::Join('', @($readOut)) | ConvertFrom-Json } catch { }
+Assert-Value 'an act read on the played install passes the guard (then finds no endpoint)' `
+    ($(if ($readErr.error -notlike '*-AllowMutate*') { 'passed' } else { "wrong:$readOut" })) 'passed'
+$allowOut = & pwsh -NoProfile -File (Join-Path $root 'ppcli.ps1') connect act '{"endTurn":true}' -PPRoot $installA -AllowMutate 2>$null
+$allowErr = $null
+try { $allowErr = [string]::Join('', @($allowOut)) | ConvertFrom-Json } catch { }
+Assert-Value '-AllowMutate lets it through the guard' `
+    ($(if ($allowErr.error -notlike '*-AllowMutate*') { 'passed' } else { "wrong:$allowOut" })) 'passed'
+$planFile = Join-Path $scratch 'turn.json'
+Set-Content -Path $planFile -Encoding utf8NoBOM -Value '{"steps":[{"id":"a","verb":"repeat","args":{"times":2,"steps":[{"id":"u","verb":"act","args":{"use":{"ability":"move"}}}]}}],"finally":[]}'
+$planOut = & pwsh -NoProfile -File (Join-Path $root 'ppcli.ps1') plan $planFile -PPRoot $installA 2>$null
+$planErr = $null
+try { $planErr = [string]::Join('', @($planOut)) | ConvertFrom-Json } catch { }
+Assert-Value 'a plan with a nested act use on the played install is refused' `
+    ($(if ($planErr.error -like '*-AllowMutate*') { 'refused' } else { "wrong:$planOut" })) 'refused'
+
 }
 finally { Remove-Scratch }
 
