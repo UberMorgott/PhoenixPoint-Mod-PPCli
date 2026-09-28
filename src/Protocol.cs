@@ -315,9 +315,14 @@ namespace Morgott.PPBridge
     /// Bounded three ways, because a snapshot is memory the game process holds for a caller that may
     /// never come back: at most <see cref="MaxSnapshots"/> live at once (oldest evicted), each dies
     /// <see cref="TtlSeconds"/> after its last read, and all of them together stay under
-    /// <see cref="MaxStoreChars"/>. A page is limited by lines AND by UTF-8 bytes of its JSON (the
-    /// pipe frame is 256 KiB, Wire.cs:17), and always carries at least one line so paging can never
-    /// stall on a long one. Main thread only, like every verb.
+    /// <see cref="MaxStoreChars"/>. A page is limited by lines AND by the UTF-8 bytes of the WHOLE
+    /// reply JSON (the pipe frame is 256 KiB, Wire.cs:17), and always carries at least one line so
+    /// paging can never stall: a line that alone overflows the budget is clipped to fit, and every
+    /// page reports `clipped:N` = lines on it not shown whole (2000-char capture clip or page fit).
+    /// The run's own fields (ok, error, code, truncated) ride on EVERY page, so a caller checking
+    /// only the last page still sees a failed run. A cursor is a server-held token (offset never in
+    /// the string), so it cannot be edited into a skip, a repeat or an empty page.
+    /// Main thread only, like every verb.
     /// </summary>
     internal static class ConsolePager
     {
@@ -336,10 +341,14 @@ namespace Morgott.PPBridge
 
         private sealed class Snap
         {
-            internal string Id;
             internal string[] Lines;
             internal long Chars;
             internal DateTime Touched;
+            /// <summary>The run's own fields minus output: repeated on every page.</summary>
+            internal JObject Meta;
+            /// <summary>Issued cursor token -> offset. Only the server knows the offset.</summary>
+            internal readonly Dictionary<string, int> Cursors = new Dictionary<string, int>();
+            internal readonly Dictionary<int, string> Tokens = new Dictionary<int, string>();
         }
 
         private static readonly List<Snap> snaps = new List<Snap>();
@@ -362,7 +371,8 @@ namespace Morgott.PPBridge
         }
 
         /// <summary>The first page of a run that just happened. Every other field of the runner's
-        /// DTO (ok, error, truncated) is kept; only `output` is paged.</summary>
+        /// DTO (ok, error, code, truncated) is kept - on this page AND every later one; only
+        /// `output` is paged.</summary>
         internal static object First(object result, int pageLines, int pageBytes)
         {
             JObject dto;
@@ -374,81 +384,144 @@ namespace Morgott.PPBridge
             string[] lines = new string[output.Count];
             long chars = 0;
             for (int i = 0; i < lines.Length; i++) { lines[i] = (string)output[i] ?? ""; chars += lines[i].Length; }
+            dto.Remove("output");
             // `truncated` now means one thing only: the CAPTURE hit its bound and lines were lost.
             // "There is more to read" is `hasMore`, and a false truncated is left out.
             JToken tr = dto["truncated"];
             if (tr != null && tr.Type == JTokenType.Boolean && !(bool)tr) dto.Remove("truncated");
+            // A thrown command's message is not bounded by the capture; one line's worth is.
+            if (dto["error"] != null && dto["error"].Type == JTokenType.String) dto["error"] = Protocol.Clip((string)dto["error"]);
 
-            int taken = Take(lines, 0, pageLines, pageBytes);
-            JArray page = new JArray();
-            for (int i = 0; i < taken; i++) page.Add(lines[i]);
-            dto["output"] = page;
-            dto["total"] = lines.Length;
-            dto["hasMore"] = taken < lines.Length;
-            if (taken < lines.Length)
-            {
-                Snap s = Store(lines, chars);
-                dto["cursor"] = s.Id + ":" + taken;
-            }
-            return dto;
+            return Page(dto, lines, chars, null, 0, pageLines, pageBytes);
         }
 
         /// <summary>The page after a cursor. Reading the last page frees the snapshot.</summary>
         internal static object Next(string cursor, int pageLines, int pageBytes)
         {
             Prune();
-            string id;
-            int offset;
-            if (!Parse(cursor, out id, out offset))
-                return new { ok = false, code = "cursor", error = "'" + cursor + "' is not a console cursor - pass the `cursor` string a console reply handed back, unchanged" };
-            Snap s = snaps.Find(x => x.Id == id);
-            if (s == null || offset > s.Lines.Length)
+            int offset = 0;
+            Snap s = cursor == null ? null : snaps.Find(x => x.Cursors.TryGetValue(cursor, out offset));
+            if (s == null)
                 return new
                 {
                     ok = false, code = "cursor",
-                    error = "console cursor '" + cursor + "' is unknown or expired - a snapshot lives " + TtlSeconds +
-                            " s after its last read and at most " + MaxSnapshots + " are kept. Nothing was re-run; " +
-                            "run the command again if you still want its output"
+                    error = "console cursor '" + Protocol.Clip(cursor) + "' is unknown or expired - pass the `cursor` string a console " +
+                            "reply handed back, unchanged. A snapshot lives " + TtlSeconds + " s after its last read and at most " +
+                            MaxSnapshots + " are kept. Nothing was re-run; run the command again if you still want its output"
                 };
             s.Touched = Now();
-            int taken = Take(s.Lines, offset, pageLines, pageBytes);
-            string[] page = new string[taken];
-            Array.Copy(s.Lines, offset, page, 0, taken);
-            bool more = offset + taken < s.Lines.Length;
-            if (!more) snaps.Remove(s);
-            Dictionary<string, object> dto = new Dictionary<string, object>
+            return Page(s.Meta, s.Lines, s.Chars, s, offset, pageLines, pageBytes);
+        }
+
+        /// <summary>
+        /// One page: the run's fields + as many lines from <paramref name="from"/> as fit pageLines
+        /// and pageBytes of the WHOLE reply. The envelope is measured first with every optional
+        /// key at its widest (hasMore:false, a cursor, clipped), so the real reply is never larger.
+        /// Always at least one line: one that alone overflows is clipped to fit and counted.
+        /// </summary>
+        private static object Page(JObject meta, string[] lines, long chars, Snap s, int from, int pageLines, int pageBytes)
+        {
+            JObject dto = (JObject)meta.DeepClone();
+            // The error is repeated on every page, so it gets at most a quarter of every page.
+            if (dto["error"] != null && dto["error"].Type == JTokenType.String)
             {
-                { "ok", true }, { "output", page }, { "offset", offset }, { "total", s.Lines.Length }, { "hasMore", more }
-            };
-            if (more) dto["cursor"] = s.Id + ":" + (offset + taken);
+                bool cut;
+                dto["error"] = ClipJson((string)dto["error"], pageBytes / 4, out cut);
+            }
+            dto["output"] = new JArray();
+            if (s != null) dto["offset"] = lines.Length;
+            dto["total"] = lines.Length;
+            dto["hasMore"] = false;
+            dto["cursor"] = new string('f', TokenChars);
+            dto["clipped"] = MaxPageLines;
+            long budget = pageBytes - Encoding.UTF8.GetByteCount(JsonConvert.SerializeObject(dto));
+
+            JArray page = new JArray();
+            int clipped = 0;
+            long used = 0;
+            int i = from;
+            for (; i < lines.Length && page.Count < pageLines; i++)
+            {
+                long comma = page.Count == 0 ? 0 : 1;
+                string line = lines[i];
+                long cost = JsonBytes(line) + comma;
+                if (used + cost > budget)
+                {
+                    if (page.Count > 0) break;
+                    bool cut;
+                    line = ClipJson(line, budget, out cut);   // alone too big: fit it, never skip the budget
+                    cost = JsonBytes(line);
+                    clipped++;
+                    page.Add(line);
+                    used += cost;
+                    i++;
+                    break;
+                }
+                if (IsCaptureClipped(line)) clipped++;
+                page.Add(line);
+                used += cost;
+            }
+
+            dto["output"] = page;
+            if (s != null) dto["offset"] = from;
+            bool more = i < lines.Length;
+            dto["hasMore"] = more;
+            dto.Remove("cursor");
+            dto.Remove("clipped");
+            if (clipped > 0) dto["clipped"] = clipped;
+            if (more)
+            {
+                if (s == null) { s = Store(lines, chars, meta); }
+                // Same offset, same token: a retried read answers the identical page + cursor.
+                string token;
+                if (!s.Tokens.TryGetValue(i, out token)) { token = NewToken(); s.Tokens[i] = token; s.Cursors[token] = i; }
+                dto["cursor"] = token;
+            }
+            else if (s != null) snaps.Remove(s);
             return dto;
         }
 
-        /// <summary>How many lines from <paramref name="from"/> fit: at most pageLines, and the JSON
-        /// of the page at most pageBytes UTF-8 bytes - but never zero while any are left.</summary>
-        private static int Take(string[] lines, int from, int pageLines, int pageBytes)
+        /// <summary>The 2000-char capture clip (Protocol.Clip) leaves this exact shape behind.</summary>
+        private static bool IsCaptureClipped(string line)
         {
-            long used = 2;                                            // the enclosing []
-            int n = 0;
-            for (int i = from; i < lines.Length && n < pageLines; i++)
-            {
-                // The line as it will be SERIALISED: quotes, escapes and \uXXXX all count.
-                long cost = Encoding.UTF8.GetByteCount(JsonConvert.ToString(lines[i])) + 1;
-                if (n > 0 && used + cost > pageBytes) break;
-                used += cost;
-                n++;
-            }
-            return n;
+            return line.Length == Protocol.MaxOutputLineChars + Protocol.ClipMark.Length && line.EndsWith(Protocol.ClipMark, StringComparison.Ordinal);
         }
 
-        private static Snap Store(string[] lines, long chars)
+        private static long JsonBytes(string s) { return Encoding.UTF8.GetByteCount(JsonConvert.ToString(s)); }
+
+        /// <summary>The longest prefix of <paramref name="s"/> + ClipMark whose serialised JSON
+        /// string is at most <paramref name="maxBytes"/> UTF-8 bytes. Never splits a surrogate pair.</summary>
+        internal static string ClipJson(string s, long maxBytes, out bool cut)
+        {
+            cut = false;
+            if (s == null || JsonBytes(s) <= maxBytes) return s;
+            cut = true;
+            int lo = 0, hi = s.Length;
+            while (lo < hi)
+            {
+                int mid = (lo + hi + 1) / 2;
+                if (JsonBytes(s.Substring(0, mid) + Protocol.ClipMark) <= maxBytes) lo = mid; else hi = mid - 1;
+            }
+            if (lo > 0 && char.IsHighSurrogate(s[lo - 1])) lo--;
+            return lo == 0 && JsonBytes(Protocol.ClipMark) > maxBytes ? "" : s.Substring(0, lo) + Protocol.ClipMark;
+        }
+
+        /// <summary>24 hex chars of randomness: guessable neither as an offset nor as another snapshot.</summary>
+        private const int TokenChars = 24;
+
+        private static string NewToken()
+        {
+            byte[] b = new byte[TokenChars / 2];
+            lock (rng) rng.NextBytes(b);
+            return BitConverter.ToString(b).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static Snap Store(string[] lines, long chars, JObject meta)
         {
             Prune();
             while (snaps.Count > 0 && (snaps.Count >= MaxSnapshots || Total() + chars > MaxStoreChars))
                 snaps.RemoveAt(0);                                    // oldest first; they are kept in creation order
-            byte[] b = new byte[6];
-            lock (rng) rng.NextBytes(b);
-            Snap s = new Snap { Id = BitConverter.ToString(b).Replace("-", "").ToLowerInvariant(), Lines = lines, Chars = chars, Touched = Now() };
+            Snap s = new Snap { Lines = lines, Chars = chars, Touched = Now(), Meta = meta };
             snaps.Add(s);
             return s;
         }
@@ -466,16 +539,5 @@ namespace Morgott.PPBridge
             snaps.RemoveAll(s => s.Touched < cut);
         }
 
-        private static bool Parse(string cursor, out string id, out int offset)
-        {
-            id = null;
-            offset = 0;
-            if (string.IsNullOrEmpty(cursor)) return false;
-            int colon = cursor.IndexOf(':');
-            if (colon <= 0) return false;
-            id = cursor.Substring(0, colon);
-            return int.TryParse(cursor.Substring(colon + 1), System.Globalization.NumberStyles.None,
-                                System.Globalization.CultureInfo.InvariantCulture, out offset);
-        }
     }
 }

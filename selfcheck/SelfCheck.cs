@@ -719,6 +719,9 @@ namespace Morgott.PPBridge
                 if (c == "boom") return new { ok = false, output = new[] { "partial" }, error = "NullReferenceException: x" };
                 if (c == "wide") { List<string> w = new List<string>(); for (int i = 0; i < 100; i++) w.Add(new string('я', 1500)); return new { ok = true, output = w.ToArray(), truncated = false }; }
                 if (c == "few") return new { ok = true, output = new[] { "a", "b" }, truncated = false };
+                if (c == "boomBig") return new { ok = false, output = big.ToArray(), error = "NullReferenceException: after 1000 lines" };
+                if (c == "boomFat") return new { ok = false, output = new[] { "partial" }, error = new string('\u0001', 1900) };
+                if (c == "long") return new { ok = true, output = new[] { Protocol.Clip(new string('q', 5000)), "short" }, truncated = false };
                 return new { ok = true, output = big.ToArray(), truncated = false };
             };
 
@@ -784,9 +787,68 @@ namespace Morgott.PPBridge
             Check("console-page-bytes-refused-not-clamped", Console1("{'command':'few','pageBytes':196609}").Contains("\"code\":\"args\""),
                   Console1("{'command':'few','pageBytes':196609}"));
             Check("console-command-and-cursor-refused", Console1("{'command':'few','cursor':'" + oldest + "'}").Contains("\"code\":\"args\""), "both accepted");
+
+            // --- Codex review of A+B.
+            // A run that printed pages and THEN threw: every page says so, not only the first.
+            string bf = Console1("{'command':'boomBig'}");
+            JObject bfo = JObject.Parse(bf);
+            string bn = Console1("{'cursor':'" + (string)bfo["cursor"] + "'}");
+            Check("console-error-on-every-page", bf.Contains("\"ok\":false") && bn.Contains("\"ok\":false") && bn.Contains("NullReference") && !bn.Contains("\"ok\":true"), bn.Substring(0, Math.Min(200, bn.Length)));
+            // pageBytes is the WHOLE reply, and a line too big for it is clipped + counted, not let through.
+            string w1 = Console1("{'command':'wide','pageBytes':1024}");
+            Check("console-page-bytes-is-the-whole-reply", B8(w1) <= 1024 && (int)JObject.Parse(w1)["clipped"] == 1, "bytes=" + B8(w1));
+            string wc = (string)JObject.Parse(w1)["cursor"]; int wreads = 0, wmax = 0, wseen = 1;
+            while (wc != null && wreads++ < 200)
+            {
+                string wp = Console1("{'cursor':'" + wc + "','pageBytes':1024}");
+                wmax = Math.Max(wmax, B8(wp)); wseen += ((JArray)JObject.Parse(wp)["output"]).Count;
+                wc = (string)JObject.Parse(wp)["cursor"];
+            }
+            Check("console-every-page-within-page-bytes", wmax <= 1024 && wseen == 100, "max=" + wmax + " seen=" + wseen);
+            string fatErr = Console1("{'command':'boomFat','pageBytes':1024}");
+            Check("console-fat-error-still-within-page-bytes", B8(fatErr) <= 1024 && fatErr.Contains("\"ok\":false"), "bytes=" + B8(fatErr));
+            // The 2000-char capture clip is data loss the reply must name.
+            string lng = Console1("{'command':'long'}");
+            Check("console-capture-clip-is-flagged", (int?)JObject.Parse(lng)["clipped"] == 1, lng.Substring(0, 100));
+            Check("console-unclipped-page-has-no-clip-flag", !Console1("{'command':'few'}").Contains("clipped"), "clipped on a short page");
+            // The cursor is a server-held token: an edited one is refused, never an empty/skipped page.
+            string tc = (string)JObject.Parse(Console1("{'command':'many'}"))["cursor"];
+            string tampered = tc.Contains(":") ? tc.Substring(0, tc.IndexOf(':') + 1) + "1000"
+                                              : tc.Substring(0, tc.Length - 1) + (tc.EndsWith("0") ? "1" : "0");
+            string tr2 = Console1("{'cursor':'" + tampered + "'}");
+            Check("console-tampered-cursor-refused", tr2.Contains("\"code\":\"cursor\"") && !tc.Contains(":"), tr2.Substring(0, Math.Min(160, tr2.Length)));
+            Check("console-cursor-reread-is-idempotent", Console1("{'cursor':'" + tc + "'}") == Console1("{'cursor':'" + tc + "'}"), "same cursor, different page");
+            // fire-event.json: its SHIPPED trigger + receipt-complete steps, verbatim. A receipt that
+            // overran one page must fail the plan, not publish a partial `consoleOutput`.
+            string pdir = null;
+            for (DirectoryInfo d = new DirectoryInfo(AppContext.BaseDirectory); d != null && pdir == null; d = d.Parent)
+                if (Directory.Exists(Path.Combine(d.FullName, "plans"))) pdir = Path.Combine(d.FullName, "plans");
+            JArray fsteps = (JArray)JObject.Parse(File.ReadAllText(Path.Combine(pdir, "fire-event.json")))["steps"];
+            JArray pair = new JArray();
+            foreach (JToken st in fsteps) if ((string)st["id"] == "trigger" || (string)st["id"] == "receipt-complete") pair.Add(st.DeepClone());
+            Func<string, string> fire = cmd =>
+            {
+                pair[0]["args"]["command"] = cmd;                   // the stand-in runner's command name
+                return Run("plan", new JObject { { "plan", new JObject { { "vars", new JObject { { "eventId", "X" } } }, { "steps", pair } } } }
+                    .ToString(Newtonsoft.Json.Formatting.None));
+            };
+            // 2500 lines is past the widest page (2000 lines), so the receipt cannot be whole.
+            List<string> huge = new List<string>(); for (int i = 0; i < 2500; i++) huge.Add("site " + i);
+            Func<string, string[], object> prev = Protocol.ConsoleRun;
+            Protocol.ConsoleRun = (c, a) => c == "huge" ? new { ok = true, output = huge.ToArray(), truncated = false } : prev(c, a);
+            string incomplete = fire("huge"), whole = fire("few");
+            Protocol.ConsoleRun = prev;
+            Check("fire-event-partial-receipt-fails", pair.Count == 2 && incomplete.Contains("\"ok\":false") && incomplete.Contains("receipt-incomplete"),
+                  incomplete.Substring(0, Math.Min(300, incomplete.Length)));
+            Check("fire-event-whole-receipt-passes", whole.Contains("\"ok\":true"), whole.Substring(0, Math.Min(300, whole.Length)));
+            foreach (string junk in new[] { "'60'", "true", "1.5" })
+                Check("console-page-lines-strict-int-" + junk.Trim('\''), Console1("{'command':'few','pageLines':" + junk + "}").Contains("\"code\":\"args\""),
+                      Console1("{'command':'few','pageLines':" + junk + "}"));
             ConsolePager.Reset();
             Protocol.ConsoleRun = null;
         }
+
+        private static int B8(string s) { return Encoding.UTF8.GetByteCount(s); }
 
         private static string V(string verb, string json)
         {
@@ -996,6 +1058,20 @@ namespace Morgott.PPBridge
             string findAll = R("find", "{'all':true}");
             Check("budget-find-all-default", B(findAll) <= 4500, "bytes=" + B(findAll));
 
+            // Review: (int)JToken took "2", true and 1.5 (rounded) as page sizes. One strict helper now.
+            foreach (string junk in new[] { "'2'", "true", "1.5", "9999999999" })
+            {
+                string j = junk.Trim('\'');
+                Check("strict-int-find-" + j, R("find", "{'query':'Crabman','pageSize':" + junk + "}").Contains("\"code\":\"args\""), R("find", "{'query':'Crabman','pageSize':" + junk + "}"));
+                Check("strict-int-find-page-" + j, R("find", "{'query':'Crabman','page':" + junk + "}").Contains("\"code\":\"args\""), R("find", "{'query':'Crabman','page':" + junk + "}"));
+                Check("strict-int-types-" + j, R("types", "{'pattern':'System.','pageSize':" + junk + "}").Contains("\"code\":\"args\""), "accepted");
+                Check("strict-int-members-" + j, R("members", "{'type':'System.String','pageSize':" + junk + "}").Contains("\"code\":\"args\""), "accepted");
+                Check("strict-int-log-" + j, V("log", "{'pageSize':" + junk + "}").Contains("\"code\":\"args\""), V("log", "{'pageSize':" + junk + "}"));
+                if (j != "9999999999")                             // a legal long since: that one is code:"cursor"
+                    Check("strict-int-log-since-" + j, V("log", "{'since':" + junk + "}").Contains("\"code\":\"args\""), V("log", "{'since':" + junk + "}"));
+            }
+            Check("strict-int-accepts-a-real-integer", R("find", "{'query':'Crabman','pageSize':2}").Contains("\"pageSize\":2"), "pageSize:2 refused");
+
             List<string> steps = new List<string>();
             for (int i = 0; i < 80; i++) steps.Add("{'id':'p" + i + "','verb':'ping'}");
             string plan = Run("plan", "{'plan':{'steps':[" + string.Join(",", steps) + "]}}");
@@ -1125,6 +1201,12 @@ namespace Morgott.PPBridge
             Check("observe-summary-only", summaryOnly.Contains("\"impacts\":[]") && summaryOnly.Contains("\"n\":" + Shots.Capacity), summaryOnly);
             Check("observe-page-size-refused-not-clamped", Run("observe", "{'action':'read','pageSize':201}").Contains("\"ok\":false"),
                   Run("observe", "{'action':'read','pageSize':201}"));
+            // Review: page+1 was int math - page:int.MaxValue wrapped to an empty page with hasMore:true.
+            string farPage = Run("observe", "{'action':'read','page':2147483647,'pageSize':10}");
+            Check("observe-huge-page-is-empty-and-last", farPage.Contains("\"returned\":0") && farPage.Contains("\"hasMore\":false"), farPage);
+            foreach (string junk in new[] { "'2'", "true", "1.5" })
+                Check("observe-page-size-strict-int-" + junk.Trim('\''), Run("observe", "{'action':'read','pageSize':" + junk + "}").Contains("\"code\":\"args\""),
+                      Run("observe", "{'action':'read','pageSize':" + junk + "}"));
             string lastPage = Run("observe", "{'action':'read','page':51,'pageSize':10}");
             Check("observe-last-page", lastPage.Contains("\"returned\":2") && lastPage.Contains("\"hasMore\":false"), lastPage);
             // The stats are computed over EVERYTHING stored, not over the trimmed listing.
@@ -1326,6 +1408,14 @@ namespace Morgott.PPBridge
             string contTrace = Run("plan", "{'plan':{'steps':[{'id':'bad','verb':'no-such-verb','onError':'continue'},{'id':'good','verb':'ping'}]}}");
             Check("plan-errors-trace-keeps-a-continued-failure", contTrace.Contains("\"id\":\"bad\"") && !contTrace.Contains("\"id\":\"good\""), contTrace);
             Check("plan-trace-mode-refuses-junk", Run("plan", "{'plan':{'steps':[{'verb':'ping'}]},'trace':'all'}").Contains("\"code\":\"args\""), "trace:all accepted");
+            // Review P1: the errors trace must not share the full trace's 500-row buffer - 510
+            // green steps used to fill it, and the continued failure after them vanished.
+            List<string> many = new List<string>();
+            for (int i = 0; i < Plan.MaxTrace + 10; i++) many.Add("{'verb':'ping'}");
+            many.Add("{'id':'late','verb':'no-such-verb','onError':'continue'}");
+            string lateFail = Run("plan", "{'plan':{'maxSteps':" + (Plan.MaxTrace + 20) + ",'steps':[" + string.Join(",", many) + "]}}");
+            Check("plan-errors-trace-survives-500-green-steps", lateFail.Contains("\"id\":\"late\"") && lateFail.Contains("\"ok\":true"),
+                  lateFail.Length > 300 ? lateFail.Substring(0, 300) : lateFail);
 
             Ov.Counter = 300;
             string capped = Run("plan", "{'plan':{'maxSteps':3,'steps':[{'verb':'ping'},{'verb':'ping'},{'verb':'ping'},{'verb':'ping'},{'verb':'ping'}],'finally':[" + Bump + "]}}");
