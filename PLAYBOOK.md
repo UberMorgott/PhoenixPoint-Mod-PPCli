@@ -272,6 +272,15 @@ the stack has already popped still resolves, and entering it is how this project
 geoscape before. The `To*State()` methods each pick their own `StateStackAction`
 (`GeoscapeView.cs:414-759`), which is the part a hand-rolled push gets wrong.
 
+**Never `ResetViewState(null)` (or `@viewstate ExitState` + `ResetViewState`) away from a QUEUED
+native modal** — `GeoResearchComplete`, `UIStateReplenish`, any window the geoscape queue opened.
+The modal is `GeoscapeViewSwitchQuery._currentStateSwitchRequest`; tearing the screen down leaves
+that request set with nothing on screen, so every later queued window (mission brief, next
+replenish) never presents and a `PauseGame` modal keeps the clock paused (field runs 2026-09-26,
+all peers). Close a modal through its OWN button handler instead, e.g.
+`invoke @viewstate OnReplenishOKButtonClicked`. Already wedged: `set` `_currentStateSwitchRequest`
+to `null` on the switch query.
+
 ### Ageing a campaign — reaching a state nobody played to
 
 A fresh `start-campaign` geoscape has no faction wars, no completed research and no excavations.
