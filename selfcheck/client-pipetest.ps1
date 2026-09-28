@@ -69,8 +69,18 @@ $server = Start-Job -ArgumentList $pipe -ScriptBlock {
     }
     $seen
 }
-Start-Sleep -Milliseconds 700
+# Until the server's pipe exists (a cold Start-Job can take seconds; a fixed 700 ms sleep once let
+# the first connect race it and burn its 30 s pipe timeout), bounded at 30 s.
+$ready = (Get-Date).AddSeconds(30)
+# Listed, never opened: File.Exists on a pipe CONNECTS to it and eats the server's first frame.
+while (-not ([IO.Directory]::GetFiles('\\.\pipe\') -contains "\\.\pipe\$pipe") -and (Get-Date) -lt $ready) { Start-Sleep -Milliseconds 100 }
 
+# The endpoint's pid is THIS pwsh, which Test-EndpointAlive would reject as not-the-game and sweep:
+# every connect then refused and the server job waited forever for its 8 frames. The hook admits
+# exactly this pid; the 999999 file still goes through the real liveness check.
+$env:PPCLI_TEST_ALIVE_PID = [string]$PID
+$env:PPCLI_QUIET = '1'
+$sent = @()
 try {
     $cli = Join-Path (Split-Path -Parent $PSScriptRoot) 'ppcli.ps1'
     $out1 = (& $cli connect state -PPRoot $fake 2>$null) -join "`n"
@@ -79,11 +89,16 @@ try {
     $out4 = (& $cli connect multi '[{"id":"a","verb":"state"},{"id":"b","verb":"call","args":{"op":"get"}}]' -PPRoot $fake 2>$null) -join "`n"
     $out5  = (& $cli connect items '{"h":"h1","pageSize":400}' -PPRoot $fake 2>$null) -join "`n"
     $code5 = $LASTEXITCODE
-    $sent  = @(Receive-Job -Job $server -Wait)
+    # Bounded: a client that sent fewer frames leaves the server blocked in WaitForConnection, and
+    # the frame-count assertion below then reports it instead of this test hanging.
+    if (Wait-Job -Job $server -Timeout 30) { $sent = @(Receive-Job -Job $server) }
+    else { Write-Host '  server still waiting for frames after 30 s - the client sent fewer than expected' }
 }
 finally {
     Remove-Job $server -Force -ErrorAction SilentlyContinue
     Remove-Item $ep -Force -ErrorAction SilentlyContinue
+    $env:PPCLI_TEST_ALIVE_PID = $null
+    $env:PPCLI_QUIET = $null
 }
 
 Write-Host "client pipetest ($(if ($Falsify) { 'FALSIFY' } else { 'normal' }))"

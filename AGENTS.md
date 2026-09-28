@@ -87,7 +87,7 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 ## Release (local build, no CI)
 
 1. Bump `Version`/`AssemblyVersion`/`FileVersion` in `PPBridge.csproj` + `"Version"` in `meta.json` (`X.Y.Z.0`). No CHANGELOG; notes live on the GitHub release (`git log --oneline vPREV..HEAD`).
-2. `dotnet build -c Release /p:PPRoot="D:\PP-Instance2"` (bare build fails: needs `<PPRoot>\ModSDK`). Run every `tests\*.tests.ps1` (`pwsh -NoProfile -File`), all green.
+2. `dotnet build -c Release /p:PPRoot="D:\PP-Instance2"` (bare build fails: needs `<PPRoot>\ModSDK`). Run every `tests\*.tests.ps1` + `selfcheck\client-pipetest.ps1` (`pwsh -NoProfile -File`, each also with `-Falsify`), all exit 0.
 3. Zip FLAT: `PPBridge.dll` + `meta.json` from `bin\Release\PPBridge\` → `PPBridge-X.Y.Z.zip` (no folder, no pdb).
 4. `git commit -m "chore(release): vX.Y.Z"`, `git tag -a vX.Y.Z -m vX.Y.Z`, `git push origin main --tags` (no force).
 5. `gh release create vX.Y.Z <zip> -R UberMorgott/PhoenixPoint-Mod-PPCli --title vX.Y.Z --notes-file <notes> --latest --verify-tag`.

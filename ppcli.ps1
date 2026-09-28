@@ -226,6 +226,9 @@ function Invoke-Jobs([string] $jobsJson) {
 # path, the way a running install is matched before a deploy.
 function Test-EndpointAlive($ep) {
     $p = Get-Process -Id $ep.pid -ErrorAction SilentlyContinue
+    # Offline pipe test only (selfcheck\client-pipetest.ps1): its stand-in server is a pwsh, not the
+    # game, so it names its own pid here. Never set outside that test.
+    if ($p -and $env:PPCLI_TEST_ALIVE_PID -and [string]$ep.pid -eq $env:PPCLI_TEST_ALIVE_PID) { return $p }
     if (-not $p -or $p.Name -ne 'PhoenixPointWin64') { return $null }
     if ($ep.install) {
         $exe = $null
