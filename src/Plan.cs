@@ -467,15 +467,17 @@ namespace Morgott.PPBridge
             private readonly JArray cleanup;
             private readonly JObject output;
             private readonly List<Frame> stack = new List<Frame>();
+            /// <summary>trace:"full" only: every entry, first <see cref="MaxTrace"/>.</summary>
             private readonly List<object> trace = new List<object>();
-            /// <summary>Parallel to <see cref="trace"/>: true for an entry that is a FAILED step.</summary>
-            private readonly List<bool> traceFailed = new List<bool>();
+            /// <summary>FAILED steps only, own <see cref="MaxTrace"/> cap - never shares the full
+            /// buffer, so 500 green steps cannot crowd out a later onError:"continue" failure.</summary>
+            private readonly List<object> failedTrace = new List<object>();
             /// <summary>trace:"full" = every entry (the pre-0.3.0 answer); "errors" (default) = only
             /// failed steps, minus the one `step`+`result` already report. A green 80-step plan
             /// otherwise re-reads 80 {"id","verb","ok":true,"ms"} rows into an agent's context.</summary>
             private readonly bool fullTrace;
-            private int fatalTrace = -1;
-            private int lastTrace = -1;
+            private object fatalTrace;
+            private object lastTrace;
             private readonly DateTime started = DateTime.UtcNow;
             private readonly DateTime deadline;
             private readonly int maxSteps;
@@ -535,11 +537,9 @@ namespace Morgott.PPBridge
             /// <summary>Every trace entry goes through here, so the failed-step index stays in step.</summary>
             private void Trace(object entry, bool failed)
             {
-                lastTrace = -1;
-                if (trace.Count >= MaxTrace) return;
-                trace.Add(entry);
-                traceFailed.Add(failed);
-                lastTrace = trace.Count - 1;
+                lastTrace = entry;
+                if (fullTrace) { if (trace.Count < MaxTrace) trace.Add(entry); }
+                else if (failed && failedTrace.Count < MaxTrace) failedTrace.Add(entry);
             }
 
             public object Tick(bool cancelled)
@@ -817,8 +817,8 @@ namespace Morgott.PPBridge
                 else
                 {
                     List<object> errors = new List<object>();
-                    for (int i = 0; i < trace.Count; i++)
-                        if (traceFailed[i] && i != fatalTrace) errors.Add(trace[i]);
+                    foreach (object e in failedTrace)
+                        if (!ReferenceEquals(e, fatalTrace)) errors.Add(e);
                     if (errors.Count > 0) dto["trace"] = errors.ToArray();
                 }
                 return dto;
