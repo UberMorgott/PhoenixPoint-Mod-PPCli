@@ -1,7 +1,25 @@
 # PPCLI playbook — intent to command
 
-**Front door. Find your intent, copy the line, run it. Do not dig the decompile first.**
-Everything below is run from the PPCLI directory against a **running** game. Depth is in `docs/REFERENCE.md`.
+**Front door. Find your intent below, read ONLY that section, copy the line, run it.** Run from the
+PPCLI directory against a **running** game. Do not dig the decompile first. Depth: `docs/REFERENCE.md`.
+
+| I want to… | Section |
+|---|---|
+| set up / first connect / which install | [First run](#first-run--five-rules-in-this-order) |
+| name a creature/item casually (`crabman`) | [Names](#names--say-it-plainly-the-client-resolves-it) |
+| fire a weapon, get spread/damage numbers | [Weapon](#i-built-a-weapon--show-me-it-firing-and-give-me-numbers) |
+| start a mission/campaign from the menu | [Cold start](#cold-start--from-the-main-menu-with-nothing-played) |
+| spawn / equip / move actors in tactical | [Tactical](#tactical--the-plans) |
+| get a handle on an actor | [Handles](#getting-a-handle--how-to-name-an-actor-without-touching-the-ui) |
+| read or change the open game screen | [Open screen](#the-open-screen--reading-and-changing-it) |
+| age a campaign (resources, research) | [Ageing](#ageing-a-campaign--reaching-a-state-nobody-played-to) |
+| run N instances in co-op | [Co-op](#n-instances-one-co-op-session-multiplayer-mod) |
+| read a value / call a method / does member exist | [Ask the game](#ask-the-game-something) |
+| see Unity log lines / errors as they happen | [Log and events](#watch-the-log-and-game-events--log-events) |
+| know when an actor died / turn changed / ability fired | [Log and events](#watch-the-log-and-game-events--log-events) |
+| click a mod's OnGUI (IMGUI) button, e.g. a bench | [IMGUI](#press-a-mods-ongui-button--imgui) |
+| screenshot | [Ask the game](#ask-the-game-something) |
+| something failed / hangs | [When it goes wrong](#when-it-goes-wrong) |
 
 ## First run — five rules, in this order
 
@@ -508,6 +526,37 @@ plain string and never resolves back to the object (`a string cannot bind to Pro
 .\ppcli.ps1 connect call '{"op":"invoke","target":"h:4:49","member":"PickTarget","args":[{"$h":"h:4:34"}]}'
 ```
 
+## Watch the log and game events — `log`, `events`
+
+Stop polling state to learn what happened: read the delta. Every reply carries `next`; pass it as
+`since` next time. Idle poll = `{"ok":true,"next":N}`. Detail: REFERENCE § Observability.
+
+| Intent | Command |
+|---|---|
+| newest Unity log lines | `.\ppcli.ps1 connect log '{}'` |
+| only NEW errors since last read | `.\ppcli.ps1 connect log '{"since":N,"level":"error"}'` |
+| block until a log line appears | `.\ppcli.ps1 connect wait '{"log":"NullReferenceException","level":"error","timeoutMs":60000}'` |
+| record actor deaths | `.\ppcli.ps1 connect events '{"subscribe":{"target":"@tac","event":"ActorDeathEvent"}}'` → `sub`, `next` |
+| read them | `.\ppcli.ps1 connect events '{"since":N,"sub":1}'` |
+| wait for the next turn | `.\ppcli.ps1 connect wait '{"event":{"target":"@tac","event":"NewTurnEvent"},"timeoutMs":120000}'` |
+| drop subscriptions | `.\ppcli.ps1 connect events '{"unsubscribe":"all"}'` |
+
+`code:"cursor"` = game restarted, re-read with `since:0`. `code:"dropped"` on a wait = ring overwrote rows.
+
+## Press a mod's OnGUI button — `imgui`
+
+For IMGUI panels (`OnGUI` + `GUILayout.Button`/`Toggle`, e.g. ContentTool's bench). Not the game's
+own uGUI screens. Presses in-process: no mouse, no focus stolen. EXPERIMENTAL — offline-tested only;
+confirm the effect (log/state) after `fired:true`. Detail: REFERENCE § `imgui`.
+
+| Intent | Command |
+|---|---|
+| what buttons are drawn now | `.\ppcli.ps1 connect imgui '{"list":true}'` → rows `{l,i?,o,r}` |
+| only one mod's / matching label | `.\ppcli.ps1 connect imgui '{"list":true,"owner":"BenchUI","match":"bench"}'` |
+| press by exact label | `.\ppcli.ps1 connect imgui '{"press":{"label":"Run bench"}}'` → `fired:true` |
+| two buttons share the label | `code:"ambiguous"` lists candidates → add `"index":<row i>` and/or `"owner"` |
+
+Toggle press = flip. `code:"notfound"` lists seen labels; `code:"disabled"` = drawn greyed out.
 ## When it goes wrong
 
 - **`REFUSED: '<path>' has Phoenix Point running (PID <n>)`** — `deploy` detected a game process
