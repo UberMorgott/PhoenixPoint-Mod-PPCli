@@ -52,7 +52,11 @@ namespace Morgott.PPBridge
             MonoBehaviour go = Host();
             if (go == null) return Protocol.Fail("no coroutine host - the mod is shutting down");
 
-            Capture c = new Capture(path);
+            string mode;
+            string modeErr = Protocol.ShotMode(a, out mode);
+            if (modeErr != null) return new { ok = false, code = "args", error = modeErr };
+
+            Capture c = new Capture(path, mode);
             go.StartCoroutine(c.Shoot());
             return c;
         }
@@ -105,15 +109,48 @@ namespace Morgott.PPBridge
             }
         }
 
+        /// <summary>The presented frame (mode "backbuffer"): read from the screen itself, at end of
+        /// frame, with RenderTexture.active = null. No per-camera re-render and no guess about which
+        /// camera owns the image, so a mod camera that blits an upscaled target and draws over it
+        /// is captured exactly as shown (ISSUES 2026-09-07: CaptureScreenshotAsTexture returned the
+        /// curtain art there, this read returned the globe + markers).</summary>
+        private static byte[] Backbuffer(out int w, out int h)
+        {
+            w = Screen.width;
+            h = Screen.height;
+            RenderTexture prev = RenderTexture.active;
+            Texture2D tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+            try
+            {
+                RenderTexture.active = null;
+                tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                tex.Apply();
+                return ImageConversion.EncodeToPNG(tex);
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+                UnityEngine.Object.Destroy(tex);
+            }
+        }
+
+        private static void Write(string path, byte[] png)
+        {
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllBytes(path, png);
+        }
+
         /// <summary>Written by the coroutine and read by Tick, both on the main thread - no locking.</summary>
         private sealed class Capture : IPending
         {
             private readonly string path;
+            private readonly string mode;
             private readonly DateTime deadline = DateTime.UtcNow.AddMilliseconds(TimeoutMs);
             private object result;
             private bool abandoned;
 
-            internal Capture(string path) { this.path = path; }
+            internal Capture(string path, string mode) { this.path = path; this.mode = mode; }
 
             public object Tick(bool cancelled)
             {
@@ -142,14 +179,25 @@ namespace Morgott.PPBridge
                 // now would create a file for a request the client was told had failed.
                 if (abandoned) yield break;
 
+                if (mode == Protocol.ShotBackbuffer)
+                {
+                    try
+                    {
+                        int w, h;
+                        byte[] bb = Backbuffer(out w, out h);
+                        Write(path, bb);
+                        result = new { ok = true, mode, path, width = w, height = h, bytes = bb.Length };
+                    }
+                    catch (Exception ex) { result = Protocol.Fail(ex.GetType().Name + ": " + ex.Message); }
+                    yield break;
+                }
+
                 Texture2D tex = null;
                 try
                 {
                     tex = ScreenCapture.CaptureScreenshotAsTexture();
                     byte[] png = ImageConversion.EncodeToPNG(tex);
-                    string dir = Path.GetDirectoryName(path);
-                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                    File.WriteAllBytes(path, png);
+                    Write(path, png);
 
                     // An upscaler (DLSS/FSR) renders the scene into a camera targetTexture and blits it
                     // to the backbuffer at PRESENT time - after this end-of-frame capture. The PNG above
@@ -159,7 +207,7 @@ namespace Morgott.PPBridge
                     RenderTexture rt = Camera.main == null ? null : Camera.main.targetTexture;
                     if (rt == null)
                     {
-                        result = new { ok = true, path, width = tex.width, height = tex.height, bytes = png.Length };
+                        result = new { ok = true, mode, path, width = tex.width, height = tex.height, bytes = png.Length };
                     }
                     else
                     {
@@ -168,7 +216,7 @@ namespace Morgott.PPBridge
                         File.WriteAllBytes(scenePath, scene);
                         result = new
                         {
-                            ok = true, path, width = tex.width, height = tex.height, bytes = png.Length,
+                            ok = true, mode, path, width = tex.width, height = tex.height, bytes = png.Length,
                             // No `note` (0.3.0): what scenePath means is documented in AGENTS.md
                             // (`screenshot`) - path = UI over a blank scene, scenePath = the 3D scene
                             // at the camera's own pre-upscale resolution.

@@ -2595,6 +2595,21 @@ namespace Morgott.PPBridge
             // never become a NullReferenceException that kills the drain loop.
             Check("state-uninstalled", Protocol.Marker("3", Protocol.Dispatch(new Job { Id = "3", Verb = "state" })).Contains("\"ok\":false"), "state threw or passed");
 
+            // --- screenshot mode (ISSUES 2026-09-07): refused before the capture delegate, never mapped.
+            JObject shotSeen = null;
+            Protocol.CaptureRun = a => { shotSeen = a; return new { ok = true }; };
+            string shotBad = Protocol.Marker("s1", Protocol.Dispatch(new Job { Id = "s1", Verb = "screenshot", Args = JObject.Parse("{\"mode\":\"frame\"}") }));
+            Check("shot-mode-unknown-refused", shotBad.Contains("\"code\":\"args\"") && shotBad.Contains("frame") && shotSeen == null, shotBad);
+            string shotNum = Protocol.Marker("s2", Protocol.Dispatch(new Job { Id = "s2", Verb = "screenshot", Args = JObject.Parse("{\"mode\":1}") }));
+            Check("shot-mode-nonstring-refused", shotNum.Contains("\"code\":\"args\"") && shotSeen == null, shotNum);
+            string shotMode;
+            Check("shot-mode-default", Protocol.ShotMode(null, out shotMode) == null && shotMode == Protocol.ShotDefault, shotMode);
+            Check("shot-mode-capture", Protocol.ShotMode(JObject.Parse("{\"mode\":\"capture\"}"), out shotMode) == null && shotMode == "capture", shotMode);
+            Check("shot-mode-backbuffer", Protocol.ShotMode(JObject.Parse("{\"mode\":\"backbuffer\"}"), out shotMode) == null && shotMode == "backbuffer", shotMode);
+            Protocol.Dispatch(new Job { Id = "s3", Verb = "screenshot", Args = JObject.Parse("{\"mode\":\"capture\"}") });
+            Check("shot-mode-good-reaches-capture", shotSeen != null && (string)shotSeen["mode"] == "capture", "" + shotSeen);
+            Protocol.CaptureRun = null;
+
             Protocol.StateProbe = () => new { ok = true, phase = "menu" };
             Check("state-installed", Protocol.Marker("3b", Protocol.Dispatch(new Job { Id = "3b", Verb = "state" })).Contains("\"phase\":\"menu\""), "installed probe not called");
 

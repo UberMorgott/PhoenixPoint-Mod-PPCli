@@ -30,7 +30,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 | `ping` `state` `roots` | — |
 | `console` | `{command,args?,pageLines?,pageBytes?}` / `{cursor,...}` → `{output,total,hasMore,cursor?,clipped?,truncated?}`; runs ONCE; 50 lines / 8 KiB default; cursor 120 s, bad → `code:"cursor"` |
 | `var` | `{name}` / `{name,value}` (strings) |
-| `screenshot` | `{path?(absolute),force?}`; `-Window` = finished frame via PrintWindow |
+| `screenshot` | `{path?(absolute),mode?,force?}` → `{ok,mode,path,width,height,bytes}`; `mode` `backbuffer` (default, 0.3.3: end-of-frame ReadPixels = presented frame, incl. mod camera blits) / `capture` (old CaptureScreenshotAsTexture + upscaler `scenePath`); other → `code:"args"`. `-Window` = finished frame via PrintWindow |
 | `call` | `{op:"new\|get\|set\|invoke",type\|target,assembly?,member,args?,sig?,typeArgs?,value?,convertTo?}` |
 | `types` | `{pattern,assembly?,page?,pageSize?(25/100),generated?}` |
 | `members` / `inspect` | `{type\|h,filter?,page?,pageSize?(50/400),inherited?,generated?}`; inspect `values:true` |

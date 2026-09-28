@@ -122,6 +122,30 @@ namespace Morgott.PPBridge
         /// </summary>
         internal static Func<JObject, object> CaptureRun;
 
+        /// <summary><c>screenshot</c> mode "backbuffer": a plain end-of-frame ReadPixels of the screen
+        /// with <c>RenderTexture.active = null</c> - the frame that is presented, whatever cameras and
+        /// blits (an upscaler's, a mod's marker pass) produced it (ISSUES 2026-09-07).</summary>
+        internal const string ShotBackbuffer = "backbuffer";
+        /// <summary><c>screenshot</c> mode "capture": ScreenCapture.CaptureScreenshotAsTexture, plus
+        /// the Camera.main targetTexture as <c>scenePath</c> when an upscaler renders into one.</summary>
+        internal const string ShotCapture = "capture";
+        internal const string ShotDefault = ShotBackbuffer;
+
+        /// <summary>The screenshot mode asked for, or the default. A mode that is not a known string is
+        /// refused (code "args") rather than silently mapped to the default: a caller comparing two
+        /// modes must never get the same capture twice without being told.</summary>
+        internal static string ShotMode(JObject a, out string mode)
+        {
+            mode = ShotDefault;
+            JToken t = a == null ? null : a["mode"];
+            if (t == null || t.Type == JTokenType.Null) return null;
+            if (t.Type != JTokenType.String) return "screenshot's \"mode\" must be \"" + ShotBackbuffer + "\" or \"" + ShotCapture + "\"";
+            string m = (string)t;
+            if (m != ShotBackbuffer && m != ShotCapture) return "screenshot's \"mode\" must be \"" + ShotBackbuffer + "\" or \"" + ShotCapture + "\", not \"" + m + "\"";
+            mode = m;
+            return null;
+        }
+
         /// <summary>
         /// Never throws: a bad file yields an empty list and a named reason, because a parse failure
         /// that reached the caller as an exception would kill the run instead of reporting it.
@@ -183,7 +207,12 @@ namespace Morgott.PPBridge
                     // Cross-frame: the result is an IPending the Runner ticks until the PNG is on
                     // disk, so the client never gets a path to a file that is not written yet.
                     case "screenshot":
+                    {
+                        string shotMode;
+                        string shotErr = ShotMode(job.Args, out shotMode);
+                        if (shotErr != null) return new { ok = false, code = "args", error = shotErr };
                         return CaptureRun == null ? Fail("no screenshot capture installed") : CaptureRun(job.Args);
+                    }
                     default:
                         // P2's verbs live in Reflect and P3's in Plan; both answer null for anything
                         // they do not own, so an unknown verb still gets the same refusal it always
