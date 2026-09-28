@@ -962,8 +962,9 @@ It is `call ConsoleVariableAttribute.GetValue/SetValue` with the game's three sh
 `HasVariable` first (an unknown name **throws** `ApplicationException`, it does not refuse),
 readonly reported rather than swallowed, and the `NullReferenceException` that `GetValue` raises on
 an unset `string` variable (`jira_login`, `override_menu`) turned into a named refusal — so
-**never enumerate blindly**. Listing stays with `console vars`, which returns `ok:false` alongside
-valid output.
+**never enumerate blindly**. Listing stays with `console vars`: the bridge answers it itself (the
+game's own `vars` NREs on the first unset string variable and loses the rest), same line format,
+an unset value printed as `null`, `ok:true`.
 
 ### `plans\aim-and-run.json` — the cursor idiom
 

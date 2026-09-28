@@ -303,6 +303,18 @@ namespace Morgott.PPBridge
             if (!ConsoleCommandAttribute.HasCommand(command))
                 return Protocol.Fail("unknown command '" + command + "'");
             Capture cap = new Capture();
+            // `vars` is the game's own Helper.VarsCommand, and it dies half-way: it formats every
+            // variable through ConsoleVariableAttribute.GetInfo, which calls ToString() on the raw
+            // value (ConsoleVariableAttribute.cs:145), so the first UNSET string variable
+            // (jira_login) throws a NullReferenceException and every variable after it is lost -
+            // measured live: 26 of ~74 lines, then ok:false. Same listing, same line format
+            // (Helper.cs:82-109 - Helper is internal, so it is restated here, not called), with an
+            // unset value printed as null instead of ending the command.
+            if (command == "vars" && (args == null || args.Length == 0))
+            {
+                Vars(cap);
+                return new { ok = true, output = cap.Lines.ToArray(), truncated = cap.Truncated };
+            }
             try { ConsoleCommandAttribute.Invoke(command, args ?? new string[0], cap); }
             catch (TargetInvocationException ex)
             {
@@ -314,6 +326,28 @@ namespace Morgott.PPBridge
                 return new { ok = false, output = cap.Lines.ToArray(), error = ex.GetType().Name + ": " + ex.Message };
             }
             return new { ok = true, output = cap.Lines.ToArray(), truncated = cap.Truncated };
+        }
+
+        /// <summary>Helper.VarsCommand + DumpVariableInfo(showDescription:true), minus the NRE: one
+        /// line per variable ordered by alias, "alias : Type = value [flags] description".</summary>
+        private static void Vars(IConsole cap)
+        {
+            List<ConsoleVariableAttribute> all = new List<ConsoleVariableAttribute>(ConsoleVariableAttribute.GetVariables());
+            // Comparer<string>.Default, which is what the game's own `orderby vr.Alias` uses.
+            all.Sort((x, y) => Comparer<string>.Default.Compare(x.Alias, y.Alias));
+            foreach (ConsoleVariableAttribute v in all)
+            {
+                string value;
+                try { value = ConsoleVariableAttribute.GetValue(v.Alias); }
+                catch (NullReferenceException) { value = null; }
+                catch (Exception ex) { value = "<" + ex.GetType().Name + ">"; }
+                if (value != null && v.VariableType == typeof(string)) value = "\"" + value + "\"";
+                List<string> flags = new List<string>();
+                if (v.Readonly) flags.Add("Readonly");
+                if (v.Persistent) flags.Add("Persistent");
+                cap.WriteLine("{0} : {1} = {2} {3} {4}", v.Alias, v.VariableType.Name, value ?? "null",
+                              flags.Count == 0 ? "" : "[" + string.Join(", ", flags.ToArray()) + "]", v.Description);
+            }
         }
 
         /// <summary>

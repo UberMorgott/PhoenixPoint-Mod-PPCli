@@ -54,7 +54,7 @@
       "args": { "timeoutMs": 1, "everyFrames": 1,
                 "call": { "op": "get", "target": "${SEL.value.h}", "member": "Actor" } } },
 
-    { "//": "The command itself. Note `vars` returns ok:false alongside valid output; onError stays fail for everything else.",
+    { "//": "The command itself. onError stays fail: a command that throws is a failed run.",
       "id": "run-command", "verb": "console", "save": "OUT",
       "args": { "command": "${command}", "args": "${cmdArgs}" } }
   ],
