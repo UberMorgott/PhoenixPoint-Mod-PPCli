@@ -580,7 +580,7 @@ namespace Morgott.PPBridge
 
         /// <summary>Off the main thread only immutable scalars are read; anything else is named by
         /// its runtime type (a managed GetType, no Unity call).</summary>
-        private static JToken OffMain(object o)
+        internal static JToken OffMain(object o)
         {
             if (o == null) return JValue.CreateNull();
             if (o is string) return Protocol.Clip((string)o);

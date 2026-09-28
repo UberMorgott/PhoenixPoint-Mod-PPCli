@@ -49,6 +49,8 @@
     <!-- log + events: the rings, paging, filters and the Expression-built event handler. The
          Unity log hook and the scene-unload drop live in PPBridgeMain.cs. -->
     <Compile Include="..\src\Taps.cs" Link="Taps.cs" />
+    <!-- trace: resolution, refusals, caps, ring, ends. The Harmony patch is src\TracePatch.cs (game half). -->
+    <Compile Include="..\src\Trace.cs" Link="Trace.cs" />
     <Compile Include="..\src\ImGui.cs" Link="ImGui.cs" />
     <!-- act: args, single-flight gate, timeout/cancel and reply budgets. ActGame.cs is the game half. -->
     <Compile Include="..\src\Act.cs" Link="Act.cs" />

@@ -748,7 +748,7 @@ namespace Morgott.PPBridge
             return keep.Count == 0 ? ms : keep;
         }
 
-        private static bool Matches(MethodBase m, string[] want)
+        internal static bool Matches(MethodBase m, string[] want)
         {
             ParameterInfo[] ps = m.GetParameters();
             if (ps.Length != want.Length) return false;

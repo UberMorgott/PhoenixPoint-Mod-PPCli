@@ -141,6 +141,24 @@ namespace Morgott.PPBridge
     internal delegate void FakeDeathHandler(FakeReport report);
     internal delegate void WideHandler(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j);
 
+    /// <summary>trace targets. Bodies are padded past Mono's 20-byte inline limit on purpose,
+    /// except <see cref="Tiny"/>, which is the inline-risk refusal's subject.</summary>
+    internal class TraceTarget
+    {
+        public int Seed = 3;
+        public int Work(int x, string s) { int y = x; for (int i = 0; i < 3; i++) y += i * x + Seed; if (s == null) y--; return y + (s == null ? 0 : s.Length); }
+        public int Tiny() { return 1; }
+        public virtual int Virt() { return 2; }
+        public int Over(int a) { int y = a; for (int i = 0; i < 3; i++) y += i * a + Seed; return y; }
+        public int Over(string a) { int y = a.Length; for (int i = 0; i < 3; i++) y += i * Seed; return y; }
+        public static T Gen<T>(T t) { T u = t; for (int i = 0; i < 3; i++) u = t; return u; }
+        public void Nothing() { int y = Seed; for (int i = 0; i < 3; i++) y += i * Seed; Seed = y - y + Seed; }
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public int Pinned() { return 4; }
+    }
+
+    internal abstract class TraceAbstract { public abstract void Abs(); }
+
     internal class Emitter
     {
         public event FakeDeathHandler Death;
@@ -1719,6 +1737,146 @@ namespace Morgott.PPBridge
         /// short projection at fire time, idempotent subscribe, caps, unsubscribe/scene drop with a
         /// named reason, `wait {event}` owning a temporary subscription, and the byte budgets.
         /// </summary>
+        /// <summary>
+        /// trace: resolution + every refusal, idempotent start, the row a prefix/postfix pair makes,
+        /// maxHits/TTL/scene/stop ends (Disarm called, hits kept), caps, off-main projection and
+        /// `wait {trace}`. The patch is simulated by calling Enter/Leave the way TracePatch does.
+        /// </summary>
+        private static void TraceChecks()
+        {
+            string J(object o) => Protocol.Compact(o);
+            TraceTap.Arm = null; TraceTap.Disarm = null;
+            TraceTap.Shutdown();
+            Check("trace-no-patcher", V("trace", "{'start':{'type':'Morgott.PPBridge.TraceTarget','method':'Work'}}").Contains("\"code\":\"unsupported\""), "accepted without a patcher");
+
+            List<int> armed = new List<int>(), disarmed = new List<int>();
+            string armFail = null, disarmFail = null;
+            TraceTap.Arm = s => { if (armFail != null) return armFail; armed.Add(s.Id); return null; };
+            TraceTap.Disarm = s => { if (disarmFail != null) return disarmFail; disarmed.Add(s.Id); return null; };
+            DateTime clock = new DateTime(2026, 1, 1);
+            TraceTap.Now = () => clock;
+            const string T = "'type':'Morgott.PPBridge.TraceTarget'";
+            System.Reflection.MethodBase work = typeof(TraceTarget).GetMethod("Work");
+            System.Reflection.MethodBase nothing = typeof(TraceTarget).GetMethod("Nothing");
+
+            JObject st = JObject.Parse(V("trace", "{'start':{" + T + ",'method':'Work','args':true,'self':true,'ret':true}}"));
+            int id = (int)st["id"];
+            Check("trace-start", (bool)st["ok"] && id > 0 && (string)st["method"] == "TraceTarget.Work(Int32,String)" && armed.Contains(id) && TraceTap.Live == 1, st.ToString(Newtonsoft.Json.Formatting.None));
+            JObject again = JObject.Parse(V("trace", "{'start':{" + T + ",'method':'Work'}}"));
+            Check("trace-start-is-idempotent", (int)again["id"] == id && (bool)again["existing"] && armed.Count == 1, again.ToString(Newtonsoft.Json.Formatting.None));
+
+            TraceTarget tgt = new TraceTarget();
+            object row = TraceTap.Enter(work, tgt, new object[] { 5, "ab" });
+            TraceTap.Leave(row, 20);
+            object row2 = TraceTap.Enter(work, tgt, new object[] { 7, null });   // "threw": no Leave
+            JObject rd = JObject.Parse(V("trace", "{'since':0,'id':" + id + "}"));
+            JToken r0 = rd["rows"] == null ? null : rd["rows"][0];
+            Check("trace-row-args-self-ret", r0 != null && r0["a"].ToString(Newtonsoft.Json.Formatting.None) == "[5,\"ab\"]" && (int)r0["r"] == 20 &&
+                  (string)r0["t"]["type"] == "TraceTarget" && (int)rd["hits"] == 2, rd.ToString(Newtonsoft.Json.Formatting.None));
+            Check("trace-threw-call-counts-but-no-row", rd["rows"] != null && rd["rows"].Count() == 1 && row2 != null, rd.ToString(Newtonsoft.Json.Formatting.None));
+            Check("trace-untraced-method-ignored", TraceTap.Enter(nothing, tgt, new object[0]) == null, "recorded an untraced call");
+            string matched = V("trace", "{'since':0,'match':'\"ab\"'}");
+            Check("trace-read-match", matched.Contains("\"ab\"") && !matched.Contains("[7,null]"), matched);
+            Check("trace-read-bad-page", V("trace", "{'pageSize':0}").Contains("\"code\":\"args\""), "accepted pageSize 0");
+            Check("trace-read-unknown-id", V("trace", "{'id':999}").Contains("\"code\":\"args\""), "accepted unknown id");
+            Check("trace-one-mode", V("trace", "{'start':{" + T + ",'method':'Work'},'list':true}").Contains("\"code\":\"args\""), "accepted two modes");
+
+            // refusals, each with its own code
+            Func<string, string> S = extra => V("trace", "{'start':{" + extra + "}}");
+            Check("trace-refuse-inline", S(T + ",'method':'Tiny'").Contains("\"code\":\"inline\""), S(T + ",'method':'Tiny'"));
+            JObject forced = JObject.Parse(S(T + ",'method':'Tiny','force':true"));
+            Check("trace-inline-force-warns", (bool)forced["ok"] && ((string)forced["warn"]).Contains("inline"), forced.ToString(Newtonsoft.Json.Formatting.None));
+            Check("trace-virtual-not-inline", S(T + ",'method':'Virt'").Contains("\"ok\":true"), S(T + ",'method':'Virt'"));
+            Check("trace-noinlining-not-inline", S(T + ",'method':'Pinned'").Contains("\"ok\":true"), S(T + ",'method':'Pinned'"));
+            string amb = S(T + ",'method':'Over'");
+            Check("trace-refuse-ambiguous-lists-sigs", amb.Contains("\"code\":\"ambiguous\"") && amb.Contains("Int32 a") && amb.Contains("String a"), amb);
+            Check("trace-sig-picks-overload", S(T + ",'method':'Over','sig':['Int32']").Contains("Over(Int32)"), S(T + ",'method':'Over','sig':['Int32']"));
+            Check("trace-sig-no-match", S(T + ",'method':'Over','sig':['Double']").Contains("\"code\":\"overload\""), "accepted");
+            Check("trace-refuse-generic", S(T + ",'method':'Gen'").Contains("\"code\":\"generic\""), S(T + ",'method':'Gen'"));
+            Check("trace-refuse-abstract", S("'type':'Morgott.PPBridge.TraceAbstract','method':'Abs'").Contains("\"code\":\"abstract\""), "accepted");
+            Check("trace-refuse-unsafe", S("'type':'System.Text.StringBuilder','method':'Clear'").Contains("\"code\":\"unsafe\""), "accepted");
+            string inh = S(T + ",'method':'ToString'");
+            Check("trace-inherited-names-declarer", inh.Contains("\"code\":\"member\"") && inh.Contains("declared on Object"), inh);
+            Check("trace-refuse-missing", S(T + ",'method':'Nope'").Contains("\"code\":\"member\""), "accepted");
+            Check("trace-refuse-cctor", S(T + ",'method':'.cctor'").Contains("\"code\":\"args\""), "accepted");
+            Check("trace-ctor-ok", S(T + ",'method':'.ctor','force':true").Contains("\"ok\":true"), S(T + ",'method':'.ctor','force':true"));
+            string diff = S(T + ",'method':'Work'");
+            Check("trace-existing-different-options-warns", diff.Contains("DIFFERENT options") && diff.Contains("\"existing\":true"), diff);
+            Check("trace-refuse-bad-maxhits", S(T + ",'method':'Nothing','maxHits':0").Contains("\"code\":\"args\""), "accepted");
+            Check("trace-refuse-bad-stack", S(T + ",'method':'Nothing','stack':4").Contains("\"code\":\"args\""), "accepted");
+            armFail = "Harmony said no";
+            string af = S(T + ",'method':'Nothing'");
+            Check("trace-arm-failure-not-live", af.Contains("\"code\":\"threw\"") && af.Contains("Harmony said no") && TraceTap.Find(99) == null &&
+                  !V("trace", "{'list':true}").Contains("Nothing"), af);
+            armFail = null;
+            // the refusal section's successful starts end here; only id (Work) stays live
+            foreach (JToken tr in JObject.Parse(V("trace", "{'list':true}"))["traces"])
+                if (tr["ended"] == null && (int)tr["id"] != id) V("trace", "{'stop':" + (int)tr["id"] + "}");
+
+            // maxHits: rows stop at the cap, hits keep counting, Tick unpatches
+            JObject mh = JObject.Parse(S(T + ",'method':'Nothing','maxHits':2,'stack':2"));
+            int mid = (int)mh["id"];
+            for (int i = 0; i < 5; i++) TraceTap.Enter(nothing, tgt, new object[0]);
+            JObject mr = JObject.Parse(V("trace", "{'since':0,'id':" + mid + "}"));
+            Check("trace-maxhits-caps-rows", mr["rows"] != null && mr["rows"].Count() == 2 && (int)mr["hits"] == 2 && (string)mr["ended"] == "maxHits" && disarmed.Contains(mid),
+                  mr.ToString(Newtonsoft.Json.Formatting.None) + " disarmed=" + string.Join(",", disarmed));
+            Check("trace-stack-frames", mr["rows"] != null && mr["rows"][0]["f"] != null && mr["rows"][0]["f"].Count() >= 1, mr.ToString(Newtonsoft.Json.Formatting.None));
+            string stopEnded = V("trace", "{'stop':" + mid + "}");
+            Check("trace-stop-ended-reports", stopEnded.Contains("\"ended\":\"maxHits\"") && stopEnded.Contains("\"hits\":2"), stopEnded);
+
+            // TTL, scene, keepScene
+            int ttlId = (int)JObject.Parse(S(T + ",'method':'Over','sig':['String'],'ttlMs':1000"))["id"];
+            int keepId = (int)JObject.Parse(S(T + ",'method':'Over','sig':['Int32'],'keepScene':true"))["id"];
+            clock = clock.AddSeconds(2);
+            TraceTap.Tick();
+            Check("trace-ttl-ends", TraceTap.EndedReason(ttlId) == "ttl" && disarmed.Contains(ttlId), "reason=" + TraceTap.EndedReason(ttlId));
+            TraceTap.SceneUnloaded();
+            Check("trace-scene-ends-work", TraceTap.EndedReason(id) == "scene" && TraceTap.HitsOf(id) == 2, "reason=" + TraceTap.EndedReason(id));
+            Check("trace-keepscene-survives", TraceTap.EndedReason(keepId) == null, "reason=" + TraceTap.EndedReason(keepId));
+            string lst = V("trace", "{'list':true}");
+            Check("trace-list-live-and-ended", lst.Contains("\"id\":" + keepId + ",") && lst.Contains("\"ended\":\"scene\""), lst);
+
+            // wait {trace}
+            int wid = (int)JObject.Parse(S(T + ",'method':'Work','args':true"))["id"];
+            Func<IPending, string> Settle = p => { if (p == null) return "no pending"; for (int i = 0; i < 50; i++) { object o = p.Tick(false); if (o != null) return J(o); } return null; };
+            IPending w = Start("wait", "{'trace':" + wid + ",'match':'\\\\[42,','timeoutMs':5000,'everyFrames':1}") as IPending;
+            object w1 = w == null ? "no pending" : w.Tick(false);
+            TraceTap.Enter(work, tgt, new object[] { 1, "x" });
+            object w2 = w == null ? null : w.Tick(false);
+            TraceTap.Enter(work, tgt, new object[] { 42, "x" });
+            string w3 = Settle(w) ?? "never";
+            Check("trace-wait-first-new-match", w1 == null && w2 == null && w3.Contains("\"ok\":true") && w3.Contains("[42,\"x\"]"), "w1=" + w1 + " w3=" + w3);
+            IPending we = Start("wait", "{'trace':" + wid + ",'timeoutMs':5000}") as IPending;
+            V("trace", "{'stop':" + wid + "}");
+            string wEnd = Settle(we) ?? "never";
+            Check("trace-wait-ended-fails-fast", wEnd.Contains("\"code\":\"ended\""), wEnd);
+            Check("trace-wait-unknown", J(Start("wait", "{'trace':12345}")).Contains("\"code\":\"args\""), "accepted");
+
+            // off the main thread: primitives only, flagged
+            EventTap.MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            int oid = (int)JObject.Parse(S(T + ",'method':'Work','args':true,'self':true"))["id"];
+            Thread th = new Thread(() => TraceTap.Enter(work, tgt, new object[] { 3, "y" }));
+            th.Start(); th.Join();
+            EventTap.MainThreadId = -1;
+            string off = V("trace", "{'id':" + oid + "}");
+            Check("trace-off-main-primitives", off.Contains("\"off\":true") && off.Contains("[3,\"y\"]") && off.Contains("$offMain"), off);
+
+            // disarm failure keeps it listed; cap
+            disarmFail = "stuck";
+            string sf = V("trace", "{'stop':" + oid + "}");
+            Check("trace-stop-failure-kept", sf.Contains("\"code\":\"threw\"") && TraceTap.Find(oid) != null && V("trace", "{'list':true}").Contains("removeError"), sf);
+            disarmFail = null;
+            V("trace", "{'stop':'all'}");
+            Check("trace-stop-all", TraceTap.Live == 0, "live=" + TraceTap.Live);
+            string[] names = { "Work'", "Virt'", "Pinned'", "Nothing'", "Over','sig':['Int32']", "Over','sig':['String']", ".ctor','force':true", "Tiny','force':true" };
+            foreach (string n in names) S(T + ",'method':'" + n);
+            string capped = V("trace", "{'start':{'type':'Morgott.PPBridge.Emitter','method':'Die','force':true}}");
+            Check("trace-cap", TraceTap.Live == TraceTap.MaxLive && capped.Contains("\"code\":\"cap\""), capped + " live=" + TraceTap.Live);
+            TraceTap.Shutdown();
+            Check("trace-shutdown-unpatches", TraceTap.Live == 0 && disarmed.Count >= 12, "live=" + TraceTap.Live + " disarmed=" + disarmed.Count);
+            TraceTap.Arm = null; TraceTap.Disarm = null; TraceTap.Now = () => DateTime.UtcNow;
+        }
+
         private static void EventChecks()
         {
             Func<string, int> B = s => Encoding.UTF8.GetByteCount(s);
@@ -2683,6 +2841,7 @@ namespace Morgott.PPBridge
             ConsolePagerChecks();
             LogChecks();
             EventChecks();
+            TraceChecks();
             ImGuiChecks();
             ActChecks();
             UiChecks();

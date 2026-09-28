@@ -93,6 +93,9 @@ namespace Morgott.PPBridge
             // that happens on `observe {"action":"start"}` and is undone on stop, so a session that
             // never measures a shot carries no Harmony patch at all.
             Shots.Arm = ShotPatch.Arm;
+            // trace: same lazy shape - a patch exists only while a 	race {start} is live.
+            TraceTap.Arm = TracePatch.Arm;
+            TraceTap.Disarm = TracePatch.Disarm;
             // imgui: same shape - the delegate only; the patch lives while a request runs.
             ImGuiTap.Arm = ImGuiPatch.Arm;
             ImGuiTap.FrameNow = () => Time.frameCount;
@@ -141,6 +144,8 @@ namespace Morgott.PPBridge
             // Before anything else: a Harmony patch that outlives the mod that installed it points
             // at a method in an assembly this DLL is about to stop owning.
             Shots.Shutdown();
+            TraceTap.Shutdown();         // every traced method unpatched before the DLL goes
+            TracePatch.UnpatchAll();
             ImGuiTap.Shutdown();
             UiTap.Shutdown();
             ActTap.Shutdown();           // a settling `use` lets go of its AbilityExecutedEvent handler
@@ -167,6 +172,7 @@ namespace Morgott.PPBridge
         {
             Reflect.NewEpoch();
             ImGuiTap.SceneUnloaded();    // an armed imgui press never fires into the next scene's UI
+            try { TraceTap.SceneUnloaded(); } catch (Exception) { }   // keepScene traces survive
             // A subscription on an object of the unloaded scene (or on something that is not a Unity
             // object at all, whose owner we cannot place) ends here - named "scene" to a reader.
             try
@@ -642,6 +648,8 @@ namespace Morgott.PPBridge
                 // Counted for EVERY frame now, not only while the level is still settling: the arm
                 // check below needs a clock that keeps ticking after `ready` goes true.
                 frame++;
+                // trace: maxHits/TTL ends are unpatched here, on the main thread.
+                try { TraceTap.Tick(); } catch (Exception) { }
                 // The marker is a live switch, not a launch-time one. Deleting it stops the pipe -
                 // the only entrance still open once the job file has been read - within ArmCheckFrames.
                 // The pump itself keeps running: a plan already parked has a `finally` block to run,

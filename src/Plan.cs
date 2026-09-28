@@ -269,10 +269,11 @@ namespace Morgott.PPBridge
 
                 if (a["log"] != null) return LogWait(a, every, timeout);
                 if (a["event"] != null) return EventWait(a, every, timeout);
+                if (a["trace"] != null) return TraceWait(a, every, timeout);
 
                 return Bad("args", "wait needs one of {\"ready\":true} (HasAnyTurnStarted), " +
                                    "{\"phase\":\"tactical|geoscape|menu|summary|other|loading\"}, {\"call\":{...}}, " +
-                                   "{\"log\":\"regex\"}, {\"event\":{sub|target+event}} " +
+                                   "{\"log\":\"regex\"}, {\"event\":{sub|target+event}}, {\"trace\":id} " +
                                    "or {\"forMs\":N} (yield N ms of REAL time, then succeed)");
             }
 
@@ -341,6 +342,38 @@ namespace Morgott.PPBridge
                     {
                         string ended = EventTap.EndedReason(subId);
                         if (ended != null) throw new InvalidOperationException("subscription " + subId + " ended: " + ended);
+                    }
+                    return hit;
+                };
+                return w;
+            }
+
+            /// <summary>
+            /// {"trace":id, "match"?, "since"?}: succeeds on the first row that trace records after
+            /// `since` (default: the newest row when the wait starts). A trace that ENDS (stop, ttl,
+            /// maxHits, scene) before a matching row fails at once with the reason, never a timeout.
+            /// </summary>
+            private static object TraceWait(JObject a, int every, int timeout)
+            {
+                if (Truthy(a["not"])) return Bad("args", "a trace wait cannot be negated - wait {forMs} and read `trace {id}` hits instead");
+                JToken idTok = a["trace"];
+                if (idTok.Type != JTokenType.Integer) return Bad("args", "trace wait needs {\"trace\":<id from trace {start}>}");
+                int id = (int)idTok;
+                if (TraceTap.Find(id) == null) return Bad("args", "no live trace " + id + " (" + TraceTap.EndedReason(id) + ")");
+                Regex rx; object refusal;
+                if (!TapPage.TryRegex((string)a["match"], out rx, out refusal)) return refusal;
+                long since;
+                if (!SinceOr(a["since"], TraceTap.Ring.Last, out since)) return Bad("args", "since must be an integer >= 0");
+                object ahead = TapPage.Ahead(since, TraceTap.Ring.Last);
+                if (ahead != null) return ahead;
+                Waiter w = new Waiter(null, null, every, timeout, false);
+                w.probe = () =>
+                {
+                    JToken hit = TraceTap.FirstMatch(id, rx, ref since);
+                    if (hit == null)
+                    {
+                        string ended = TraceTap.EndedReason(id);
+                        if (ended != null) throw new WaitFatal("ended", "trace " + id + " ended (" + ended + ") before a matching call");
                     }
                     return hit;
                 };
