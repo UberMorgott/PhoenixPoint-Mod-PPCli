@@ -232,6 +232,8 @@ namespace Morgott.PPBridge
             return null;
         }
 
+        private static readonly Dictionary<MethodBase, bool> inlineVerdict = new Dictionary<MethodBase, bool>();
+
         private static readonly string[] UnsafeAssemblies = { "mscorlib", "netstandard", "0Harmony", "Newtonsoft.Json", "PPBridge" };
 
         /// <summary>The refusals that keep a trace from being silently wrong or dangerous. Null = go.</summary>
@@ -262,7 +264,18 @@ namespace Morgott.PPBridge
             try { byte[] bytes = body.GetILAsByteArray(); il = bytes == null ? 0 : bytes.Length; } catch (Exception) { }
             bool virt = m.IsVirtual && !m.IsFinal;
             bool noInline = (impl & MethodImplAttributes.NoInlining) != 0;
-            if (!virt && !noInline && il < InlineIlBytes && body.ExceptionHandlingClauses.Count == 0)
+            bool risky = !virt && !noInline && il < InlineIlBytes && body.ExceptionHandlingClauses.Count == 0;
+            // The FIRST verdict sticks. Harmony (MonoMod) marks a method NoInlining in the runtime
+            // when it patches it - measured live: GameUtl.CurrentLevel refused before its first trace
+            // and passed after it - which protects callers JITted later, never the ones that already
+            // inlined the old body. Re-reading the flag would turn "risky" into "fine" by tracing it.
+            lock (inlineVerdict)
+            {
+                bool seen;
+                if (inlineVerdict.TryGetValue(m, out seen)) risky = seen;
+                else inlineVerdict[m] = risky;
+            }
+            if (risky)
             {
                 string risk = Display(m) + " is " + il + " bytes of IL and non-virtual - Mono inlines such methods into their callers, so calls from already-JITted callers never reach a patch and would be MISSING from the count";
                 if (!force) return TapPage.Bad("inline", risk + ". Pass force:true to trace anyway (then a low count proves nothing), or trace its caller");
