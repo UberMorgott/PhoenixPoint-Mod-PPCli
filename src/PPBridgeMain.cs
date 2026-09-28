@@ -93,6 +93,9 @@ namespace Morgott.PPBridge
             // that happens on `observe {"action":"start"}` and is undone on stop, so a session that
             // never measures a shot carries no Harmony patch at all.
             Shots.Arm = ShotPatch.Arm;
+            // imgui: same shape - the delegate only; the patch lives while a request runs.
+            ImGuiTap.Arm = ImGuiPatch.Arm;
+            ImGuiTap.FrameNow = () => Time.frameCount;
             // Every handle taken in the old scene is a destroyed object once it unloads. Bumping the
             // epoch turns each of them into a named refusal instead of a crash inside a later call.
             SceneManager.sceneUnloaded += OnSceneUnloaded;
@@ -132,6 +135,7 @@ namespace Morgott.PPBridge
             // Before anything else: a Harmony patch that outlives the mod that installed it points
             // at a method in an assembly this DLL is about to stop owning.
             Shots.Shutdown();
+            ImGuiTap.Shutdown();
             SceneManager.sceneUnloaded -= OnSceneUnloaded;
             if (LogTap.Hooked) Application.logMessageReceivedThreaded -= OnLog;
             LogTap.Shutdown();

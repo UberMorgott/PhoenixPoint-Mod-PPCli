@@ -878,6 +878,117 @@ namespace Morgott.PPBridge
         /// filters, clip and stack opt-in, the bridge's own markers skipped, thread-safe appends, the
         /// `wait {log}` predicate, and the byte budget of a default page and of an empty poll.
         /// </summary>
+        // ------------------------------------------------------------------ imgui (pure half)
+
+        private static int imFrame;
+
+        /// <summary>One simulated OnGUI frame: Layout (skipped by the patch, so never observed), an
+        /// optional input event, then Repaint - each pass visiting the same controls in draw order.
+        /// Returns the labels whose press was forced.</summary>
+        private static List<string> ImFrame(string[] labels, bool[] enabled, string inputEv, string owner)
+        {
+            List<string> forced = new List<string>();
+            foreach (string ev in inputEv == null ? new[] { "Repaint" } : new[] { inputEv, "Repaint" })
+                for (int i = 0; i < labels.Length; i++)
+                    if (ImGuiTap.Observe(imFrame, ev == "Repaint", ev, labels[i], i * 10, 5, 100, 20,
+                                         enabled == null || enabled[i], false, false, () => owner))
+                        forced.Add(ev + ":" + labels[i] + "#" + i);
+            return forced;
+        }
+
+        /// <summary>Runs a cross-frame imgui request: Update (Tick) then OnGUI, frame by frame.</summary>
+        private static string ImRun(string json, string[] labels, bool[] enabled, string inputEv, List<string> forced, int frames = 50)
+        {
+            object r = Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse(json) });
+            IPending p = r as IPending;
+            if (p == null) return Protocol.Compact(r);
+            for (int f = 0; f < frames; f++)
+            {
+                imFrame++;
+                object done = p.Tick(false);
+                if (done != null) return Protocol.Compact(done);
+                forced.AddRange(ImFrame(labels, enabled, inputEv, "BenchUI"));
+            }
+            return "never finished";
+        }
+
+        private static void ImGuiChecks()
+        {
+            int arms = 0, disarms = 0;
+            ImGuiTap.Shutdown();
+            Check("imgui-offline-refuses", V("imgui", "{'list':true}").Contains("\"code\":\"imgui\""), V("imgui", "{'list':true}"));
+            ImGuiTap.Arm = on => { if (on) arms++; else disarms++; return null; };
+            ImGuiTap.FrameNow = () => imFrame;
+            imFrame = 100;
+            string[] ui = { "Run bench", "Stop", "Run bench", "Export" };
+            List<string> forced = new List<string>();
+
+            Check("imgui-args-neither", V("imgui", "{}").Contains("\"code\":\"args\""), V("imgui", "{}"));
+            Check("imgui-args-both", V("imgui", "{'list':true,'press':{'label':'x'}}").Contains("\"code\":\"args\""), "both accepted");
+            Check("imgui-args-strict-int", V("imgui", "{'list':true,'pageSize':'5'}").Contains("\"code\":\"args\"") &&
+                  V("imgui", "{'list':true,'pageSize':201}").Contains("\"code\":\"args\"") &&
+                  V("imgui", "{'press':{'label':'x','index':1.5}}").Contains("\"code\":\"args\"") &&
+                  V("imgui", "{'press':{'label':'x'},'waitFrames':0}").Contains("\"code\":\"args\""), "non-strict int accepted");
+            Check("imgui-args-label-string", V("imgui", "{'press':{'label':3}}").Contains("\"code\":\"args\""), "numeric label accepted");
+            Check("imgui-args-refusal-does-not-patch", arms == 0, "arms=" + arms);
+
+            // list: Layout never observed; rows from ONE complete Repaint pass; i = nth same label.
+            JObject l = JObject.Parse(ImRun("{'list':true}", ui, null, null, forced));
+            JArray rows = (JArray)l["rows"];
+            Check("imgui-list-rows", (int)l["total"] == 4 && rows.Count == 4 && (string)rows[2]["l"] == "Run bench" && (int)rows[2]["i"] == 1 &&
+                  rows[0]["i"] == null && (string)rows[0]["o"] == "BenchUI" && ((JArray)rows[1]["r"]).Count == 4, l.ToString(Newtonsoft.Json.Formatting.None));
+            Check("imgui-list-unpatches", arms == 1 && disarms >= 1 && !ImGuiTap.Active, "arms=" + arms + " disarms=" + disarms);
+            JObject m = JObject.Parse(ImRun("{'list':true,'match':'BENCH','pageSize':1}", ui, null, null, forced));
+            Check("imgui-list-match-page", (int)m["total"] == 2 && ((JArray)m["rows"]).Count == 1 && (bool)m["hasMore"], m.ToString(Newtonsoft.Json.Formatting.None));
+            JObject o = JObject.Parse(ImRun("{'list':true,'owner':'Other'}", ui, null, null, forced));
+            Check("imgui-list-owner-filter", (int)o["total"] == 0, o.ToString(Newtonsoft.Json.Formatting.None));
+            JObject none = JObject.Parse(ImRun("{'list':true}", new string[0], null, null, forced));
+            Check("imgui-list-no-ongui", (bool)none["ok"] && (int)none["total"] == 0, none.ToString(Newtonsoft.Json.Formatting.None));
+            Check("imgui-list-never-fires", forced.Count == 0, string.Join(",", forced));
+
+            // press: ambiguous label without index -> candidates, nothing fired.
+            string amb = ImRun("{'press':{'label':'Run bench'}}", ui, null, null, forced);
+            Check("imgui-press-ambiguous", amb.Contains("\"code\":\"ambiguous\"") && JObject.Parse(amb)["candidates"].Count() == 2 && forced.Count == 0, amb);
+            string nf = ImRun("{'press':{'label':'run bench'}}", ui, null, null, forced);
+            Check("imgui-press-notfound-exact-case", nf.Contains("\"code\":\"notfound\"") && nf.Contains("\"labels\":[\"Run bench\",\"Stop\",\"Export\"]"), nf);
+
+            // press by index: fires ONCE, on the matched instance only, first non-Layout event.
+            string ok = ImRun("{'press':{'label':'Run bench','index':1}}", ui, null, null, forced);
+            Check("imgui-press-fires-once", ok.Contains("\"ok\":true") && ok.Contains("\"fired\":true") && forced.Count == 1 && forced[0] == "Repaint:Run bench#2", ok + " " + string.Join(",", forced));
+            Check("imgui-press-unpatches", !ImGuiTap.Active && disarms == arms, "arms=" + arms + " disarms=" + disarms);
+            forced.Clear();
+            string ev = ImRun("{'press':{'label':'Stop','owner':'benchui'}}", ui, null, "MouseMove", forced);
+            Check("imgui-press-input-event-first", ev.Contains("\"ev\":\"MouseMove\"") && forced.Count == 1 && forced[0] == "MouseMove:Stop#1", ev + " " + string.Join(",", forced));
+            forced.Clear();
+            string dis = ImRun("{'press':{'label':'Export'}}", ui, new[] { true, true, true, false }, null, forced);
+            Check("imgui-press-disabled", dis.Contains("\"code\":\"disabled\"") && forced.Count == 0, dis);
+            // armed, then the control disappears: notfired after waitFrames, and the patch is gone.
+            object pr = Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Export'},'waitFrames':5}") });
+            IPending pp = (IPending)pr;
+            Check("imgui-busy", V("imgui", "{'list':true}").Contains("\"code\":\"busy\""), V("imgui", "{'list':true}"));
+            string nfd = null;
+            for (int f = 0; f < 30 && nfd == null; f++)
+            {
+                imFrame++;
+                object d = pp.Tick(false);
+                if (d != null) { nfd = Protocol.Compact(d); break; }
+                forced.AddRange(ImFrame(f == 0 ? ui : new[] { "Run bench" }, null, null, "BenchUI"));
+            }
+            Check("imgui-press-notfired", nfd != null && nfd.Contains("\"code\":\"notfired\"") && nfd.Contains("\"fired\":false") && forced.Count == 0 && !ImGuiTap.Active, nfd);
+            // cancel releases the patch.
+            IPending pc = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'list':true}") });
+            string cx = Protocol.Compact(pc.Tick(true));
+            Check("imgui-cancel-releases", cx.Contains("\"code\":\"cancelled\"") && !ImGuiTap.Active && disarms == arms, cx + " arms=" + arms + " disarms=" + disarms);
+
+            // budget: 25 default rows of 80-char labels stay small.
+            string[] fat = new string[400];
+            for (int i = 0; i < fat.Length; i++) fat[i] = new string('w', 200) + i;
+            string big = ImRun("{'list':true}", fat, null, null, forced);
+            int bytes = Encoding.UTF8.GetByteCount(big);
+            Check("imgui-list-budget", bytes <= 3600 && JObject.Parse(big)["rows"].Count() == ImGuiTap.DefaultPageSize && (bool)JObject.Parse(big)["hasMore"], bytes + " B");
+            ImGuiTap.Shutdown();
+        }
+
         private static void LogChecks()
         {
             Func<string, int> B = s => Encoding.UTF8.GetByteCount(s);
@@ -1941,6 +2052,7 @@ namespace Morgott.PPBridge
             ConsolePagerChecks();
             LogChecks();
             EventChecks();
+            ImGuiChecks();
             BudgetChecks();
             PipeChecks();
 

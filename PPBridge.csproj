@@ -73,6 +73,10 @@
       <HintPath>$(UnityManaged)\UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(UnityManaged)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- The game already ships Newtonsoft, so the wire format costs no new dependency and no
          hand-written parser. Private=false: it is already in the install. -->
     <Reference Include="Newtonsoft.Json">

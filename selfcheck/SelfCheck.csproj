@@ -49,6 +49,7 @@
     <!-- log + events: the rings, paging, filters and the Expression-built event handler. The
          Unity log hook and the scene-unload drop live in PPBridgeMain.cs. -->
     <Compile Include="..\src\Taps.cs" Link="Taps.cs" />
+    <Compile Include="..\src\ImGui.cs" Link="ImGui.cs" />
     <Compile Include="SelfCheck.cs" />
   </ItemGroup>
 
