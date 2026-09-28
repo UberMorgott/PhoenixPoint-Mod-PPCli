@@ -32,7 +32,7 @@ namespace Morgott.PPBridge
             UiTap.FrameNow = () => Time.frameCount;
         }
 
-        private static List<UiNode> Scan()
+        private static List<UiNode> Scan(bool inactive)
         {
             List<UiNode> nodes = new List<UiNode>();
             HashSet<int> seen = new HashSet<int>();
@@ -49,6 +49,24 @@ namespace Morgott.PPBridge
                     if (mb != null && mb.isActiveAndEnabled && mb.transform is RectTransform) Add(nodes, seen, mb.gameObject);
                 }
             }
+            // all:true - also the elements of screens that are switched off right now: every Canvas
+            // object of a loaded scene (FindObjectsOfTypeAll also returns assets/prefabs - filtered),
+            // top-most ones only, children included inactive.
+            if (inactive)
+                foreach (Canvas c in Resources.FindObjectsOfTypeAll<Canvas>())
+                {
+                    if (c == null || c.hideFlags != HideFlags.None || !c.gameObject.scene.IsValid() || !c.gameObject.scene.isLoaded) continue;
+                    bool nested = false;
+                    for (Transform p = c.transform.parent; p != null && !nested; p = p.parent) nested = p.GetComponent<Canvas>() != null;
+                    if (nested) continue;
+                    foreach (Selectable s in c.GetComponentsInChildren<Selectable>(true))
+                        if (s.enabled) Add(nodes, seen, s.gameObject, true);
+                    foreach (IPointerClickHandler h in c.GetComponentsInChildren<IPointerClickHandler>(true))
+                    {
+                        MonoBehaviour mb = h as MonoBehaviour;
+                        if (mb != null && mb.enabled && mb.transform is RectTransform) Add(nodes, seen, mb.gameObject, true);
+                    }
+                }
             // A container that is itself clickable (UINavigationalElementsHolder, list views) would
             // otherwise borrow its first child button's text and collide with that button's label.
             HashSet<Transform> cands = new HashSet<Transform>();
@@ -58,9 +76,10 @@ namespace Morgott.PPBridge
             return nodes;
         }
 
-        private static void Add(List<UiNode> nodes, HashSet<int> seen, GameObject go)
+        private static void Add(List<UiNode> nodes, HashSet<int> seen, GameObject go, bool inactiveOk = false)
         {
-            if (!seen.Add(go.GetInstanceID()) || !go.activeInHierarchy) return;
+            bool off = !go.activeInHierarchy;
+            if ((off && !inactiveOk) || !seen.Add(go.GetInstanceID())) return;
             RectTransform rt = go.transform as RectTransform;
             if (rt == null) return;
             Canvas canvas = go.GetComponentInParent<Canvas>();
@@ -77,7 +96,8 @@ namespace Morgott.PPBridge
                 Path = PathOf(go.transform),
                 Type = type,
                 Interactable = inter,
-                Visible = onScreen && canvas != null && canvas.isActiveAndEnabled && Alpha(go) > 0.01f,
+                Visible = !off && onScreen && canvas != null && canvas.isActiveAndEnabled && Alpha(go) > 0.01f,
+                Inactive = off,
                 X = Mathf.RoundToInt(r.xMin), Y = top, W = Mathf.RoundToInt(r.width), H = Mathf.RoundToInt(r.height),
                 Drag = go.GetComponent<Slider>() != null || go.GetComponent<Scrollbar>() != null,
                 Ref = go
@@ -87,7 +107,7 @@ namespace Morgott.PPBridge
         private static string ClickType(GameObject go)
         {
             foreach (MonoBehaviour mb in go.GetComponents<MonoBehaviour>())
-                if (mb is IPointerClickHandler && mb.isActiveAndEnabled) return mb.GetType().Name;
+                if (mb is IPointerClickHandler && mb.enabled) return mb.GetType().Name;
             return "?";
         }
 
@@ -132,7 +152,8 @@ namespace Morgott.PPBridge
 
         private static string Label(GameObject go, HashSet<Transform> cands)
         {
-            foreach (Text t in go.GetComponentsInChildren<Text>())
+            bool off = !go.activeInHierarchy;            // all:true rows: their text is switched off too
+            foreach (Text t in go.GetComponentsInChildren<Text>(off))
             {
                 if (!Owns(go.transform, t.transform, cands)) continue;
                 string s = UiTap.CleanText(t.text);
@@ -145,7 +166,7 @@ namespace Morgott.PPBridge
                 tmpText = tmpType == null ? null : tmpType.GetProperty("text");
             }
             if (tmpText != null)
-                foreach (Component c in go.GetComponentsInChildren(tmpType))
+                foreach (Component c in go.GetComponentsInChildren(tmpType, off))
                 {
                     if (!Owns(go.transform, c.transform, cands)) continue;
                     string s = UiTap.CleanText(tmpText.GetValue(c, null) as string);

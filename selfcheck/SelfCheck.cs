@@ -1123,10 +1123,12 @@ namespace Morgott.PPBridge
                 UN("Item", "UIRoot/List/Viewport/Content/Row[1]/Item", type: "Toggle"),
             };
             for (int i = 0; i < 80; i++) nodes.Add(UN("Research project with a rather long localized title number " + i, "UIRoot/GeoscapeModule/ResearchPanel/ListView/Viewport/Content/ResearchElementWithAVeryLongPrefabName(Clone)[" + i + "]/Button"));
+            List<UiNode> nodesAll = new List<UiNode>(nodes);
+            nodesAll.Add(new UiNode { Label = "Apply", Path = "UIRoot/VideoOptions/Footer/ApplyButton", Type = "PhoenixGeneralButton", Visible = false, Inactive = true, Ref = "off" });
             List<UiClickResult> script = new List<UiClickResult>();
             UiNode clicked = null;
             int frame = 100;
-            UiTap.Scan = () => nodes;
+            UiTap.Scan = inact => inact ? nodesAll : nodes;
             bool forced = false;
             UiTap.ClickRun = (n, force) =>
             {
@@ -1212,7 +1214,7 @@ namespace Morgott.PPBridge
             Check("ui-click-cancel-says-done", canc.Contains("\"code\":\"cancelled\"") && canc.Contains("NOT undone"), canc);
 
             int scans = 0;
-            UiTap.Scan = () => { scans++; return nodes; };
+            UiTap.Scan = inact => { scans++; return inact ? nodesAll : nodes; };
             frame = 500;
             string d1 = V("ui", "{'tree':{},'pageSize':1,'diag':true}");
             string d2 = V("ui", "{'tree':{},'pageSize':1,'page':1,'diag':true}");
@@ -1224,11 +1226,15 @@ namespace Morgott.PPBridge
             frame = 501;
             V("ui", "{'tree':{},'pageSize':1}");
             Check("ui-scan-new-frame-rescans", scans == 3, "scans=" + scans);
-            Check("ui-diag-args", V("ui", "{'tree':{},'diag':1}").Contains("\"code\":\"args\""), "diag:1");
+            string offTree = V("ui", "{'tree':{'match':'apply','all':true}}");
+            Check("ui-tree-all-lists-inactive", offTree.Contains("\"total\":1") && offTree.Contains("\"hid\":true,\"off\":true"), offTree);
+            Check("ui-tree-inactive-only-with-all", V("ui", "{'tree':{'match':'apply'}}").Contains("\"total\":0"), "inactive leaked");
+            Check("ui-click-inactive-notfound", V("ui", "{'click':{'label':'Apply'}}").Contains("\"code\":\"notfound\""), "inactive clickable");
+            Check("ui-diag-args",V("ui", "{'tree':{},'diag':1}").Contains("\"code\":\"args\""), "diag:1");
             Check("ui-no-diag-by-default", !V("ui", "{'tree':{},'pageSize':1}").Contains("diag"), "diag leaked");
-            UiTap.Scan = () => { throw new InvalidOperationException("scan boom"); };
+            UiTap.Scan = inact => { throw new InvalidOperationException("scan boom"); };
             Check("ui-scan-throw", V("ui", "{'tree':{}}").Contains("\"code\":\"threw\""), V("ui", "{'tree':{}}"));
-            UiTap.Scan = () => nodes;
+            UiTap.Scan = inact => inact ? nodesAll : nodes;
             UiTap.ClickRun = (n, f) => new UiClickResult { Handler = "pointerClick", Threw = "NullReferenceException: Object reference not set to an instance of an object" };
             string swallowed = V("ui", "{'click':{'label':'NEW GAME'}}");
             Check("ui-click-handler-threw", swallowed.Contains("\"ok\":false") && swallowed.Contains("\"code\":\"threw\"") && swallowed.Contains("WAS dispatched") && swallowed.Contains("NullReferenceException")

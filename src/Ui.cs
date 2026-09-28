@@ -22,6 +22,8 @@ namespace Morgott.PPBridge
         internal int X, Y, W, H;
         /// <summary>A Slider/Scrollbar: its value moves by dragging, which a click cannot do.</summary>
         internal bool Drag;
+        /// <summary>all:true only: the GameObject is switched off (a screen not shown right now).</summary>
+        internal bool Inactive;
         internal object Ref;
     }
 
@@ -58,7 +60,9 @@ namespace Morgott.PPBridge
     ///   ui {tree:{match?, root?, interactable?, all?}, page?, pageSize?}
     ///       -> {ok, total, rows:[{l, p, t, dis?, hid?, r:[x,y,w,h]}], hasMore?}
     ///          match = substring of label OR path (case-insensitive); root = substring a row's FULL
-    ///          path must contain; interactable:true drops dis rows; all:true keeps invisible ones.
+    ///          path must contain; interactable:true drops dis rows; all:true also lists invisible
+    ///          rows (hid) AND the elements of switched-off screens (off, via FindObjectsOfTypeAll
+    ///          filtered to loaded scenes - slower); neither is clickable.
     ///          p = the last <see cref="PathSegs"/> path segments ("~/" = more above) - pass it back as `path`.
     ///   ui {click:{label|path, index?, force?}, waitFrames?}
     ///       -> {ok, clicked:p, handler:"pointerClick"|"pointerDown", target?, warn?, frames}
@@ -90,8 +94,9 @@ namespace Morgott.PPBridge
         internal const int MaxCandidates = 8;
         internal const int EchoClip = 80;
 
-        /// <summary>Game half: every clickable uGUI element in the loaded scenes, draw order.</summary>
-        internal static Func<List<UiNode>> Scan;
+        /// <summary>Game half: every clickable uGUI element in the loaded scenes, draw order. bool = also
+        /// the switched-off ones (all:true; they come back Inactive + not Visible).</summary>
+        internal static Func<bool, List<UiNode>> Scan;
         /// <summary>Game half: run the pointer sequence on node.Ref. bool = force (dispatch even when
         /// the raycast at the centre is blocked or empty).</summary>
         internal static Func<UiNode, bool, UiClickResult> ClickRun;
@@ -106,24 +111,26 @@ namespace Morgott.PPBridge
         // drops it - what it changed must not be answered from the scan before it.
         private static List<UiNode> cache;
         private static int cacheFrame;
-        private static Func<List<UiNode>> cacheScan;
+        private static Func<bool, List<UiNode>> cacheScan;
+        private static bool cacheAll;
         private static double lastMs;
         private static bool lastCached;
         private static int lastCount;
 
-        private static List<UiNode> Scanned()
+        private static List<UiNode> Scanned(bool inactive)
         {
             int frame = FrameNow == null ? int.MinValue : FrameNow();
-            if (cache != null && FrameNow != null && frame == cacheFrame && cacheScan == Scan) { lastCached = true; return cache; }
+            if (cache != null && FrameNow != null && frame == cacheFrame && cacheScan == Scan && cacheAll == inactive) { lastCached = true; return cache; }
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
             cache = null;
-            List<UiNode> nodes = Scan();
+            List<UiNode> nodes = Scan(inactive);
             lastMs = sw.Elapsed.TotalMilliseconds;
             lastCached = false;
             lastCount = nodes == null ? 0 : nodes.Count;
             cache = FrameNow == null ? null : nodes;
             cacheFrame = frame;
             cacheScan = Scan;
+            cacheAll = inactive;
             return nodes ?? new List<UiNode>();
         }
 
@@ -160,7 +167,7 @@ namespace Morgott.PPBridge
                 if (err != null) return Bad("args", err);
                 if (Scan == null) return Bad("ui", "no ui runner installed - this is the offline half, or the mod is shutting down");
                 List<UiNode> nodes;
-                try { nodes = Scanned(); }
+                try { nodes = Scanned(all); }
                 catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
                 JObject tr = Tree(nodes, match, root, inter, all, page, size);
                 if (diag) tr["diag"] = Diag();
@@ -179,7 +186,7 @@ namespace Morgott.PPBridge
             if (Scan == null || ClickRun == null) return Bad("ui", "no ui runner installed - this is the offline half, or the mod is shutting down");
 
             List<UiNode> all2;
-            try { all2 = Scanned(); }
+            try { all2 = Scanned(false); }
             catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
             UiNode pick;
             object refusal = Resolve(all2, label, path, index, out pick);
@@ -394,6 +401,7 @@ namespace Morgott.PPBridge
             JObject o = new JObject { ["l"] = l.Length > LabelClip ? l.Substring(0, LabelClip) + "~" : l, ["p"] = ShortPath(n.Path), ["t"] = n.Type };
             if (!n.Interactable) o["dis"] = true;
             if (!n.Visible) o["hid"] = true;
+            if (n.Inactive) o["off"] = true;
             o["r"] = new JArray(n.X, n.Y, n.W, n.H);
             return o;
         }
