@@ -377,8 +377,36 @@ public static class PpcliWin {
     }
 }
 
+# CONNECT MODE is not a cold launch. A mod exception logged while a job is parked on an ALREADY-RUNNING
+# game is often a UI coroutine dying on its own (end-mission under TFTV: SecondaryObjectivesTactical
+# +UIHider FadeInGraphic NRE, ISSUES 2026-09-28) while the main thread and the job carry on - and the
+# old DEAD RUN abandoned that healthy job mid-flight. So a fault here is first CHECKED: a `ping` is
+# enqueued to the main thread; if it answers, the fault is recorded (reply.logFaults, max 3) and the
+# wait goes on. Only a main thread that does not answer is a dead run.
+# Returns $null when there is nothing to report; throws DEAD RUN when the game is really wedged.
+function Test-ConnectFault($mark, $ep, $faults) {
+    if ($IgnoreLogFaults) { return }
+    if ($mark.next -and (Get-Date) -lt $mark.next) { return }
+    $mark.next = (Get-Date).AddSeconds(2)
+    $fault = Get-LogFault $mark $FaultPattern -Advance
+    if (-not $fault) { return }
+    $alive = $false
+    try {
+        $p = Invoke-Pipe $ep ([ordered]@{ token = $ep.token; id = 'c1'; verb = 'ping' }) 5
+        $alive = $p.status -eq 'done'
+    } catch { }
+    if (-not $alive) {
+        throw ("DEAD RUN: the game logged an exception whose stack names " +
+               ($FaultPattern ? "'$FaultPattern'" : 'a mod') + " and its main thread no longer answers a ping, " +
+               "so the wait was abandoned. Kill that game process and relaunch it; pass -IgnoreLogFaults " +
+               "to wait anyway. Log: $($mark.path)`n" + $fault)
+    }
+    Note "mod exception logged while waiting; the game still answers, so the job goes on:`n$fault"
+    if ($faults.Count -lt 3) { $faults.Add(($fault.Length -gt 600 ? $fault.Substring(0, 600) + '~' : $fault)) }
+}
+
 # One request per connection: connect, one length-prefixed UTF-8 frame out, one back, close.
-function Invoke-Pipe($ep, $body) {
+function Invoke-Pipe($ep, $body, [int] $timeoutSec = 0) {
     # Depth 32, not 12: a plan is a step list whose steps carry argument envelopes, and at depth 12
     # ConvertTo-Json silently stringifies the tail of it instead of failing.
     $json  = $body | ConvertTo-Json -Depth 32 -Compress
@@ -393,7 +421,7 @@ function Invoke-Pipe($ep, $body) {
         $client.Flush()
 
         # BOUNDED, both reads. A wedged game keeps this connection open and answers nothing.
-        $ms = $PipeTimeoutSeconds * 1000
+        $ms = ($timeoutSec -gt 0 ? $timeoutSec : $PipeTimeoutSeconds) * 1000
         $len = [BitConverter]::ToInt32((Read-Exact $client 4 $ms "pid $($ep.pid)"), 0)
         if ($len -le 0 -or $len -gt 262144) { throw "the server announced a $len byte frame" }
         # -NoEnumerate everywhere JSON comes back: PowerShell unrolls a one-element array into a
@@ -425,11 +453,17 @@ function Invoke-Verb([string] $verb, $verbArgs, $ep) {
         # A job that is dead is not slow. The mark is taken BEFORE the first poll, so only what the
         # game logs while this client is actually waiting can end the wait.
         $mark = New-LogMark (Get-GameLogPath $ep.pid)
+        $faults = New-Object Collections.Generic.List[string]
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 250
             $reply = Invoke-Pipe $ep ([ordered]@{ token = $ep.token; id = 'c1'; verb = 'status'; args = @{ jobId = $jobId } })
             if ($reply.status -ne 'running') { break }
-            Assert-NoLogFault $mark
+            try { Test-ConnectFault $mark $ep $faults }
+            catch {
+                # Best effort: the pipe thread still takes a cancel even when the main thread is gone.
+                try { Invoke-Pipe $ep ([ordered]@{ token = $ep.token; id = 'c1'; verb = 'cancel'; args = @{ jobId = $jobId } }) 5 | Out-Null } catch { }
+                throw
+            }
         }
         # The client's own ceiling, and it must not answer with the last poll: "running" as a FINAL
         # answer reads like a result and is not one, and the job would still be holding whatever it
@@ -448,6 +482,12 @@ function Invoke-Verb([string] $verb, $verbArgs, $ep) {
                             "A plan's own timeoutMs may be longer than this - poll 'connect status' with the jobId, or raise -TimeoutSeconds."
                 last      = $cancel
             }
+        }
+        # Survived faults ride the reply: a mod threw while this ran, and the caller should know
+        # the result was produced across it even though the job itself finished.
+        if ($faults.Count -gt 0) {
+            if ($reply -is [Collections.IDictionary]) { $reply.logFaults = @($faults) }
+            else { $reply | Add-Member -NotePropertyName logFaults -NotePropertyValue @($faults) -Force }
         }
     }
     # A FINISHED reply loses its transport ids (0.3.0): `id` is always the client's own 'c1' and the

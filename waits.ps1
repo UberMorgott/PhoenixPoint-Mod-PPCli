@@ -90,7 +90,9 @@ function Test-ModFrame([string] $Line) {
 # -Pattern) first - or $null. $Frames is how far below the header to LOOK; $Keep is how much of it
 # lands in the refusal an agent reads (0.3.0: 3, was the whole 8-frame block). The full stack stays
 # in the log, whose path the refusal names.
-function Get-LogFault($Mark, [string] $Pattern = '', [int] $Frames = 8, [int] $Keep = 3) {
+# -Advance moves the mark past the fault it returns, so a caller that SURVIVES a fault (connect mode,
+# main thread still answering) is told about each fault once instead of on every later poll.
+function Get-LogFault($Mark, [string] $Pattern = '', [int] $Frames = 8, [int] $Keep = 3, [switch] $Advance) {
     if (-not $Mark -or -not $Mark.path -or -not (Test-Path $Mark.path)) { return $null }
     $lines = @(Get-Content -Path $Mark.path -ErrorAction SilentlyContinue)
     for ($i = $Mark.lines; $i -lt $lines.Count; $i++) {
@@ -102,6 +104,7 @@ function Get-LogFault($Mark, [string] $Pattern = '', [int] $Frames = 8, [int] $K
                  else { $below | Where-Object { Test-ModFrame $_ } })
         if ($Pattern -and $hit.Count -eq 0 -and $block[0] -match $Pattern) { $hit = @($below | Select-Object -First $Keep) }
         if ($hit.Count -eq 0) { continue }
+        if ($Advance) { $Mark.lines = $last + 1 }
         return (@($block[0]) + @($hit | Select-Object -First $Keep)) -join "`n"
     }
     $null

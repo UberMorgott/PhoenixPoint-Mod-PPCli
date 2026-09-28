@@ -138,6 +138,14 @@ Assert-Value 'the quoted frames are the mod frames, not the engine one' `
 Assert-Value 'a fault older than the mark is ignored' `
     ([string](Get-LogFault (New-LogMark $log) 'TFTV')) ''
 
+# -Advance (connect mode survives a fault): each fault is reported ONCE, the next one still is.
+$adv = @{ path = $deep; lines = 0 }
+Assert-Value 'an advancing read reports the fault' ($(if (Get-LogFault $adv -Advance) { 'caught' } else { 'missed' })) 'caught'
+Assert-Value 'the same fault is not reported twice' ([string](Get-LogFault $adv -Advance)) ''
+Add-Content -Path $deep -Encoding utf8NoBOM -Value @('NullReferenceException', '  at TFTV.SecondaryObjectivesTactical+UIHider+<FadeInGraphic>d__3.MoveNext ()')
+Assert-Value 'a later fault is still reported' `
+    ($(if ((Get-LogFault $adv -Advance) -like '*FadeInGraphic*') { 'caught' } else { 'missed' })) 'caught'
+
 # No log at all is not an error: a hand-launched game may not have one, and the watch is then off.
 Assert-Value 'a missing log is silence, not a failure' `
     ([string](Get-LogFault (New-LogMark (Join-Path $scratch 'nope.log')) 'TFTV')) ''
