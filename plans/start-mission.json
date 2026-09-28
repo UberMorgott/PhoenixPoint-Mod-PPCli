@@ -54,6 +54,12 @@
       "id": "tactical", "verb": "wait", "args": { "phase": "tactical", "timeoutMs": "${loadTimeoutMs}", "everyFrames": 10 } },
     { "id": "playable", "verb": "wait", "args": { "ready": true, "timeoutMs": "${loadTimeoutMs}", "everyFrames": 10 } },
 
+    { "//GLOBAL TIME": "loadmap builds its TacticalGameParams WITHOUT GlobalTime (MapPlot.cs:342-366; only GeoMission.cs:732 sets it), and every KILL reaches PhoenixStatisticsManager.OnActorKilled -> PhoenixGame.GetCurrentGameTime, which dereferences it (PhoenixGame.cs:718-723) - so the first death on this mission threw a NullReferenceException mid-damage (kill-actor, any lethal `act` shot). Measured 2026-09-28: setting a default UnityDateTime makes the same kill-actor run clean. Unconditional here because a loadmap mission never has one; save/load paths already fall back to a default UnityDateTime (PhoenixSaveManager.cs:476).",
+      "id": "game-params", "verb": "call", "save": "GP",
+      "args": { "op": "get", "target": "@tac", "member": "TacticalGameParams" } },
+    { "id": "init-global-time", "verb": "call",
+      "args": { "op": "set", "target": "${GP.value.h}", "member": "GlobalTime", "value": { "$new": { "type": "Base.Utils.UnityDateTime" } } } },
+
     { "//": "WHAT THE MISSION ACTUALLY BECAME. A load that 'succeeded' into an empty map is the failure this reports.",
       "id": "factions", "verb": "call", "save": "FACS",
       "args": { "op": "get", "target": "@tac", "member": "Factions" } },
@@ -95,6 +101,7 @@
   "finally": [
     { "//": "NO lobby call here. A plan that dumped the player back to the menu on its own timeout would throw away a mission that may have loaded a second later, and `loadmap` leaves nothing behind that needs undoing - the level owns everything it built.",
       "id": "release-log", "verb": "release", "args": { "h": "${LOG.value.h}" } },
+    { "id": "release-game-params", "verb": "release", "args": { "h": "${GP.value.h}" } },
     { "id": "release-factions", "verb": "release", "args": { "h": "${FACS.value.h}" } }
   ],
 

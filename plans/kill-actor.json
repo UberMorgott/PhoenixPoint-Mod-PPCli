@@ -40,6 +40,15 @@
     { "id": "origin", "verb": "call", "save": "POS",
       "args": { "op": "get", "target": "${ACTOR.value.h}", "member": "Pos" } },
 
+    { "//GLOBAL TIME": "A death reaches PhoenixStatisticsManager.OnActorKilled -> PhoenixGame.GetCurrentGameTime, which dereferences TacticalGameParams.GlobalTime (PhoenixGame.cs:718-723). A loadmap mission started by a pre-0.3.1 start-mission.json has none, and apply-damage died there with a NullReferenceException (ISSUES 2026-09-28). The plan engine has no null test, so the probe is a 1 ms `wait` allowed to fail (onError continue, result saved): ok:false means null, and only THEN a default UnityDateTime is set - a campaign mission's real time is never touched.",
+      "id": "game-params", "verb": "call", "save": "GP",
+      "args": { "op": "get", "target": "@tac", "member": "TacticalGameParams" } },
+    { "id": "has-global-time", "verb": "wait", "save": "HASTIME", "onError": "continue",
+      "args": { "timeoutMs": 1, "everyFrames": 1,
+                "call": { "op": "get", "target": "${GP.value.h}", "member": "GlobalTime" } } },
+    { "id": "init-global-time", "verb": "call", "unless": "${HASTIME.ok}",
+      "args": { "op": "set", "target": "${GP.value.h}", "member": "GlobalTime", "value": { "$new": { "type": "Base.Utils.UnityDateTime" } } } },
+
     { "id": "make-damage", "verb": "call", "save": "DR",
       "args": { "op": "invoke", "type": "System.Activator", "member": "CreateInstance",
                 "args": [ { "$type": "PhoenixPoint.Tactical.Entities.DamageResult" } ],
@@ -77,7 +86,8 @@
     { "id": "release-damage", "verb": "release", "args": { "h": "${DR.value.h}" } },
     { "id": "release-object", "verb": "release", "args": { "h": "${GO.value.h}" } },
     { "id": "release-killer", "verb": "release", "args": { "h": "${KILLER.value.h}" } },
-    { "id": "release-actor", "verb": "release", "args": { "h": "${ACTOR.value.h}" } }
+    { "id": "release-actor", "verb": "release", "args": { "h": "${ACTOR.value.h}" } },
+    { "id": "release-game-params", "verb": "release", "args": { "h": "${GP.value.h}" } }
   ],
 
   "output": {

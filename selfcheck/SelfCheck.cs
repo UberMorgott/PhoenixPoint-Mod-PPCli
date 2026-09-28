@@ -1030,6 +1030,12 @@ namespace Morgott.PPBridge
                                         "{'id':'v','verb':'var','args':{'name':'${GONE.value}'}}]}}");
             Check("plan-cleanup-release-unset-is-a-skip", unset.Contains("\"cleanupSteps\":2") && !unset.Contains("LOG.value.h"), unset);
             Check("plan-cleanup-other-unset-still-red", unset.Contains("GONE.value} is not set"), unset);
+
+            // kill-actor's null probe: a failed 1 ms wait (onError continue, saved) gates the fix-up step.
+            string probeNull = Run("plan", "{'plan':{'steps':[{'id':'w','verb':'wait','save':'W','onError':'continue','args':{'timeoutMs':1,'everyFrames':1," +
+                                           "'call':{'op':'get','type':'System.String','member':'Empty'}}},{'id':'fix','verb':'ping','save':'FIX','unless':'${W.ok}'}]," +
+                                           "'finally':[],'output':{'fixed':'${FIX.ok}'}}}", 50, -1, 2);
+            Check("plan-null-probe-idiom", probeNull.Contains("\"ok\":true") && probeNull.Contains("\"fixed\":true"), probeNull);
         }
 
         private static void ImGuiChecks()
