@@ -253,10 +253,12 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
   `console` 50 lines / 8 KiB, `observe read` 10 rows, `log`/`events` 25 rows / 8 KiB), no request
   echo, `null` fields omitted, stacks ≤ 3 frames. `truncated` is gone from paged verbs — **`hasMore`**
   says there is another page (`console` keeps `truncated` only for a capture that hit its memory cap).
-  Invalid `page`/`pageSize` is refused `code:"args"`, never clamped. Byte budgets per default reply are
-  enforced by the offline SelfCheck (`budget-*`).
+  Invalid `page`/`pageSize`/`pageLines`/`pageBytes`/`since` is refused `code:"args"`, never clamped:
+  STRICT JSON integers only — `"2"`, `true`, `1.5` are refused, not coerced. Byte budgets per default
+  reply are enforced by the offline SelfCheck (`budget-*`).
 - **Delta reads by cursor.** `console` pages ONE run by an opaque `cursor` (TTL 120 s, ≤ 4 snapshots;
-  unknown/expired → `code:"cursor"`, command never re-run). `log` / `events` page by a numeric `since`
+  unknown/expired/edited → `code:"cursor"`, command never re-run). The cursor is a server-held token
+  (no offset inside); re-reading the same cursor returns the same page. `log` / `events` page by a numeric `since`
   (the `next` of the previous reply); an empty poll is `{"ok":true,"next":N}` (~22 bytes).
 
 ## Verbs
@@ -265,7 +267,7 @@ becomes the shorter clock. The engine's own hard cap is `Plan.MaxWaitMs`, 900 00
 |---|---|---|
 | `ping` | — | `{ok, protocol, build}` handshake |
 | `state` | — | `{ok, phase, scene, level, levelState}`; `phase` ∈ `menu` (the level that accepts a new game, or the gap between levels), `loading`, `geoscape`, `tactical`, `summary` (the game-over screen), `other` (any other playing level, e.g. the intro) |
-| `console` | `{command, args[], pageLines?, pageBytes?}` / `{cursor, pageLines?, pageBytes?}` | runs ONCE; `{ok, output[first page], total, hasMore, cursor?, truncated?}` — default 50 lines / 8 KiB (limits 1..2000 lines, 1024..196608 bytes); the `cursor` pages the same capture |
+| `console` | `{command, args[], pageLines?, pageBytes?}` / `{cursor, pageLines?, pageBytes?}` | runs ONCE; `{ok, error?, output[first page], total, hasMore, cursor?, truncated?, clipped?}` — default 50 lines / 8 KiB (limits 1..2000 lines, 1024..196608 bytes); `pageBytes` bounds the WHOLE reply JSON. The `cursor` pages the same capture: `{ok, error?, output, offset, total, hasMore, cursor?, truncated?, clipped?}` — a failed run's `ok:false`+`error` rides on EVERY page. `clipped:N` = lines on this page not shown whole (a line > 2000 chars is cut at capture; a line alone bigger than `pageBytes` is cut to fit — raise `pageBytes` to see it whole on the next run); absent when 0 |
 | `var` | `{name}` / `{name, value}` | the console's **variable** surface — `console` cannot reach it |
 | `call` | `{op, assembly, type, target, member, sig, typeArgs, args, value}` | `{ok, value}` / `{ok, void}` / `{ok, code, error}` |
 | `roots` | — | `{ok, roots{alias: value}}` — late-bound entrances |
@@ -730,7 +732,7 @@ prompted the question went with their game session before this could be tested a
 - `double` → `float` is allowed at widening score even though it is formally narrowing. JSON has one
   fractional number type and nearly every game API takes `float`; the strict rule would refuse
   `12.5` for a `Vector3` component. Integers, where truncation is a genuine bug, stay range-checked.
-- Def handles are not pinned across an epoch bump. `find` returns guids, so a def costs one cheap
+- Def handles are not pinned across an epoch bump. `find {"guids":true}` (or `@def:<name>`) returns guids, so a def costs one cheap
   call to get back; a pin list would be state to keep correct for nothing.
 - No `select` (dot path) / `limit` post-filter on the DTO yet. Depth is structurally 1 because
   nothing here recurses, so the byte cap and the page cap are the whole story.
@@ -920,7 +922,8 @@ everything computational is already a `call`.
   Shorten the run through the plan's own vars (`'{"phaseTimeoutMs":90000}'`); the top-level
   `timeoutMs` is read before substitution and cannot be parameterised.
 - **Caps that are not advice:** `timeoutMs` 60 s default / 600 s hard, `maxSteps` 200 default / 2000
-  hard, 16 steps per frame before the plan yields, 500 trace entries. An unbounded plan on the main
+  hard, 16 steps per frame before the plan yields, 500 trace entries (`"errors"` mode keeps its own
+  500 failed rows, so green steps never crowd a late `onError:"continue"` failure out). An unbounded plan on the main
   thread would hang the game, so none of these are optional.
 - **Result:** `{ok, code?, error?, step?, result?, steps, elapsedMs, cleanupRan, cleanupSteps, output?,
   outputWithheld?, trace?}` — null fields are omitted (0.3.0). `trace` defaults to `"errors"`: only

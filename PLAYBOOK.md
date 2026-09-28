@@ -142,10 +142,11 @@ geoscape note under the table.
   plan's `timeoutMs` + 60 s unless you pass `-TimeoutSeconds` yourself.
 - `scene` is a MapPlotDef's own scene name. All 209 `MapPlotDef` rows in the catalog built here are
   named `<scene>_PlotDef`, so `ALN_PLT_Nest_48x48_A_PlotDef` means `"scene":"ALN_PLT_Nest_48x48_A"`.
-  `find` returns only `{name, guid, type}`; to read the name off the def itself it is three calls:
+  `find` returns only `{name, type}` (plus `guid` with `"guids":true` — omitted by default since
+  0.3.0); to read the name off the def itself it is three calls:
 
   ```powershell
-  .\ppcli.ps1 connect find '{"query":"_PlotDef","pageSize":50}'
+  .\ppcli.ps1 connect find '{"query":"_PlotDef","pageSize":50,"guids":true}'
   .\ppcli.ps1 connect call '{"op":"invoke","target":"@defs","member":"GetDef","args":["<guid>"]}'
   .\ppcli.ps1 connect call '{"op":"get","target":"<PLOT>","member":"Scene"}'
   .\ppcli.ps1 connect call '{"op":"get","target":"<SCENEREF>","member":"SceneName"}'
