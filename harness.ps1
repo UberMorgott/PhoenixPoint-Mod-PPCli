@@ -6,6 +6,9 @@
   A file of its own so tests\harness.tests.ps1 can drive every function here with a FAKE invoker and
   no game: the transport arrives as a scriptblock `$Invoke(verb, args) -> {status, result}`.
 
+  Body = inline `steps` or `plan` (a reference "path" | {plan, vars?}); `setup` / `teardown` = lists of
+  references run before the observers attach / after they are read. "@plans/x.json" = PPCLI's plans.
+
   expect (all optional; an empty expect = "the plan finished ok"):
     ok       true (default) | false  - false: the plan must FAIL; `code` / `step` then narrow how
     results  [{var|output, path?, eq|ne|gt|gte|lt|lte|match|exists|truthy}]  - on a step's saved result

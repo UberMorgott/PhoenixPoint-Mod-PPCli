@@ -1750,6 +1750,62 @@ handler that throws (offline only), tactical HUD, TFTV panels.
 .\ppcli.ps1 connect ui '{"click":{"path":"UI_Button_Back"}}'
 ```
 
+## `trace` — runtime Harmony hook on any method (0.4.0, live-verified 2026-09-28 on D:\PP-Instance3)
+
+The answer to "did my patch run, with what arguments, and what did it return" without editing the mod.
+Pure half `src\Trace.cs` (resolution, refusals, caps, ring, ends - proven by selfcheck with a fake
+patcher); game half `src\TracePatch.cs` (one shared prefix/postfix, Harmony id
+`com.morgott.PPBridge.trace`, `Unpatch(method, All, id)` removes ONLY this bridge's patch).
+
+- **Start** `{start:{type, method, assembly?, sig?, args?, self?, ret?, stack?, maxHits?, ttlMs?, keepScene?, force?}}`
+  → `{ok,id,method:"Type.Name(ParamTypes)",next,existing?,warn?}`. Method = the one DECLARED on `type`
+  (inherited → `member` naming the declaring type); `.ctor` = instance constructor, `.cctor` refused.
+  Same method already live → same id, `existing:true` (+`warn` if the options differ; stop it to change them).
+- **Defaults are token-frugal**: rows carry only `{s,id}`; `args`/`self`/`ret`/`stack` opt in.
+  Values = `Reflect.Brief` (Unity object → `{type,name,id}`), each ≤ 512 B else `{$clipped,bytes}`,
+  ≤ 8 args. Off the main thread only scalars are read (`off:true`, others `{$offMain:Type}`).
+- **ret:true** publishes the row at RETURN (postfix) - a row published at entry and finished later
+  could be read, and a cursor moved past it, before its value existed (Codex review). A call that
+  throws counts in `hits` and has no row. No finalizer on purpose: a Harmony finalizer rethrows and can
+  lose the mod frames the dead-run detector reads.
+- **Read** `{since?, id?, match?, pageSize?, pageBytes?}` - the `log`/`events` paging (`TapPage`);
+  with `id`: `hits` (every call seen while patched, also past `maxHits`) and `ended` (reason).
+  Ended traces keep `{hits, reason}` (last 64), so a stopped trace still answers a count.
+- **Ends**: `stop`; TTL (default 300000, max 900000 ms); `maxHits` (default 100, max 1000: recording
+  stops at once, the unpatch happens on the next main-thread frame in `Runner.Update`); scene unload
+  unless `keepScene:true`; bridge shutdown (plus `UnpatchAll(id)` backstop). Max 8 live traces, ring
+  2000 rows, [ThreadStatic] re-entrancy guard (a projection that reaches a traced method records nothing).
+- **Refusals**: `inline` - non-virtual, no NoInlining, IL < 20 bytes (Mono `INLINE_LENGTH_LIMIT`), no
+  EH clauses: callers JITted with the body inlined never reach a patch, so a count would be LOW.
+  `force:true` traces anyway (`warn`). The verdict STICKS per method: Harmony/MonoMod marks a patched
+  method NoInlining in the runtime (live: `GameUtl.CurrentLevel` refused before its first trace,
+  passed after it), which protects later JITs only. `generic` (open generic), `abstract`, `extern`
+  (InternalCall/native/PInvoke/no IL), `unsafe` (mscorlib, netstandard, System*, Mono.*, 0Harmony,
+  Newtonsoft.Json, PPBridge), `signature` (pointer param, ref/pointer return), `ambiguous` (lists sigs),
+  `overload`, `member`, `type`, `cap`, `threw` (Harmony refused; nothing left patched).
+- **wait** `{trace:id, match?, since?}` - first row after `since` (default: newest at wait start; pass
+  `start.next` so a hit between start and wait is kept). A trace that ends first → `code:"ended"` at once.
+
+Live evidence (0.4.0): `IsDlcEnabled(EntitlementDef)` with args/self/ret/stack → row
+`a:[{type:EntitlementDef,name:LivingWeaponsEntitlementDef}]`, `t:{type:PhoenixGame}`, `r:false` (bool
+boxed through `object __result`), `f:["PhoenixGame.get_IsLivingWeaponsDlcEnabled"]`; `CurrentLevel`
+forced at the menu → 100 rows then `ended:"maxHits"`; default trace → `ended:"scene"` across
+`start-mission`, `keepScene:true` survived it.
+
+## `test` — the mod test harness (0.4.0)
+
+Client-only (`harness.ps1`, offline-proven by `tests\harness.tests.ps1` with a fake transport).
+Per case, in order: `log {status}` mark (refuses `expect.log` if the tap is not hooked) → `setup`
+plans (each must be ok; `save` → `${NAME.field}`) → harness traces (`keepScene:true`, `maxHits` 1000,
+TTL = case timeout + 60 s) + event subscriptions → the BODY plan, its `output` extended with
+`$v:NAME` for exactly the saved vars `expect` names (unknown name refused before the run) → trace
+hits / event rows (paged) / log rows since the mark (paged; `dropped` makes `hasNot` unprovable) →
+release harness-owned traces + subscriptions → `teardown` (always; a failing one fails the case).
+All files are parsed and every var reference checked before case 1. `-Cold` = one launch for the whole
+suite with `run`'s preflight (armed, activated, not running), gated on its own endpoint answering
+`state`, refused on a build mismatch, own PID stopped + `Options.jopt` restored after. JUnit times
+are culture-invariant. Codex review: no bridge-side `assert` verb (client checks suffice), no retries
+for mutating cases.
 ## Full verb envelopes and client details (moved from AGENTS.md, 0.3.0)
 
 AGENTS.md keeps the short forms; this is the complete table it used to carry.

@@ -19,6 +19,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 | Live multi | `.\ppcli.ps1 connect multi '<array>'` / `@file.json` / `-` (sequential, not transactional) |
 | Cold one (~17 s) / batch | `.\ppcli.ps1 run <verb> '<json>'` / `batch .\jobs.json` (`[{"id","verb","args"}]`) |
 | Catalog | `.\ppcli.ps1 index` → `catalog\defs.ndjson` |
+| Mod tests | `.\ppcli.ps1 test <dir\|file.test.json> ['{vars}'] [-Cold] [-JUnit x.xml] [-Only rx]` → `{ok,passed,failed,ms,mode,cases:[{name,ok,ms,fail?}],junit?}`, exit 1 on any fail. Case = plan (`steps` or `plan` ref) + `setup`/`teardown` refs (`@plans/x.json`) + `expect {ok,code,step,results,log,events,traces}` — PLAYBOOK § Test |
 | Deploy | `.\ppcli.ps1 deploy [-PPRoot] [-Force] [-AllowRunning]` |
 
 `run`/`batch` restore `Options.jopt`, delete run log, refuse running target, kill only own PID — use automation copy.
@@ -37,7 +38,8 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 | `items` | `{h,page?,pageSize?(50/200)}` |
 | `release` | `{h}` |
 | `find` | `{query,type?,page?,pageSize?(25/100),guids?}` / `{all:true,...}` (50/200) → `{count,total,page,pageSize,hasMore,defs}` |
-| `wait` | `{ready}` `{phase}` `{call}` `{forMs}` `{log:"rx",level?,since?}` `{event:{sub\|target+event,match?,since?}}` + `not?,timeoutMs?,everyFrames?` |
+| `wait` | `{ready}` `{phase}` `{call}` `{forMs}` `{log:"rx",level?,since?}` `{event:{sub\|target+event,match?,since?}}` `{trace:id,match?,since?}` + `not?,timeoutMs?,everyFrames?`; trace ended first → `code:"ended"` |
+| `trace` | `{start:{type,method(".ctor" ok),assembly?,sig?,args?,self?,ret?,stack?(0-3),maxHits?(100/1000),ttlMs?(300000/900000),keepScene?,force?}}` → `{id,method,next,existing?,warn?}`; `{since?,id?,match?,pageSize?,pageBytes?}` → `{rows?:[{s,id,a?,t?,r?,f?,off?}],next,hits?,ended?}`; `{list:true}`; `{stop:id\|"all"}` → `{stopped,hits}`. Ends: stop/ttl/maxHits/scene(unless keepScene)/shutdown. Codes `inline`(force) `generic abstract extern unsafe signature ambiguous member overload cap threw`. Max 8 live. ret:true: a throwing call counts in `hits`, no row. Live-verified 0.4.0 |
 | `log` | `{since?,level?,match?,pageSize?,pageBytes?,clip?,stack?}` → `{rows?:[{s,l,m}],next,hasMore?,dropped?}`; pass `next` as `since` |
 | `events` | `{subscribe:{target\|type,event}}` → `{sub,next}`; `{since?,sub?,match?}` → `{rows?:[{s,sub,a}],next,ended?}`; `{unsubscribe}` `{list:true}` |
 | `imgui` | `{list:true,owner?,match?}` → `{total,rows:[{l,i?,k?,on?,dis?,o,r}]}`; `{press:{label,owner?,index?,mode?},waitFrames?,diag?}` → `{fired:true,mode,ev,repaired,repairs?,unrepaired?,capped?,alive?,errors?,warn?}` (force settles 2 frames) / `code:"ambiguous\|notfound\|disabled\|nohwnd\|offscreen\|noevent\|missed\|notfired\|scene\|busy"`; mode `force` (default) = forced on Repaint/MouseMove; `post` = PostMessage'd real click (opt-in, EXPERIMENTAL, live-failed 0.3.1: `noevent` even focused). Bound to owner |

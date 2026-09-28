@@ -18,7 +18,8 @@ PPCLI directory against a **running** game. Do not dig the decompile first. Dept
 | read a value / call a method / does member exist | [Ask the game](#ask-the-game-something) |
 | see Unity log lines / errors as they happen | [Log and events](#watch-the-log-and-game-events--log-events) |
 | know when an actor died / turn changed / ability fired | [Log and events](#watch-the-log-and-game-events--log-events) |
-| click a game screen's button (menu, geoscape tabs, Back, popups, TFTV panels) | [UI](#click-a-game-screens-button--ui) |
+| did my patch / method run? with what args, what return? | [Trace](#did-my-method-run--trace) |
+| run my mod's regression tests (pass/fail, JUnit) | [Test](#test-my-mod--test) || click a game screen's button (menu, geoscape tabs, Back, popups, TFTV panels) | [UI](#click-a-game-screens-button--ui) |
 | click a mod's OnGUI (IMGUI) button, e.g. a bench | [IMGUI](#press-a-mods-ongui-button--imgui) |
 | screenshot | [Ask the game](#ask-the-game-something) |
 | something failed / hangs | [When it goes wrong](#when-it-goes-wrong) |
@@ -550,6 +551,67 @@ Stop polling state to learn what happened: read the delta. Every reply carries `
 
 `code:"cursor"` = game restarted, re-read with `since:0`. `code:"dropped"` on a wait = ring overwrote rows.
 
+## Did my method run? — `trace`
+
+Harmony-hooks ANY method (game or mod assembly) at runtime - no mod edit, no rebuild. One patch per
+method, removed on `stop`, TTL (default 300 s), `maxHits` (default 100, next frame), scene unload
+(unless `keepScene:true`) and bridge shutdown. Max 8 live. Detail: REFERENCE § `trace`.
+
+| Intent | Command |
+|---|---|
+| start (count only - cheapest) | `.\ppcli.ps1 connect trace '{"start":{"type":"PhoenixPoint.Tactical.Entities.TacticalActor","method":"ApplyDamage"}}'` → `id`, `next` |
+| + args / this / return / 2 caller frames | `... "args":true,"self":true,"ret":true,"stack":2` |
+| an overload | `... "method":"Foo","sig":["Int32","String"]` (refused `ambiguous` lists every sig) |
+| a mod's method | `... "type":"MyMod.Patches.Foo","assembly":"MyMod","method":"Bar"` |
+| hits so far + rows | `.\ppcli.ps1 connect trace '{"id":1}'` → `{hits, rows?, ended?}`; delta: `'{"since":N,"id":1}'` |
+| block until it runs (plan step) | `{"verb":"wait","args":{"trace":"${T.id}","since":"${T.next}","timeoutMs":10000}}` |
+| everything traced | `.\ppcli.ps1 connect trace '{"list":true}'` · stop: `'{"stop":1}'` / `'{"stop":"all"}'` |
+
+Rows: `{s,id,a?,t?,r?,f?,off?}` - `a` args, `t` this, `r` return (Reflect brief, ≤512 B each),
+`f` callers, `off:true` = called off the main thread (primitives only). `ret:true`: a call that THREW
+counts in `hits` but has no row. Refusals: `inline` (tiny non-virtual - Mono may have inlined it into
+callers, so a count would be LOW; `force:true` traces anyway, or trace the caller), `generic`,
+`abstract`, `extern`, `unsafe` (mscorlib/System*/Harmony/Newtonsoft/PPBridge), `signature`
+(pointer / ref return), `ambiguous`, `member`, `cap`.
+
+## Test my mod — `test`
+
+A case = a plan + `expect`, in `*.test.json`. The harness runs every case over the pipe and prints
+ONE summary `{ok,passed,failed,ms,mode,cases:[{name,ok,ms,fail?}]}`; exit 1 if any failed.
+
+```powershell
+.\ppcli.ps1 test .\tests\examples -PPRoot D:\PP-Instance3                      # game already running
+.\ppcli.ps1 test E:\DEV\PhoenixPoint\TheTurned\tests\ppcli -Cold -PPRoot D:\PP-Instance3 -ProfileId 76561197996210593 -JUnit out\ppcli.xml
+.\ppcli.ps1 test <dir> '{"actorName":"Crabman_3"}' -Only 'death'              # vars for every body; name filter
+```
+
+```json
+{ "name": "my patch runs when a crab dies",
+  "setup":    [ "@plans/start-mission.json", { "plan": "@plans/spawn-squad.json", "vars": { "count": 1 }, "save": "SPAWN" } ],
+  "plan":     { "plan": "@plans/kill-actor.json", "vars": { "actorName": "${SPAWN.lastActorName}" } },
+  "teardown": [],
+  "expect": {
+    "ok": true,
+    "results": [ { "output": "wasDead", "eq": false } ],
+    "events":  [ { "target": "@tac", "event": "ActorDeathEvent", "min": 1 } ],
+    "traces":  [ { "type": "MyMod.DeathPatch", "assembly": "MyMod", "method": "Postfix", "min": 1 } ],
+    "log":     { "level": "error", "hasNot": [ "MyMod" ] } } }
+```
+
+- Body = inline `steps`/`finally` (a plan) or `plan` (a reference). `@plans/x.json` = PPCLI's shipped
+  plans; any other path is relative to the test file. `setup` runs BEFORE observers attach (a `@tac`
+  subscription needs the mission it loads), `teardown` after, always. `save` on a setup = its plan
+  output as `${NAME.field}` for later vars.
+- `expect.results`: `{var|output, path?, eq|ne|gt|gte|lt|lte|match|exists|truthy}` - `var` = a step's
+  `save` (full DTO), `output` = the plan's own output field. `ok:false` (+`code`/`step`) = the body
+  must FAIL (a failed plan has no output, so no `results` then).
+- `events` / `traces`: `{target|type, event}` / `{type, method, sig?, assembly?, force?}` are attached
+  by the harness around the body (traces default `keepScene:true`); `{var}` = one a step made.
+  `min` default 1, `max` optional, `match` = regex over the row.
+- `log.hasNot` over rows logged during the case; refuses to "prove" absence when the ring dropped rows.
+- A mod repo keeps its cases in its own `tests\ppcli\*.test.json`, referencing `@plans/...` - no copy
+  of PPCLI needed. Examples: `tests\examples\` (trace hit, plan-owned trace + wait, spawn+kill →
+  `ActorDeathEvent`), all live-verified on D:\PP-Instance3 in connect AND `-Cold`.
 ## Click a game screen's button — `ui`
 
 The game's own uGUI: every visible button/toggle/slider/clickable row, as a human sees it. The click is
