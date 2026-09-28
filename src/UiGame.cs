@@ -38,6 +38,11 @@ namespace Morgott.PPBridge
                 if (s != null && s.isActiveAndEnabled) Add(nodes, seen, s.gameObject);
             foreach (MonoBehaviour mb in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>())
                 if (mb is IPointerClickHandler && mb.isActiveAndEnabled && mb.transform is RectTransform) Add(nodes, seen, mb.gameObject);
+            // A container that is itself clickable (UINavigationalElementsHolder, list views) would
+            // otherwise borrow its first child button's text and collide with that button's label.
+            HashSet<Transform> cands = new HashSet<Transform>();
+            foreach (UiNode n in nodes) cands.Add(((GameObject)n.Ref).transform);
+            foreach (UiNode n in nodes) n.Label = Label((GameObject)n.Ref, cands);
             nodes.Sort((a, b) => a.Y != b.Y ? a.Y.CompareTo(b.Y) : a.X != b.X ? a.X.CompareTo(b.X) : string.CompareOrdinal(a.Path, b.Path));
             return nodes;
         }
@@ -58,7 +63,6 @@ namespace Morgott.PPBridge
             int top = Screen.height - Mathf.RoundToInt(r.yMax);
             nodes.Add(new UiNode
             {
-                Label = Label(go),
                 Path = PathOf(go.transform),
                 Type = type,
                 Interactable = inter,
@@ -105,10 +109,20 @@ namespace Morgott.PPBridge
             return a;
         }
 
-        private static string Label(GameObject go)
+        /// <summary>True when <paramref name="t"/> belongs to <paramref name="owner"/>, not to a clickable
+        /// element nested between them.</summary>
+        private static bool Owns(Transform owner, Transform t, HashSet<Transform> cands)
+        {
+            for (; t != null && t != owner; t = t.parent)
+                if (cands.Contains(t)) return false;
+            return t == owner;
+        }
+
+        private static string Label(GameObject go, HashSet<Transform> cands)
         {
             foreach (Text t in go.GetComponentsInChildren<Text>())
             {
+                if (!Owns(go.transform, t.transform, cands)) continue;
                 string s = UiTap.CleanText(t.text);
                 if (!string.IsNullOrEmpty(s)) return s;
             }
@@ -121,6 +135,7 @@ namespace Morgott.PPBridge
             if (tmpText != null)
                 foreach (Component c in go.GetComponentsInChildren(tmpType))
                 {
+                    if (!Owns(go.transform, c.transform, cands)) continue;
                     string s = UiTap.CleanText(tmpText.GetValue(c, null) as string);
                     if (!string.IsNullOrEmpty(s)) return s;
                 }
