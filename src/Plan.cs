@@ -18,6 +18,13 @@ namespace Morgott.PPBridge
         object Tick(bool cancelled);
     }
 
+    /// <summary>An IPending that holds something outside itself (a wait-owned event subscription).
+    /// Whoever drops such a job WITHOUT ticking it to completion must call Release. Idempotent.</summary>
+    internal interface IReleasable
+    {
+        void Release();
+    }
+
     /// <summary>
     /// P3: the temporal half of PPCLI - <c>wait</c>, <c>snapshot</c>/<c>restore</c> and the plan
     /// engine. Like Reflect.cs this names NO Unity and NO game type: the one thing it cannot express
@@ -189,8 +196,10 @@ namespace Morgott.PPBridge
         /// loads, and the whole reason to wait is that the thing is not there yet. The last error is
         /// carried into the timeout result, so a predicate that is permanently broken still says why.
         /// </summary>
-        internal sealed class Waiter : IPending
+        internal sealed class Waiter : IPending, IReleasable
         {
+            /// <summary>Set when the probe threw <see cref="WaitFatal"/>: polling on cannot become true.</summary>
+            private WaitFatal fatal;
             private readonly JObject call;        // the predicate, already in `call` form
             private readonly string phase;        // or a phase name to match against `state`
             private readonly int every;
@@ -269,9 +278,13 @@ namespace Morgott.PPBridge
                 string pattern = a["log"].Type == JTokenType.String ? (string)a["log"] : null;
                 if (string.IsNullOrEmpty(pattern)) return Bad("args", "log wait needs {\"log\":\"<regex>\"}");
                 if (!TapPage.TryRegex(pattern, out rx, out refusal)) return refusal;
-                string level = (string)a["level"];
+                string level;
+                object badLevel = LogTap.LevelArg(a, out level);
+                if (badLevel != null) return badLevel;
                 long since;
                 if (!SinceOr(a["since"], LogTap.Ring.Last, out since)) return Bad("args", "since must be an integer >= 0");
+                object ahead = TapPage.Ahead(since, LogTap.Ring.Last);
+                if (ahead != null) return ahead;
                 Waiter w = new Waiter(null, null, every, timeout, false);
                 w.probe = () => LogTap.FirstMatch(rx, level, ref since);
                 return w;
@@ -292,6 +305,8 @@ namespace Morgott.PPBridge
                 if (!TapPage.TryRegex((string)(e["match"] ?? a["match"]), out rx, out refusal)) return refusal;
                 long since;
                 if (!SinceOr(e["since"], EventTap.Ring.Last, out since)) return Bad("args", "since must be an integer >= 0");
+                object ahead = TapPage.Ahead(since, EventTap.Ring.Last);
+                if (ahead != null) return ahead;
                 int subId;
                 Action release = null;
                 if (e["sub"] != null && e["sub"].Type == JTokenType.Integer)
@@ -305,7 +320,7 @@ namespace Morgott.PPBridge
                     refusal = EventTap.Subscribe(e, out sub, out existing);
                     if (refusal != null) return refusal;
                     subId = sub.Id;
-                    if (!existing) release = () => EventTap.Drop(sub, "wait ended");
+                    if (!existing) release = () => { EventTap.Drop(sub, "wait ended"); };
                 }
                 Waiter w = new Waiter(null, null, every, timeout, false);
                 w.release = release;
@@ -334,13 +349,18 @@ namespace Morgott.PPBridge
             public object Tick(bool cancelled)
             {
                 object r = TickInner(cancelled);
-                if (r != null && release != null)
-                {
-                    Action once = release;
-                    release = null;
-                    try { once(); } catch (Exception) { }
-                }
+                if (r != null) Release();
                 return r;
+            }
+
+            /// <summary>Idempotent. Also called by whoever DISCARDS the wait without ticking it to
+            /// the end (the Runner refusing a full park, a plan entering cleanup/deadline), or a
+            /// wait-owned subscription would keep its handler and a slot forever.</summary>
+            public void Release()
+            {
+                Action once = release;
+                release = null;
+                if (once != null) { try { once(); } catch (Exception) { } }
             }
 
             private object TickInner(bool cancelled)
@@ -359,6 +379,7 @@ namespace Morgott.PPBridge
                     countdown = every;
                     polls++;
                     if (Satisfied()) return new { ok = true, waitedMs = ms, polls, negated = negate, value = last };
+                    if (fatal != null) return new { ok = false, code = fatal.Code, error = Protocol.Clip(fatal.Message), waitedMs = ms, polls };
                 }
                 if (DateTime.UtcNow <= deadline) return null;
                 return new
@@ -425,6 +446,7 @@ namespace Morgott.PPBridge
                     last = dto["value"];
                     return Truthy(last);
                 }
+                catch (WaitFatal wf) { fatal = wf; lastError = wf.Message; return false; }
                 catch (Exception ex) { lastError = ex.GetType().Name + ": " + ex.Message; return false; }
             }
         }
@@ -445,8 +467,16 @@ namespace Morgott.PPBridge
         /// never quietly null, which is how a plan would otherwise call the right method with the
         /// wrong argument.
         /// </summary>
-        internal sealed class PlanRun : IPending
+        internal sealed class PlanRun : IPending, IReleasable
         {
+            /// <summary>Drops the parked inner step WITHOUT finishing it - releasing what it holds.</summary>
+            public void Release()
+            {
+                IReleasable r = inner as IReleasable;
+                inner = null;
+                if (r != null) r.Release();
+            }
+
             private sealed class Frame
             {
                 internal JArray Steps;
@@ -747,7 +777,7 @@ namespace Morgott.PPBridge
                 mainSteps = executed;
                 executed = 0;
                 inCleanup = true;
-                inner = null;
+                Release();                                            // a cancelled/expired wait's subscription too
                 pendingSave = null;
                 stack.Clear();
                 if (cleanup == null || cleanup.Count == 0) return Done(null);
@@ -758,6 +788,7 @@ namespace Morgott.PPBridge
 
             private object Done(object lateFailure)
             {
+                Release();                                            // a finally wait cut off by its grace period
                 if (failure == null) failure = lateFailure;
                 JObject f = failure == null ? null : JObject.FromObject(failure);
 

@@ -139,6 +139,7 @@ namespace Morgott.PPBridge
     }
 
     internal delegate void FakeDeathHandler(FakeReport report);
+    internal delegate void WideHandler(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j);
 
     internal class Emitter
     {
@@ -151,6 +152,17 @@ namespace Morgott.PPBridge
         public void Both(int n, string s) { Pair?.Invoke(n, s); }
         public static void Ping(string s) { StaticPing?.Invoke(s); }
         public int DeathHandlers { get { return Death == null ? 0 : Death.GetInvocationList().Length; } }
+
+        // C+D review fixtures: a 10-arg event, a fat-arg event, a remove accessor that throws.
+        public event WideHandler Many;
+        public event Action<string> Big;
+        private Action<int> sticky;
+        public bool RefuseRemove = true;
+        public event Action<int> Sticky { add { sticky += value; } remove { if (RefuseRemove) throw new InvalidOperationException("remove refused"); sticky -= value; } }
+        public void FireMany() { Many?.Invoke(1, 2, 3, 4, 5, 6, 7, 8, 9, 10); }
+        public void FireBig(string s) { Big?.Invoke(s); }
+        public void FireSticky(int n) { sticky?.Invoke(n); }
+        public int StickyHandlers { get { return sticky == null ? 0 : sticky.GetInvocationList().Length; } }
         public int ReturnsHandlers { get { return Returns == null ? 0 : Returns.GetInvocationList().Length; } }
     }
 
@@ -928,6 +940,45 @@ namespace Morgott.PPBridge
             string planLog = Run("plan", "{'plan':{'steps':[{'id':'w','verb':'wait','args':{'log':'x','since':0,'timeoutMs':1000},'save':'W'}],'output':{'m':'${W.value.m}'}}}");
             Check("log-wait-in-a-plan", planLog.Contains("\"ok\":true") && planLog.Contains("\"m\":"), planLog);
 
+            // --- Codex review of C+D.
+            // P1 regex: ONE budget per request, not 50 ms per row - 40 catastrophic rows used to cost
+            // ~2 s of one frame and answer "no rows".
+            LogTap.Shutdown();
+            for (int i = 0; i < 40; i++) LogTap.Append(new string('a', 28) + "!", null, "Log");
+            Stopwatch rsw = Stopwatch.StartNew();
+            string slow = V("log", "{'since':0,'match':'^(a+)+$'}");
+            rsw.Stop();
+            Check("log-regex-request-budget", slow.Contains("\"code\":\"regex\"") && rsw.ElapsedMilliseconds < 1000, rsw.ElapsedMilliseconds + " ms " + slow);
+            // Rows each well under the 50 ms row timeout but together far past the request budget.
+            LogTap.Shutdown();
+            for (int i = 0; i < LogTap.Capacity; i++) LogTap.Append(new string('a', 16) + "!", null, "Log");
+            rsw = Stopwatch.StartNew();
+            string slow2 = V("log", "{'since':0,'match':'^(a+)+$'}");
+            rsw.Stop();
+            Check("log-regex-total-budget", slow2.Contains("\"code\":\"regex\"") && rsw.ElapsedMilliseconds < 1000, rsw.ElapsedMilliseconds + " ms " + slow2);
+            IPending rw = Start("wait", "{'log':'^(a+)+$','since':0,'everyFrames':1,'timeoutMs':60000}") as IPending;
+            string rwr = rw == null ? "no pending" : Protocol.Compact(rw.Tick(false));
+            Check("log-wait-regex-budget-fails-fast", rwr.Contains("\"code\":\"regex\""), rwr);
+
+            // P2 wait: bad level refused, future since refused, ring loss reported.
+            Check("log-wait-bad-level-refused", Protocol.Compact(Start("wait", "{'log':'x','level':'fatal'}")).Contains("\"code\":\"args\""), "accepted");
+            Check("log-wait-future-since-refused", Protocol.Compact(Start("wait", "{'log':'x','since':999999}")).Contains("\"code\":\"cursor\""), "accepted");
+            IPending lw = Start("wait", "{'log':'never-said','everyFrames':1,'timeoutMs':60000}") as IPending;
+            for (int i = 0; i < LogTap.Capacity + 5; i++) LogTap.Append("noise " + i, null, "Log");
+            string lwr = lw == null ? "no pending" : Protocol.Compact(lw.Tick(false));
+            Check("log-wait-reports-ring-loss", lwr.Contains("\"code\":\"dropped\""), lwr);
+            // ...and a ring that restarts UNDER a running wait is code:"cursor", not a silent rewind.
+            IPending cw = Start("wait", "{'log':'never-said','everyFrames':1,'timeoutMs':60000}") as IPending;
+            LogTap.Shutdown();
+            string cwr = cw == null ? "no pending" : Protocol.Compact(cw.Tick(false));
+            Check("log-wait-ring-restart-is-cursor", cwr.Contains("\"code\":\"cursor\""), cwr);
+
+            // P2 size: one row alone bigger than pageBytes is cut to fit and flagged.
+            long fatFrom = LogTap.Ring.Last;
+            LogTap.Append(new string('\u0001', 1000), new string('\u0002', 1500), "Error");
+            string one = V("log", "{'since':" + fatFrom + ",'pageBytes':1024,'clip':1000,'stack':true}");
+            Check("log-single-row-fits-page-bytes", B(one) <= 1024 && one.Contains("\"clipped\":true"), "bytes=" + B(one));
+
             // Budget: 1000 rows of 1000-char messages, default tail read.
             LogTap.Shutdown();
             for (int i = 0; i < LogTap.Capacity; i++) LogTap.Append(new string('m', 1000), new string('s', 1500), "Error");
@@ -1021,6 +1072,74 @@ namespace Morgott.PPBridge
             string t4 = w2 == null ? "" : Protocol.Compact(w2.Tick(false));
             Check("events-wait-names-ended-sub", t4.Contains("\"code\":\"timeout\"") && t4.Contains("ended: scene"), t4);
             Check("events-wait-unknown-sub-refused", Protocol.Compact(Start("wait", "{'event':{'sub':9999}}")).Contains("\"code\":\"args\""), "accepted");
+
+            // --- Codex review of C+D.
+            EventTap.Shutdown();
+            // P1 leak: a wait {event} the plan abandons (deadline / cancel) or the Runner refuses to
+            // park must drop the subscription it made.
+            string pd = Run("plan", "{'plan':{'timeoutMs':30,'steps':[{'id':'w','verb':'wait','args':{'event':{'target':'@em','event':'Death'},'timeoutMs':60000}}]}}", 400, -1, 1);
+            Check("events-plan-deadline-releases-wait-sub", pd.Contains("\"code\":\"timeout\"") && em.DeathHandlers == 0 && EventTap.Live == 0, pd + " handlers=" + em.DeathHandlers);
+            string pc = Run("plan", "{'plan':{'steps':[{'id':'w','verb':'wait','args':{'event':{'target':'@em','event':'Death'},'timeoutMs':60000}}]}}", 50, 3);
+            Check("events-plan-cancel-releases-wait-sub", pc.Contains("\"code\":\"cancelled\"") && em.DeathHandlers == 0 && EventTap.Live == 0, pc + " handlers=" + em.DeathHandlers);
+            object parkRefused = Start("wait", "{'event':{'target':'@em','event':'Death'},'timeoutMs':60000}");
+            bool subbed = em.DeathHandlers == 1;
+            IReleasable rel = parkRefused as IReleasable;
+            if (rel != null) rel.Release();
+            Check("events-discarded-wait-releases-sub", subbed && rel != null && em.DeathHandlers == 0 && EventTap.Live == 0, "handlers=" + em.DeathHandlers);
+
+            // P1 threads: a firing off the main thread records only scalars, never projects objects
+            // (no Unity reads, no handle-table writes); Fired counts every concurrent firing.
+            EventTap.MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            int offId = (int)JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Death','handles':true}}"))["sub"];
+            long offFrom = EventTap.Ring.Last;
+            Thread bg = new Thread(() => em.Die(new FakeReport { Actor = new FakeDef { Guid = "bg" } }));
+            bg.Start(); bg.Join();
+            string offRead = V("events", "{'since':" + offFrom + ",'sub':" + offId + "}");
+            Check("events-off-main-thread-not-projected", offRead.Contains("\"$offMain\":\"FakeReport\"") && !offRead.Contains("\"bg\""), offRead);
+            int pairId = (int)JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Pair'}}"))["sub"];
+            Thread[] firers = new Thread[4];
+            for (int t = 0; t < firers.Length; t++) { firers[t] = new Thread(() => { for (int i = 0; i < 2000; i++) em.Both(i, "x"); }); firers[t].Start(); }
+            foreach (Thread t in firers) t.Join();
+            Check("events-fired-counts-concurrent-firings", V("events", "{'list':true}").Contains("\"fired\":8000"), V("events", "{'list':true}"));
+            EventTap.MainThreadId = -1;
+
+            // P2 size: at most MaxArgs args per record, one fat arg replaced by type+size, one row
+            // alone over pageBytes cut to fit with a flag.
+            int manyId = (int)JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Many'}}"))["sub"];
+            em.FireMany();
+            JObject mr = JObject.Parse(V("events", "{'sub':" + manyId + "}"));
+            JArray ma = (JArray)mr["rows"][0]["a"];
+            Check("events-arg-count-capped", ma.Count == EventTap.MaxArgs + 1 && (int)ma[EventTap.MaxArgs]["$moreArgs"] == 2, ma.ToString(Newtonsoft.Json.Formatting.None));
+            // Brief keeps 160 chars a string; 160 control chars escape to ~960 bytes, two of them to ~2 KB.
+            Emitter em2 = new Emitter();
+            int bigId = (int)JObject.Parse(V("events", "{'subscribe':{'target':'" + Reflect.Track(em2) + "','event':'Death'}}"))["sub"];
+            em2.Die(new FakeReport { Actor = new FakeDef { Guid = new string('\u0001', 160) }, Killer = new FakeDef { Guid = new string('\u0001', 160) } });
+            string br = V("events", "{'sub':" + bigId + "}");
+            Check("events-fat-arg-replaced", br.Contains("\"$clipped\":\"FakeReport\"") && B(br) < 400, "bytes=" + B(br));
+            long pairFrom = EventTap.Ring.Last;
+            em.Both(1, new string('\u0001', 160));
+            string pr1 = V("events", "{'since':" + pairFrom + ",'sub':" + pairId + ",'pageBytes':1024}");
+            Check("events-single-row-fits-page-bytes", B(pr1) <= 1024 && pr1.Contains("\"clipped\":"), "bytes=" + B(pr1));
+
+            // P2 Drop: a remove accessor that throws leaves the handler attached - the sub stays
+            // registered with the error, and a later unsubscribe can still detach it.
+            int stickyId = (int)JObject.Parse(V("events", "{'subscribe':{'target':'@em','event':'Sticky'}}"))["sub"];
+            string us = V("events", "{'unsubscribe':" + stickyId + "}");
+            string sl = V("events", "{'list':true}");
+            Check("events-failed-remove-is-reported", us.Contains("\"ok\":false") && us.Contains("remove refused") && em.StickyHandlers == 1 &&
+                  sl.Contains("\"sub\":" + stickyId) && sl.Contains("removeError"), us + " / " + sl);
+            em.RefuseRemove = false;
+            string us2 = V("events", "{'unsubscribe':" + stickyId + "}");
+            Check("events-failed-remove-retryable", us2.Contains("\"removed\":1") && em.StickyHandlers == 0, us2);
+
+            // P2 wait: future since = code:"cursor" like a read.
+            Check("events-wait-future-since-refused", Protocol.Compact(Start("wait", "{'event':{'sub':" + pairId + ",'since':999999}}")).Contains("\"code\":\"cursor\""), "accepted");
+            // P2 wait: ring loss past since is its own failure, not a plain timeout.
+            IPending lw = Start("wait", "{'event':{'sub':" + pairId + ",'match':'never'},'everyFrames':1,'timeoutMs':60000}") as IPending;
+            for (int i = 0; i < EventTap.Capacity + 5; i++) em.Die(new FakeReport());
+            string lwr = lw == null ? "no pending" : Protocol.Compact(lw.Tick(false));
+            Check("events-wait-reports-ring-loss", lwr.Contains("\"code\":\"dropped\""), lwr);
+            V("events", "{'unsubscribe':'all'}");
 
             // Budget: 1000 firings with a fat report, default tail read; empty poll.
             EventTap.Shutdown();

@@ -84,6 +84,8 @@ namespace Morgott.PPBridge
             // and it is a game-half concept: `(UnityEngine.Object)x == null` is false for a plain
             // managed object and true for a destroyed one, which is exactly the test a handle needs.
             Protocol.UnityAlive = o => !(o is UnityEngine.Object) || (UnityEngine.Object)o != null;
+            // OnModEnabled runs on Unity's main thread: EventTap projects game objects only there.
+            EventTap.MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
             Protocol.SnapshotStart = StartSnapshot;
             Protocol.SaveExists = SaveExists;
             Protocol.CaptureRun = Screenshot.Run;
@@ -680,6 +682,10 @@ namespace Morgott.PPBridge
                 {
                     if (parked.Count >= MaxPending)
                     {
+                        // The refused job is never ticked again: whatever it already holds (a
+                        // wait {event} subscribes BEFORE it is parked) must be let go here.
+                        IReleasable rel = work as IReleasable;
+                        if (rel != null) rel.Release();
                         Finish(job, Protocol.Fail("too many jobs already waiting (" + MaxPending +
                                                   ") - cancel one or wait for it to finish"));
                         return;
