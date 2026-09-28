@@ -158,6 +158,7 @@ namespace Morgott.PPBridge
         private static void OnSceneUnloaded(Scene scene)
         {
             Reflect.NewEpoch();
+            ImGuiTap.SceneUnloaded();    // an armed imgui press never fires into the next scene's UI
             // A subscription on an object of the unloaded scene (or on something that is not a Unity
             // object at all, whose owner we cannot place) ends here - named "scene" to a reader.
             try

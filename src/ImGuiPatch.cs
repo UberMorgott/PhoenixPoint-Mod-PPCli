@@ -75,7 +75,7 @@ namespace Morgott.PPBridge
         }
 
         /// <summary>First stack frame outside Unity, Harmony and this bridge = the OnGUI that drew the
-        /// control. Nested/compiler types are walked up to the outermost declaring type.</summary>
+        /// control. Nested/compiler types are walked up to the outermost declaring type; FULL name (namespace kept) so a press binds to exactly that type.</summary>
         private static string Owner()
         {
             StackFrame[] frames = new StackTrace(2, false).GetFrames();
@@ -89,7 +89,7 @@ namespace Morgott.PPBridge
                 string ns = ty.Namespace ?? "";
                 if (ns.StartsWith("UnityEngine", StringComparison.Ordinal) || ns.StartsWith("HarmonyLib", StringComparison.Ordinal)
                     || ns == "Morgott.PPBridge" || ns.StartsWith("System", StringComparison.Ordinal)) continue;
-                return ty.Name;
+                return ty.FullName;
             }
             return null;
         }

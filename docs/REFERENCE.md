@@ -1546,7 +1546,9 @@ In-process, semantic press: no SendInput, so the user's focus and cursor are nev
   `index` → `code:"ambiguous"` (+`candidates` ≤ 10 rows, pass `index` = the row's `i` and/or `owner`);
   drawn disabled → `code:"disabled"`. Then ARMED: the matched (label, i) gets the forced result ONCE, on the first SAFE pass - `Repaint` or `MouseMove`, and only while `GUIUtility.hotControl == 0`. NEVER on MouseDown/MouseUp/MouseDrag/Key*/Used: forcing a real MouseDown true runs the body, then the native MouseUp on the same control runs it AGAIN and leaves hotControl grabbed (Codex review P1). Layout is skipped (GUILayout's dummy pass; forcing there desyncs the layout). While the user holds a control, the press waits (→ `notfired` if it never frees). Fired →
   `{ok:true,fired:true,ev:"Repaint|MouseMove|…",frames}`; not drawn again within `waitFrames`
-  (default 30, max 600) → `{ok:false,code:"notfired",fired:false}`. Every refusal carries `fired:false`.
+  (default 30, max 600) → `{ok:false,code:"notfired",fired:false}`. The armed target is BOUND to
+  the resolved control's full owner type: if the UI reorders and (label, i) is drawn by another type,
+  it does not fire (→ `notfired`). A scene unload drops an armed press → `code:"scene"`. Every refusal carries `fired:false`.
 - **Trap:** a press fired in Repaint runs the button's body mid-Repaint. A body that ADDS/REMOVES
   GUILayout controls later in the same OnGUI makes Unity log one `ArgumentException: Getting control
   N's position in a group with only N controls` for that frame; the next frame re-lays out. A body

@@ -908,7 +908,7 @@ namespace Morgott.PPBridge
                 imFrame++;
                 object done = p.Tick(false);
                 if (done != null) return Protocol.Compact(done);
-                forced.AddRange(ImFrame(labels, enabled, inputEv, "BenchUI"));
+                forced.AddRange(ImFrame(labels, enabled, inputEv, "Mods.Bench.BenchUI"));
             }
             return "never finished";
         }
@@ -975,6 +975,32 @@ namespace Morgott.PPBridge
             Check("imgui-press-not-while-hotcontrol", hot.Contains("\"code\":\"notfired\"") && forced.Count == 0, hot);
             Check("imgui-safe-pass", ImGuiTap.SafePass("Repaint", true) && ImGuiTap.SafePass("MouseMove", true) && !ImGuiTap.SafePass("MouseDown", true) &&
                   !ImGuiTap.SafePass("MouseUp", true) && !ImGuiTap.SafePass("Used", true) && !ImGuiTap.SafePass("KeyDown", true) && !ImGuiTap.SafePass("Repaint", false), "safe pass set");
+            // P1 owner bound at resolve: after it, "Stop" i=0 is drawn by ANOTHER type -> no fire.
+            forced.Clear();
+            IPending po = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop','owner':'mods.bench.benchui'},'waitFrames':5}") });
+            string pos = null;
+            for (int f = 0; f < 30 && pos == null; f++)
+            {
+                imFrame++;
+                object d = po.Tick(false);
+                if (d != null) { pos = Protocol.Compact(d); break; }
+                forced.AddRange(ImFrame(ui, null, null, f == 0 ? "Mods.Bench.BenchUI" : "Other.Panel"));
+            }
+            Check("imgui-press-bound-to-owner", pos != null && pos.Contains("\"code\":\"notfired\"") && forced.Count == 0, pos + " " + string.Join(",", forced));
+            // P1 scene unload drops an armed press.
+            forced.Clear();
+            IPending ps = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop'}}") });
+            string sc = null;
+            for (int f = 0; f < 30 && sc == null; f++)
+            {
+                imFrame++;
+                if (f == 2) ImGuiTap.SceneUnloaded();
+                object d = ps.Tick(false);
+                if (d != null) { sc = Protocol.Compact(d); break; }
+                if (f < 2) { forced.AddRange(ImFrame(new[] { "Export" }, null, null, "X")); if (f == 0) forced.AddRange(ImFrame(ui, null, null, "X")); }
+                else forced.AddRange(ImFrame(ui, null, null, "X"));
+            }
+            Check("imgui-press-scene-unload", sc != null && sc.Contains("\"code\":\"scene\"") && forced.Count == 0 && !ImGuiTap.Active, sc + " " + string.Join(",", forced));
             forced.Clear();
             string dis = ImRun("{'press':{'label':'Export'}}", ui, new[] { true, true, true, false }, null, forced);
             Check("imgui-press-disabled", dis.Contains("\"code\":\"disabled\"") && forced.Count == 0, dis);

@@ -62,6 +62,9 @@ namespace Morgott.PPBridge
         {
             internal string Label;
             internal int I;
+            /// <summary>FULL type name of the OnGUI that drew the resolved control, re-checked at fire
+            /// time: if the UI reordered and (label, i) now belongs to another owner, it does not fire.</summary>
+            internal string Owner;
         }
 
         private static bool recording;
@@ -113,7 +116,8 @@ namespace Morgott.PPBridge
             }
 
             Target t = target;
-            if (t != null && enabled && SafePass(ev, idle) && n == t.I && string.Equals(label, t.Label, StringComparison.Ordinal))
+            if (t != null && enabled && SafePass(ev, idle) && n == t.I && string.Equals(label, t.Label, StringComparison.Ordinal)
+                && (t.Owner == null || string.Equals(t.Owner, SafeOwner(owner), StringComparison.Ordinal)))
             {
                 target = null;
                 fired = true; firedEv = ev; firedFrame = frame;
@@ -188,14 +192,37 @@ namespace Morgott.PPBridge
 
         internal static object Bad(string code, string message) { return new { ok = false, code, error = Protocol.Clip(message) }; }
 
-        /// <summary>Owner match: short type name or full name, case-insensitive.</summary>
+        private static string SafeOwner(Func<string> owner)
+        {
+            try { return owner == null ? null : owner(); } catch (Exception) { return null; }
+        }
+
+        /// <summary>Owner match: <paramref name="have"/> is the FULL type name; <paramref name="want"/>
+        /// may be the full name or the short one, case-insensitive.</summary>
         internal static bool OwnerIs(string have, string want)
         {
             if (want == null) return true;
             if (have == null) return false;
             if (string.Equals(have, want, StringComparison.OrdinalIgnoreCase)) return true;
-            int dot = want.LastIndexOf('.');
-            return dot >= 0 && string.Equals(have, want.Substring(dot + 1), StringComparison.OrdinalIgnoreCase);
+            return string.Equals(Short(have), want, StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static string Short(string full)
+        {
+            int dot = full == null ? -1 : full.LastIndexOf('.');
+            return dot < 0 ? full : full.Substring(dot + 1);
+        }
+
+        private static int sceneEpoch;
+
+        /// <summary>Game half, on every scene unload: an armed press belongs to the UI of the scene it
+        /// was resolved in, so it is dropped (the request ends code:"scene") rather than fired into
+        /// whatever draws the same label next.</summary>
+        internal static void SceneUnloaded()
+        {
+            sceneEpoch++;
+            target = null;
+            RefreshActive();
         }
 
         internal static JObject Row(Ctl c)
@@ -206,7 +233,7 @@ namespace Morgott.PPBridge
             if (c.Toggle) o["k"] = "t";
             if (c.On) o["on"] = true;
             if (!c.Enabled) o["dis"] = true;
-            if (c.Owner != null) o["o"] = c.Owner;
+            if (c.Owner != null) o["o"] = Short(c.Owner);
             o["r"] = new JArray((int)Math.Round(c.X), (int)Math.Round(c.Y), (int)Math.Round(c.W), (int)Math.Round(c.H));
             return o;
         }
@@ -241,6 +268,7 @@ namespace Morgott.PPBridge
             private readonly bool list;
             private readonly string owner, match, label;
             private readonly int page, size, index, wait, start;
+            private readonly int epoch = sceneEpoch;
             private int armedAt = -1;
             private bool done;
 
@@ -259,6 +287,8 @@ namespace Morgott.PPBridge
                 if (done) return Bad("imgui", "request already ended");
                 if (cancelled) return End(new { ok = false, code = "cancelled", error = "imgui request cancelled", fired = fired && armedAt >= 0 });
                 int now = FrameNow == null ? int.MaxValue : FrameNow();
+                if (!list && epoch != sceneEpoch)
+                    return End(new { ok = false, code = "scene", error = "a scene unloaded before the press fired - the UI it was resolved in is gone", fired = false });
                 if (armedAt >= 0) return Fire(now);
 
                 int frame; bool more;
@@ -315,7 +345,7 @@ namespace Morgott.PPBridge
                 Ctl pick = cand[0];
                 if (!pick.Enabled) return End(new JObject { ["ok"] = false, ["code"] = "disabled", ["error"] = "the control is drawn disabled (GUI.enabled=false) - a real click would not register either", ["fired"] = false, ["row"] = Row(pick) });
                 fired = false;
-                target = new Target { Label = pick.Label, I = pick.I };
+                target = new Target { Label = pick.Label, I = pick.I, Owner = pick.Owner };
                 armedAt = now;
                 RefreshActive();
                 return null;
