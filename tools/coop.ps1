@@ -295,12 +295,19 @@ function LogMark([string]$root) {
     foreach ($f in LogFiles $root) { $m[$f] = @(Get-Content -LiteralPath $f -ErrorAction SilentlyContinue).Count }
     $m
 }
-function WaitLog([string]$root, [string]$rx, [int]$sec, [hashtable]$mark = @{}) {
+# $failRx: a line that means the awaited one will never come (a refused join) ends the wait at once,
+# quoted with the 3 lines after it (the refusal's reasons), instead of running into the timeout.
+function WaitLog([string]$root, [string]$rx, [int]$sec, [hashtable]$mark = @{}, [string]$failRx = '') {
     $dl = (Get-Date).AddSeconds($sec)
     $files = LogFiles $root
     while ((Get-Date) -lt $dl) {
         foreach ($f in $files) {
             $from = [int]$mark[$f]
+            if ($failRx) {
+                $bad = Select-String -Path $f -Pattern $failRx -Context 0, 3 -ErrorAction SilentlyContinue |
+                    Where-Object LineNumber -gt $from | Select-Object -First 1
+                if ($bad) { throw "REFUSED on ${root} (waiting for /$rx/): " + ((@($bad.Line) + @($bad.Context.PostContext)) -join ' | ') }
+            }
             $hit = Select-String -Path $f -Pattern $rx -ErrorAction SilentlyContinue |
                 Where-Object LineNumber -gt $from | Select-Object -Last 1
             if ($hit) { return $hit.Line }
@@ -309,6 +316,9 @@ function WaitLog([string]$root, [string]$rx, [int]$sec, [hashtable]$mark = @{}) 
     }
     throw "log timeout on ${root}: /$rx/ (looked in: $($files -join ', '))"
 }
+# The mod's refusal of a join, e.g. a game-build parity mismatch:
+# "[MP][parity] join REFUSED by host: 1 difference(s)" + "Phoenix Point build differs: host … != client …".
+$joinRefusedRx = 'join REFUSED'
 function WaitPhase([string]$root, [string]$phase, [int]$sec) {
     $dl = (Get-Date).AddSeconds($sec)
     while ((Get-Date) -lt $dl) {
@@ -333,7 +343,7 @@ function Do-Lobby([bool]$chooseNewGame = $false) {
         Note "$(SideName $c): JOIN 127.0.0.1:$Port from $c"
         $mark = LogMark $c
         Invoke-Ui $c 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
-        WaitLog $c 'host ACCEPTED the join' 60 $mark | Out-Null
+        WaitLog $c 'host ACCEPTED the join' 60 $mark $joinRefusedRx | Out-Null
     }
     # Parity: a mismatched JOIN locks READY; host-setting auto-apply usually clears it a beat later
     # ("parity OK - READY unlocked"). A clean first JOIN logs no parity line at all.
@@ -475,7 +485,7 @@ switch ($Action) {
             $mark = LogMark $ClientRoot
             Invoke-Ui $ClientRoot 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
             $pressed = $null
-            $joined = WaitLog $ClientRoot 'host ACCEPTED the join' 60 $mark
+            $joined = WaitLog $ClientRoot 'host ACCEPTED the join' 60 $mark $joinRefusedRx
         }
         # The host's own resume edge. Best effort: a host that never paused the peer posts no notice.
         $resumed = try { WaitLog $HostRoot 'RESUMED|is back' 30 $hostMark } catch { $null }
