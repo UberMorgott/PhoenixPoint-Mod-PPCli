@@ -1,7 +1,7 @@
 {
   "//": "GEOSCAPE -> TACTICAL. Create a scavenging mission on an exploration site next to the first Phoenix aircraft, teleport the aircraft there and launch it with the game's own default deployment. Same calls the native `launch_mission` console command makes (GeoSite.cs:1154-1171); the site/mission come from GeoSite.CreateScavengingMission (GeoSite.cs:576).",
   "//run": ".\\ppcli.ps1 plan .\\plans\\launch-scavenge.json",
-  "//needs": "A live geoscape (start-campaign.json gets there). Co-op: run it on the HOST only; the Multiplayer mod carries the launch to every client.",
+  "//needs": "A live geoscape (start-campaign.json gets there) with the first Phoenix aircraft parked at a site, not in flight. Co-op: run it on the HOST only; the Multiplayer mod carries the launch to every client.",
   "//site": "siteType is a GeoSiteType enum name. The site is the first land-connected site of that type from the aircraft's current site; `siteIndex` picks a later one. Any mission already on that site is replaced.",
 
   "timeoutMs": 300000,
@@ -18,6 +18,9 @@
     { "id": "pf", "verb": "call", "save": "PF", "args": { "op": "get", "target": "@geo", "member": "PhoenixFaction" } },
     { "id": "vehicles", "verb": "call", "save": "VS", "args": { "op": "get", "target": "${PF.value.h}", "member": "Vehicles" } },
     { "id": "vehicle", "verb": "items", "save": "VP", "args": { "h": "${VS.value.h}", "page": 0, "pageSize": 1 } },
+    { "//": "Refused by name instead of an NRE at `sites`: an aircraft in flight has no CurrentSite (ISSUES 2026-09-26). Land it at a site first.",
+      "id": "assert-aircraft-at-a-site", "verb": "wait",
+      "args": { "timeoutMs": 1, "everyFrames": 1, "call": { "op": "get", "target": "${VP.items[0].h}", "member": "CurrentSite" } } },
     { "id": "home-site", "verb": "call", "save": "S0", "args": { "op": "get", "target": "${VP.items[0].h}", "member": "CurrentSite" } },
     { "id": "map", "verb": "call", "save": "MAP", "args": { "op": "get", "target": "@geo", "member": "Map" } },
     { "id": "sites", "verb": "call", "save": "SITES",
@@ -41,6 +44,9 @@
     { "id": "tactical", "verb": "wait", "if": "${waitTactical}",
       "args": { "ready": true, "timeoutMs": "${tacticalTimeoutMs}", "everyFrames": 10 } }
   ],
+
+  "//finally": "Empty on purpose: the launched mission IS the result, there is nothing to undo.",
+  "finally": [],
 
   "output": {
     "site": "${SP.items[0].name}",

@@ -85,13 +85,6 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   unreadable through the bridge; the workaround is the mod's own spill file on disk, which means
   leaving the JSON path entirely.
 
-## 2026-09-26 — `launch-scavenge.json` NREs at step `sites` on a plain `start-campaign` geoscape
-
-- **Attempted:** solo smoke run on `D:\PP-Instance2` (PID 55388, build `ab0755a4`): `plan .\plans\start-campaign.json '{"difficultyIndex":1}'` (ok, phase geoscape Playing), then `plan .\plans\launch-scavenge.json '{"siteIndex":0}'`.
-- **Happened:** `ok:false`, `step 'sites' (call) failed: NullReferenceException: Object reference not set to an instance of an object` (`GetConnectedSitesOfType_Land` invoke). Root cause not isolated (null `CurrentSite` on vehicle 0 or an arg, unverified).
-- **Expected:** plan works on any fresh geoscape, or refuses up front by name (e.g. `assert` that `S0.value` is non-null) instead of an opaque NRE. PLAYBOOK lists it only under the co-op section, so a plain-campaign precondition, if real, is undocumented.
-- **Severity:** low. Blocks a one-instance tactical entry from a cold start; coop `battle` path unaffected (per PLAYBOOK).
-
 ## 2026-09-26 — `coop.ps1 dismiss` stops at the geoscape intro cutscene
 
 - Attempted: `coop.ps1 dismiss -Side client1|client2` right after `campaign` (3 peers).
@@ -113,4 +106,12 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   hands out one port per client (`34242`, `34243`). Attempted a WAN run → had to replicate Do-Lobby by hand (`OnGateJoin`
   per client with its own address, NEW GAME, READY, confirm). Expected: `-JoinAddress` per client (list) or `-Relay` switch
   reading the relay's `clientJoin`. Severity: medium.
+## 2026-09-28 — client banner lines not suppressible; no way to press an IMGUI (OnGUI) control
+
+- Attempted (ContentTool UI audit, Instance2, pwsh 7): `.\ppcli.ps1 connect call '<json>' 2>$null 6>$null | select -Last 1` inside a loop (~70 calls).
+- Happened: `install: D:\PP-Instance2 (pinned ...)` + `pipe ppcli-... (pid ...)` still printed to the console for every call despite `2>$null 6>$null` → floods an agent's context in any loop. JSON on stdout itself was fine.
+- Expected: banner goes to a redirectable stream (or `-Quiet` switch), as PLAYBOOK says "rest on stderr".
+- Second gap: ContentTool bench is Unity IMGUI (`GUILayout.Button`); PPCLI has no verb to click an IMGUI control / inject a mouse click at screen x,y. Worked around by `call set` on private statics (`FitBench.tab`, `ModelDoctor.browserOpen`, `panelScroll`) + `invoke` of internal pick methods. Expected: `connect click '{"x":..,"y":..}'` (synthesized Event for OnGUI) or IMGUI button-by-label press.
+- Severity: low (banner) / medium (IMGUI click — blocks screenshot-driven UI testing without source knowledge).
+
 <!-- Append new entries above this line. Keep them evidence-backed. -->
