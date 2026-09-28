@@ -20,6 +20,8 @@ namespace Morgott.PPBridge
         internal bool Visible = true;
         /// <summary>Screen rect, top-left origin, Y DOWN (screenshot pixels).</summary>
         internal int X, Y, W, H;
+        /// <summary>A Slider/Scrollbar: its value moves by dragging, which a click cannot do.</summary>
+        internal bool Drag;
         internal object Ref;
     }
 
@@ -71,7 +73,7 @@ namespace Morgott.PPBridge
     ///          and no handler threw (a swallowed handler exception -> threw, click not undone) - NOT
     ///          that the screen changed: check the effect with a follow-up ui tree / state / screenshot.
     /// Refusals: args, ui (offline), notfound(+near), ambiguous(+candidates), disabled(+row),
-    ///           blocked(+top,row), noraycast(+row), noclick, threw.
+    ///           blocked(+top,row), noraycast(+row), unsupported(+row: Slider/Scrollbar), noclick, threw.
     /// Main thread only, like every verb.
     /// </summary>
     internal static class UiTap
@@ -145,6 +147,13 @@ namespace Morgott.PPBridge
             UiNode pick;
             object refusal = Resolve(all2, label, path, index, out pick);
             if (refusal != null) return refusal;
+            if (pick.Drag)
+                return new JObject
+                {
+                    ["ok"] = false, ["code"] = "unsupported",
+                    ["error"] = "a " + pick.Type + " changes its value by dragging - ui click does not drag (a press would just jump it to the centre); set .value through call instead",
+                    ["row"] = Row(pick)
+                };
 
             UiClickResult res;
             try { res = ClickRun(pick, force); }

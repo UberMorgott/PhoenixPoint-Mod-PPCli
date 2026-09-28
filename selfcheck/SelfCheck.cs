@@ -1119,6 +1119,7 @@ namespace Morgott.PPBridge
                 UN("Load", "UIRoot/MainMenu/Buttons/LoadButton", vis: false),
                 UN("Item", "UIRoot/List/Viewport/Content/Row/Item", type: "Toggle"),
                 UN("Ghost", "UIRoot/Ghost/GhostButton"),
+                new UiNode { Label = "Volume", Path = "UIRoot/OptionsModule/Audio/VolumeSlider", Type = "Slider", X = 10, Y = 900, W = 200, H = 20, Drag = true, Ref = "slider" },
                 UN("Item", "UIRoot/List/Viewport/Content/Row[1]/Item", type: "Toggle"),
             };
             for (int i = 0; i < 80; i++) nodes.Add(UN("Research project with a rather long localized title number " + i, "UIRoot/GeoscapeModule/ResearchPanel/ListView/Viewport/Content/ResearchElementWithAVeryLongPrefabName(Clone)[" + i + "]/Button"));
@@ -1139,7 +1140,7 @@ namespace Morgott.PPBridge
 
             string tree = V("ui", "{'tree':{}}");
             JObject tj = JObject.Parse(tree);
-            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 88, tree.Substring(0, Math.Min(300, tree.Length)));
+            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 89, tree.Substring(0, Math.Min(300, tree.Length)));
             Check("ui-tree-hidden-dropped", !tree.Contains("LoadButton"), "hidden row listed");
             Check("ui-tree-row-frugal", tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None) == "{\"l\":\"NEW GAME\",\"p\":\"~/MainMenu/Buttons/NewGameButton\",\"t\":\"PhoenixGeneralButton\",\"r\":[10,20,200,40]}",
                   tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None));
@@ -1193,7 +1194,10 @@ namespace Morgott.PPBridge
             Check("ui-click-noraycast-refused", noray.Contains("\"code\":\"noraycast\"") && !noray.Contains("\"top\"") && clicked == null, noray);
             string forcedGhost = V("ui", "{'click':{'path':'Ghost/GhostButton','force':true},'waitFrames':0}");
             Check("ui-click-force-dispatches", forcedGhost.Contains("\"ok\":true") && forced && clicked != null && forcedGhost.Contains("\"warn\":\"forced:"), forcedGhost);
-            string viaChild = V("ui", "{'click':{'label':'new game'},'waitFrames':0}");
+            clicked = null;
+            string slider = V("ui", "{'click':{'label':'volume','force':true}}");
+            Check("ui-click-slider-unsupported", slider.Contains("\"code\":\"unsupported\"") && slider.Contains("Slider") && slider.Contains("\"row\"") && clicked == null, slider);
+            string viaChild =V("ui", "{'click':{'label':'new game'},'waitFrames':0}");
             Check("ui-click-target-reported", viaChild.Contains("\"clicked\":\"~/MainMenu/Buttons/NewGameButton\"") && viaChild.Contains("\"target\":\"~/Buttons/NewGameButton/BaseButton\""), viaChild);
             Check("ui-click-no-target-when-self", !byPath.Contains("\"target\""), byPath);
             object started = Start("ui", "{'click':{'label':'options','force':true},'waitFrames':3}");

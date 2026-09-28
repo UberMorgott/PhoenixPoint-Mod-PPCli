@@ -70,6 +70,7 @@ namespace Morgott.PPBridge
                 Interactable = inter,
                 Visible = onScreen && canvas != null && canvas.isActiveAndEnabled && Alpha(go) > 0.01f,
                 X = Mathf.RoundToInt(r.xMin), Y = top, W = Mathf.RoundToInt(r.width), H = Mathf.RoundToInt(r.height),
+                Drag = go.GetComponent<Slider>() != null || go.GetComponent<Scrollbar>() != null,
                 Ref = go
             });
         }
