@@ -3,13 +3,16 @@
   "//run": ".\\ppcli.ps1 plan .\\plans\\end-mission.json '{\"outcome\":\"win\"}'",
   "//lever": "The console `win`/`lose` sets every faction's outcome and then calls TacticalLevelController.GameOver() (TacticalLevelController.cs:1051-1065, :1092-1108). GameOver raises wrapping-up, runs cleanup/XP/telemetry, raises GameOverEvent and tears the mod hooks down (:825-843) - materially better than assigning IsGameOver or calling FinishLevel by hand, both of which skip all of that.",
   "//exit": "The callback that actually leaves tactical is private TacticalView.GoToGeoscape(), which builds a TacticalGameResult and calls PhoenixGame.FinishLevel (TacticalView.cs:1112-1120, PhoenixGame.cs:262-265). It is the battle-summary button's own callback (:1109); invoking it is pressing that button, not a shortcut past it.",
-  "//rewards": "The post-mission REWARD screen only exists if tactical was entered from a REAL GeoMission: the launch stores _missionToComplete (GeoLevelController.cs:1412-1466) and the return calls _missionToComplete.Complete(result) then resets the view with LastMission/CompletedMissionResult (:683-713). After a synthetic `start-mission` this plan still leaves tactical correctly, but there is no campaign to come back to and no reward modal - `viewstate` will say so.",
+  "//rewards": "The post-mission REWARD screen only exists if tactical was entered from a REAL GeoMission: the launch stores _missionToComplete (GeoLevelController.cs:1412-1466) and the return calls _missionToComplete.Complete(result) then resets the view with LastMission/CompletedMissionResult (:683-713).",
+  "//synthetic": "A `start-mission` / `build-mission` mission (console loadmap) has NO geoscape to return to: GoToGeoscape there RELOADS the same map as a fresh turn-1 tactical level (live 2026-09-28, D:\\PP-Instance3: `left` timed out at 180 s reading `tactical`, IsGameOver false, squad back at full AP). Pass `{\"lobby\":true}` for those: after GameOver it leaves through PhoenixGame.FinishLevelAndGoToLobby(0) and waits for `phase:menu` (live: 6 ms). Default false = the real-campaign path to the geoscape.",
+  "//run-synthetic": ".\\ppcli.ps1 plan .\\plans\\end-mission.json '{\"outcome\":\"win\",\"lobby\":true}'",
   "//check": "The proof of arrival is `@viewstate`, which is re-read from the live view every call (PPBridgeMain.Roots). Read it, do not hold a handle to it: entering a UI state the stack has already popped is how this project has broken the geoscape before.",
 
   "timeoutMs": 300000,
 
   "vars": {
     "outcome": "win",
+    "lobby": false,
     "settleMs": 2000
   },
 
@@ -27,16 +30,23 @@
       "id": "settle", "verb": "wait", "args": { "forMs": "${settleMs}" } },
     { "id": "end-state", "verb": "roots", "save": "ENDSTATE" },
 
-    { "id": "leave", "verb": "call",
+    { "//": "Synthetic mission: the lobby is the only way out (see //synthetic). The same AFTER/AFTERVIEW names are saved on both branches so `output` resolves either way.",
+      "id": "leave-lobby", "verb": "call", "if": "${lobby}",
+      "args": { "op": "invoke", "target": "@phoenix", "member": "FinishLevelAndGoToLobby", "args": [ 0 ] } },
+    { "id": "left-lobby", "verb": "wait", "if": "${lobby}", "args": { "phase": "menu", "timeoutMs": 120000 } },
+    { "id": "arrived-lobby", "verb": "state", "save": "AFTER", "if": "${lobby}" },
+    { "id": "arrived-lobby-view", "verb": "roots", "save": "AFTERVIEW", "if": "${lobby}" },
+
+    { "id": "leave", "verb": "call", "unless": "${lobby}",
       "args": { "op": "invoke", "target": "@view", "member": "GoToGeoscape", "args": [] } },
     { "//": "Unloading tactical and loading the geoscape is a scene change, so every handle taken above is from a dead epoch by the time this returns. Nothing below reads one.",
-      "id": "left", "verb": "wait", "args": { "phase": "geoscape", "timeoutMs": 180000 } },
-    { "id": "arrived", "verb": "state", "save": "AFTER" },
+      "id": "left", "verb": "wait", "unless": "${lobby}", "args": { "phase": "geoscape", "timeoutMs": 180000 } },
+    { "id": "arrived", "verb": "state", "save": "AFTER", "unless": "${lobby}" },
     { "//": "`phase:geoscape` says the CONTROLLER exists; the view enters its first UI state a frame or two later, and a `roots` read taken in that gap reported geoState as a null (it used to read `unresolved`, which was worse - it named a step nobody mistyped). @viewstate is re-resolved live on every poll and refuses while it is null, so this waits for the screen itself rather than for a duration.",
-      "id": "geo-ui", "verb": "wait",
+      "id": "geo-ui", "verb": "wait", "unless": "${lobby}",
       "args": { "timeoutMs": 60000, "everyFrames": 10,
                 "call": { "op": "invoke", "target": "@viewstate", "member": "GetType", "args": [] } } },
-    { "id": "arrived-view", "verb": "roots", "save": "AFTERVIEW" }
+    { "id": "arrived-view", "verb": "roots", "save": "AFTERVIEW", "unless": "${lobby}" }
   ],
 
   "finally": [
