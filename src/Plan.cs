@@ -701,7 +701,20 @@ namespace Morgott.PPBridge
 
                 JObject args;
                 try { args = Resolve(step["args"]) as JObject; }
-                catch (Exception ex) { return Record(id, verb, Bad("var", ex.Message), 0, onError); }
+                catch (Exception ex)
+                {
+                    // CLEANUP of a handle the main block never took (its step failed before the
+                    // save) is a skip, not an error: a `release ${LOG.value.h}` after LOG was never
+                    // set used to put a red "is not set" into the trace of every early failure.
+                    // A saved-but-null value (NullValue) is the same case: there is nothing to let go.
+                    // Only `release`: a RESTORE whose value is missing must still show up red.
+                    if (inCleanup && verb == "release" && (ex is NullValue || ex.Message.Contains("} is not set (known:")))
+                    {
+                        Trace(new { id, verb, skipped = "unset" }, false);
+                        return null;
+                    }
+                    return Record(id, verb, Bad("var", ex.Message), 0, onError);
+                }
 
                 DateTime t0 = DateTime.UtcNow;
                 pendingSave = (string)step["save"];
