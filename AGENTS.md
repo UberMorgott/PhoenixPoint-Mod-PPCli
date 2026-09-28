@@ -4,7 +4,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 
 ## Invariants
 
-- PowerShell 7. One compact JSON object on stdout; diagnostics/progress → process stderr (`[Console]::Error`, not ErrorRecords: in-process `2>$null` can't silence). `-Quiet` / env `PPCLI_QUIET=1` drops routine notes (install/pipe banner, polling); warnings/refusals/errors stay. Safe: `.\ppcli.ps1 ... | ConvertFrom-Json`.
+- PowerShell 7. One compact JSON object on stdout; diagnostics/progress → process stderr (`[Console]::Error`, not ErrorRecords: in-process `2>$null` can't silence). Routine notes (install/pipe banner, polling) OFF by default since 0.3.0; `-Verbose` / env `PPCLI_VERBOSE=1` = on; `-Quiet` / `PPCLI_QUIET=1` force off (win). Warnings/refusals stay; local error printed once (stdout JSON only). Safe: `.\ppcli.ps1 ... | ConvertFrom-Json`.
 - Endpoint opt-in: `<PPRoot>\Mods\PPBridge\ppcli-enabled` must sit beside `PPBridge.dll`. `deploy` never creates it. Delete marker = disarm; relaunch = re-arm.
 - Install selection: `-PPRoot`; else `ppcli-install.txt`; else Steam discovery. Pin file beside `ppcli.ps1`, gitignored: line 1 absolute install path, optional line 2 SteamID64 profile; blank/comment lines ignored.
 - Session gate: send nothing until `.\ppcli.ps1 connect state -PPRoot $PPRoot` answers. `index` only after gate.
@@ -24,7 +24,7 @@ Runtime truth => query Phoenix Point via PPCLI. Decompiled source = intent only.
 
 `run`/`batch`: need PPBridge activated in selected profile, restore `Options.jopt` byte-exact after session, delete per-run log before launch, refuse already-running target install, kill only own PID. Use automation copy.
 
-Parameters: `-PPRoot ''`; `-ProfileId ''`; `-TimeoutSeconds 300`; `-InitTimeoutSeconds 90`; `-PipeTimeoutSeconds 30`; `-FaultPattern ''` (any mod frame); `-IgnoreLogFaults`; `-CatalogDir .\catalog`; `-Quiet`; deploy-only `-Force`, `-AllowRunning`. `plan` without explicit `-TimeoutSeconds` raises client ceiling to plan's `timeoutMs` + 60 s when needed. Direct `deploy.ps1` also accepts `-RefRoot` for stripped target lacking `ModSDK`.
+Parameters: `-PPRoot ''`; `-ProfileId ''`; `-TimeoutSeconds 300`; `-InitTimeoutSeconds 90`; `-PipeTimeoutSeconds 30`; `-FaultPattern ''` (any mod frame); `-IgnoreLogFaults`; `-CatalogDir .\catalog`; `-Quiet`; `-Verbose`; deploy-only `-Force`, `-AllowRunning`. `plan` without explicit `-TimeoutSeconds` raises client ceiling to plan's `timeoutMs` + 60 s when needed. Direct `deploy.ps1` also accepts `-RefRoot` for stripped target lacking `ModSDK`.
 
 ## Live verbs: exact argument envelopes
 
@@ -35,21 +35,21 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 | `ping` | — |
 | `state` | — |
 | `roots` | — |
-| `console` | `{command, args?:[]}` |
+| `console` | run `{command, args?:[], pageLines?, pageBytes?}`; next page `{cursor, pageLines?, pageBytes?}`. Runs ONCE; reply `{ok,output:[page],total,hasMore,cursor?}` (+`error` on failure, `truncated:true` only if capture cap hit: 20000 lines / 1M chars). Page default 50 lines / 8 KiB UTF-8 JSON, max 2000 / 192 KiB, never empty. Cursor opaque, snapshot lives 120 s after last read, max 4 kept (oldest evicted); unknown/expired => `ok:false,code:"cursor"`, nothing re-run. Last page frees it. `vars` answered by bridge (no NRE) |
 | `var` | read `{name}`; set-then-read `{name,value}`; values convert via strings |
 | `screenshot` | `{path?,force?}`; explicit path must be absolute; omitted => timestamped PNG beside bridge files. Camera.main with `targetTexture` (upscaler) => scene written to sibling `*.scene.png`, reply adds `scenePath`. D3D12 + `timeScale==0` refused (wedges process) => use `0.0001` or `force:true`. `-Window` (client switch) grabs game window AFTER present via `PrintWindow(PW_RENDERFULLCONTENT)` => finished frame incl. upscaler + post-upscale passes, device pixels, `{ok,mode:"window",path,width,height,bytes}`; needs non-minimized window |
 | `call` | new `{op:"new",type,assembly?,args?:[],sig?:[]}`; get `{op:"get",type\|target,assembly?,member,convertTo?}`; set `{op:"set",type\|target,assembly?,member,value}`; invoke `{op:"invoke",type\|target,assembly?,member,args?:[],sig?:[],typeArgs?:[]}` |
-| `types` | `{pattern,assembly?}` |
-| `members` | `{type\|h,assembly?,filter?,page?,pageSize?}`; page 0-based; max/default page size 400 |
-| `inspect` | `{h,filter?,page?,pageSize?,values?}`; `h` also accepts root or `@def:<name\|guid>` |
+| `types` | `{pattern,assembly?,page?,pageSize?,generated?}`; default 25, max 100; sorted; `{total,page,pageSize,hasMore,hidden?,types}`; compiler-generated (`<`) hidden unless `generated:true` |
+| `members` | `{type\|h,assembly?,filter?,page?,pageSize?,inherited?,generated?}`; page 0-based; default 50, max 400. Members declared on a System.*/UnityEngine.* BASE hidden unless `inherited:true`; compiler-generated names hidden unless `generated:true`; `hidden:N` counts them. `hasMore` (no `truncated`) |
+| `inspect` | `{h,filter?,page?,pageSize?,values?,inherited?,generated?}`; `h` also accepts root or `@def:<name\|guid>`; same paging/hiding as `members`. `values:true` => `{self,hidden?,values}` only; non-scalar = `{"$omitted":"List<GeoFaction>",count?,guid?}` (short type name) |
 | `items` | `{h,page?,pageSize?}`; page 0-based; default 50, max 200 |
 | `release` | `{h}` |
-| `find` | search `{query,type?,assembly?}`; enumerate `{all:true,page?,pageSize?,query?,type?,assembly?}`; enumeration default/max 200 |
+| `find` | search `{query,type?,assembly?,page?,pageSize?,guids?}` default 25 / max 100, repository order (`defs[0]` stable); enumerate `{all:true,page?,pageSize?,query?,type?,assembly?,guids?}` default 50 / max 200, sorted. Rows `{name,type}`; `guid` only with `guids:true` (`$def`/`@def:` take the exact name). `{count,total,page,pageSize,hasMore,defs}` |
 | `wait` | one of `{ready:true}`, `{phase:"tactical\|geoscape\|menu\|summary\|other\|loading"}`, `{call:{...}}`, `{forMs:N}`; plus `not?`, `timeoutMs?`, `everyFrames?` |
-| `observe` | start `{action:"start",target?:<actor instanceId int>}`; read `{action:"read",aim?:[x,y,z]}`; `{action:"stop\|mark\|status"}` |
+| `observe` | start `{action:"start",target?:<actor instanceId int>}`; read `{action:"read",aim?:[x,y,z],page?,pageSize?}` = summary over whole ring + page of impacts NEWEST first (page 0 = last `pageSize`; default 10, max 200, 0 = summary only; `hasMore`); `{action:"stop\|mark\|status"}` |
 | `snapshot` | `{name,timeoutMs?}` |
-| `restore` | `{name}`; issue-only; follow with `wait` |
-| `plan` | `{plan:{steps,finally?,vars?,output?,timeoutMs?,maxSteps?},vars?,timeoutMs?,maxSteps?}` or direct `{steps,...}` |
+| `restore` | `{name}`; issue-only (reply `{ok,issued,name,console}`, no completion signal); follow with `wait {ready:true}` / `wait {phase:"geoscape"}` |
+| `plan` | `{plan:{steps,finally?,vars?,output?,timeoutMs?,maxSteps?,trace?},vars?,timeoutMs?,maxSteps?,trace?}` or direct `{steps,...}`. `trace:"errors"` (default) = failed steps only, minus the one `step`/`result` report (key absent when none); `"full"` = every step (pre-0.3.0) |
 | `status` | `{jobId}` |
 | `cancel` | `{jobId}` |
 
@@ -57,11 +57,12 @@ All shapes JSON objects. `?` = optional. No-arg verbs omit JSON arg.
 
 ## Reply and exit contract
 
-- Live transport reply: sync/cross-frame completion => `{status:"done",id,jobId,result:<verb DTO>}`. Cross-frame work may be accepted first; client polls internally, still prints one final object.
+- Live transport reply: sync/cross-frame completion => `{status:"done",result:<verb DTO>}` (client drops `id`/`jobId` on done since 0.3.0; `status:"timeout"` keeps `jobId`). Cross-frame work may be accepted first; client polls internally, still prints one final object.
 - Verb success DTO starts `{ok:true,...}`. `ok:false` verb DTO carries `error` (plus `code` for reflection/plan/observer refusals), no result-payload key like `value`, `items`, `output`; generic protocol/console/screenshot refusals may omit `code`.
 - Refused verb exits 1 in live modes: `connect <verb>`, `connect multi`, client `plan`; success exits 0. Local parse/discovery/deploy errors print top-level `{ok:false,error}`, exit 1. Check `$LASTEXITCODE` immediately.
 - Cold `run`/`batch` return `{ok,build,stale,done,log,results:[{id,result}]}`. Check outer `ok`, `stale`, every `results[].result.ok`; cold-mode exit status currently doesn't aggregate inner verb refusals.
-- Failed plan: `output` absent/null, `outputWithheld` explains, `step` + `result` locate failure. Failed `wait` → read `result.last`, `result.lastError`, `result.predicate` first.
+- Plan reply omits null fields: success `{ok,steps,elapsedMs,cleanupRan,cleanupSteps,output?,trace?}`; failure adds `code,error,step?,result?,outputWithheld?` and NO `output`. `step` + `result` locate failure.
+- Paging everywhere: `hasMore` is the only "more to read" flag (`truncated` gone from types/members/find; console `truncated` = capture lost lines). Bad `page`/`pageSize`/`pageLines`/`pageBytes` => `code:"args"`, never clamped. `call` threw => `at` ≤3 frames. Screenshot `scenePath` reply: `path` = UI over blank scene, `scenePath` = 3D scene at camera's pre-upscale res (`targetTexture` names it; no `note`). Failed `wait` → read `result.last`, `result.lastError`, `result.predicate` first.
 
 ## Deploy/build-stamp guards
 

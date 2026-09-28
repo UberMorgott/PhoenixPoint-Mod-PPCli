@@ -85,8 +85,9 @@ of the trigger — a product, `GetNumberOfShots(attackType) * ProjectilesPerShot
 `PX_AssaultRifle` is 6 × 1 — and `projectilesPerShot` is reported so the two do not
 read as a contradiction.
 
-Impacts live in a ring of **512** and `observe read` lists at most **200** rows, oldest dropped from
-the listing. The output says which is which: `projectiles` is everything that landed, `stored` is what
+Impacts live in a ring of **512**; `observe read` returns the summary plus a page of rows, newest
+first (`page` 0 = the last `pageSize` impacts, default 10, max 200, `pageSize:0` = summary only);
+weapon-test.json asks for 200. The output says which is which: `projectiles` is everything that landed, `stored` is what
 the ring still held, `dropped` is what it overwrote, `returned` is how many rows the listing carries.
 Every statistic is over `stored` — so **`dropped` must be `0`, and a non-zero value FAILS the run**.
 `returned` trims the listing only and changes nothing.
@@ -467,8 +468,8 @@ row's side effects committed.
 
 `SAVE_NAME`, `SNAPSHOT_NAME`, `HANDLE` and `JOB_ID` are **placeholders, not values**: every other line
 above is paste-ready as written. `HANDLE` looks like `h:3:17` and comes out of a `find`/`call` reply
-in THIS session (a handle from a previous one is dead); `JOB_ID` is the `jobId` the plan reply
-carried; the save and snapshot names are whatever exists in the install you are driving.
+in THIS session (a handle from a previous one is dead); `JOB_ID` is the `jobId` a `"status":"timeout"`
+reply carried (a `done` reply drops it); the save and snapshot names are whatever exists in the install you are driving.
 
 ### "Does this member even exist?" — ask the live assembly, not the source
 
@@ -514,7 +515,7 @@ plain string and never resolves back to the object (`a string cannot bind to Pro
 - **`REFUSED: no Phoenix Point install found` / `N installs found`** — Steam discovery could not
   decide. Pass `-PPRoot "<install folder>"`.
 - **`REFUSED: '<x>' matches N defs`** — the candidates are on stderr. Name one exactly, or add an alias.
-- **A plan reported FAILED but the work happened** — read the `trace`: `reset-selection` is cosmetic
+- **A plan reported FAILED but the work happened** — read `step`/`result` and the `trace` (failed steps only; `"trace":"full"` in the plan args lists every step): `reset-selection` is cosmetic
   and carries `onError: continue`. Never re-run a spawn on a bare `FAILED`.
 - **A failed plan has NO `output`** — that is deliberate, not a bug. `outputWithheld` says why,
   `step` names the step, and `result` carries its DTO (a `wait` puts the offending value in
@@ -532,9 +533,9 @@ plain string and never resolves back to the object (`a string cannot bind to Pro
 Output contract: **exactly one compact JSON object on stdout**, everything else on stderr, so
 `.\ppcli.ps1 connect state | ConvertFrom-Json` always works. Diagnostics go straight to process
 stderr (never PowerShell ErrorRecords: `$Error` stays clean, `-ErrorAction Stop` never trips on a
-banner). In-process `2>$null` does NOT silence them — pass **`-Quiet`** (or set env
-`PPCLI_QUIET=1` once per session) to drop the routine notes (install/pipe banner, polling, launch
-progress); warnings, refusals and errors still print. **Exit code 1 for any `ok:false` or
+banner). Since 0.3.0 the routine notes (install/pipe banner, polling, launch progress) are OFF by
+default — `-Verbose` or env `PPCLI_VERBOSE=1` brings them back (`-Quiet`/`PPCLI_QUIET=1` still force
+them off); warnings, refusals and errors always print, a local error once (stdout JSON only). **Exit code 1 for any `ok:false` or
 non-`done` reply** — a refusal is now distinguishable from an empty-but-valid result by both the
 payload shape and `$LASTEXITCODE`. Example: `connect items '{"pageSize":400}'` exits 1 with
 `{"ok":false,"code":"args","error":"pageSize must be 1..200"}` and no `items` key at all;
