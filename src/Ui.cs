@@ -40,6 +40,9 @@ namespace Morgott.PPBridge
         internal string Refuse;
         /// <summary>FULL path of the object the raycast hit first (blocked), for the reply's top.</summary>
         internal string Top;
+        /// <summary>First line of an exception a handler threw during the dispatch (ExecuteEvents
+        /// swallows it into the log) - the events WERE sent, the action behind them failed.</summary>
+        internal string Threw;
     }
 
     /// <summary>
@@ -64,7 +67,9 @@ namespace Morgott.PPBridge
     ///          element on top -> blocked(+top), nothing raycastable -> noraycast, both before any
     ///          event is sent; force:true dispatches anyway (warn says why it would have refused).
     ///          The click is a real pointer sequence (enter, down, up, click, exit); waitFrames
-    ///          (default 1) lets the UI react before the reply.
+    ///          (default 1) lets the UI react before the reply. ok:true = the events were DISPATCHED
+    ///          and no handler threw (a swallowed handler exception -> threw, click not undone) - NOT
+    ///          that the screen changed: check the effect with a follow-up ui tree / state / screenshot.
     /// Refusals: args, ui (offline), notfound(+near), ambiguous(+candidates), disabled(+row),
     ///           blocked(+top,row), noraycast(+row), noclick, threw.
     /// Main thread only, like every verb.
@@ -159,6 +164,12 @@ namespace Morgott.PPBridge
             }
             if (res == null || res.Handler == null)
                 return new JObject { ["ok"] = false, ["code"] = "noclick", ["error"] = Protocol.Clip(res != null && res.Error != null ? res.Error : "nothing on the element handles a pointer click"), ["row"] = Row(pick) };
+            if (res.Threw != null)
+                return new JObject
+                {
+                    ["ok"] = false, ["code"] = "threw", ["clicked"] = ShortPath(pick.Path), ["handler"] = res.Handler ?? "none",
+                    ["error"] = Protocol.Clip("the click WAS dispatched but a handler threw (logged by Unity, not undone): " + res.Threw)
+                };
             JObject reply = new JObject { ["ok"] = true, ["clicked"] = ShortPath(pick.Path), ["handler"] = res.Handler };
             if (res.Target != null) reply["target"] = ShortPath(res.Target);
             if (res.Warn != null) reply["warn"] = Protocol.Clip(res.Warn);

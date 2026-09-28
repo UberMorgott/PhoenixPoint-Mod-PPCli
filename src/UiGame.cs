@@ -218,6 +218,30 @@ namespace Morgott.PPBridge
                 res.Warn = (res.Warn == null ? "forced: " : res.Warn + "; ") + "press goes to " + UiTap.ShortPath(PathOf(handler.transform));
             }
 
+            // ExecuteEvents catches a handler's exception and only Debug.LogException's it: listen to
+            // the log for the length of the dispatch (main thread -> synchronous), or a crashed button
+            // action would read as a clean click.
+            string threw = null;
+            Application.LogCallback onLog = (cond, stack, type) =>
+            {
+                if (threw == null && type == LogType.Exception) threw = FirstLine(cond);
+            };
+            Application.logMessageReceived += onLog;
+            try { Dispatch(es, ped, over, go, res); }
+            finally { Application.logMessageReceived -= onLog; }
+            if (threw != null) res.Threw = threw;
+            return res;
+        }
+
+        private static string FirstLine(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "(no message)";
+            int nl = s.IndexOfAny(new[] { '\r', '\n' });
+            return nl < 0 ? s : s.Substring(0, nl);
+        }
+
+        private static void Dispatch(EventSystem es, PointerEventData ped, GameObject over, GameObject go, UiClickResult res)
+        {
             // Enter (HandlePointerExitAndEnter from nothing): the hit and every ancestor, hit first.
             for (Transform t = over.transform; t != null; t = t.parent)
             {
@@ -267,7 +291,6 @@ namespace Morgott.PPBridge
                 if (h != null) ExecuteEvents.Execute(h, ped, ExecuteEvents.pointerExitHandler);
             ped.hovered.Clear();
             ped.pointerEnter = null;
-            return res;
         }
     }
 }

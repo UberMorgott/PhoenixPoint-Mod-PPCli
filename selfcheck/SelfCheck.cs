@@ -1210,6 +1210,10 @@ namespace Morgott.PPBridge
             UiTap.Scan = () => { throw new InvalidOperationException("scan boom"); };
             Check("ui-scan-throw", V("ui", "{'tree':{}}").Contains("\"code\":\"threw\""), V("ui", "{'tree':{}}"));
             UiTap.Scan = () => nodes;
+            UiTap.ClickRun = (n, f) => new UiClickResult { Handler = "pointerClick", Threw = "NullReferenceException: Object reference not set to an instance of an object" };
+            string swallowed = V("ui", "{'click':{'label':'NEW GAME'}}");
+            Check("ui-click-handler-threw", swallowed.Contains("\"ok\":false") && swallowed.Contains("\"code\":\"threw\"") && swallowed.Contains("WAS dispatched") && swallowed.Contains("NullReferenceException")
+                  && swallowed.Contains("\"clicked\":\"~/MainMenu/Buttons/NewGameButton\""), swallowed);
             UiTap.ClickRun = (n, f) => { throw new InvalidOperationException("click boom"); };
             Check("ui-click-throw", V("ui", "{'click':{'label':'NEW GAME'}}").Contains("\"code\":\"threw\""), V("ui", "{'click':{'label':'NEW GAME'}}"));
             Check("ui-clean-text", UiTap.CleanText("  <b>Save</b>\n  <color=#fff>Game</color> ") == "Save Game", UiTap.CleanText("  <b>Save</b>\n  <color=#fff>Game</color> "));
