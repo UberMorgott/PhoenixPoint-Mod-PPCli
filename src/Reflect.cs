@@ -32,6 +32,13 @@ namespace Morgott.PPBridge
         internal const int MaxTypeResults = 100;
         internal const int MaxMemberResults = 400;
         internal const int MaxFindResults = 100;
+        // FRUGAL DEFAULTS (0.3.0). Every reply lands in a calling agent's context, often in a loop, so
+        // the page an agent gets WITHOUT asking is small; the caps above stay what a caller may ask for.
+        internal const int DefaultTypePage = 25;
+        internal const int DefaultMemberPage = 50;
+        internal const int DefaultFindPage = 25;
+        internal const int DefaultFindAllPage = 50;
+        internal const int MaxStackFrames = 3;
         /// <summary>A response bigger than this is refused with advice, not truncated into a lie.</summary>
         internal const int MaxResponseBytes = 64 * 1024;
 
@@ -207,14 +214,14 @@ namespace Morgott.PPBridge
         /// and "NullReferenceException: Object reference not set to an instance of an object" names
         /// nothing at all - the one exception shape that carries no information in its message is
         /// also the commonest one a reflection driver provokes. The top frames say WHICH member of
-        /// the game blew up, which is the whole question. Capped at 6 frames and clipped like every
-        /// other string here, so a deep stack cannot become the response.
+        /// the game blew up, which is the whole question. Capped at 3 frames (the thrower and its two
+        /// callers) and clipped like every other string here, so a deep stack cannot become the response.
         /// </summary>
         private static object Threw(Exception ex)
         {
             string[] frames = (ex.StackTrace ?? "").Split('\n');
             List<string> top = new List<string>();
-            for (int i = 0; i < frames.Length && top.Count < 6; i++)
+            for (int i = 0; i < frames.Length && top.Count < MaxStackFrames; i++)
             {
                 string f = frames[i].Trim();
                 if (f.Length > 0) top.Add(Protocol.Clip(f));
@@ -1335,8 +1342,16 @@ namespace Morgott.PPBridge
             if (string.IsNullOrEmpty(pattern)) return Bad("args", "types needs {pattern}");
             string wantAsm = a == null ? null : (string)a["assembly"];
 
+            int page, size;
+            object refusal = PageArgs(a, DefaultTypePage, MaxTypeResults, out page, out size);
+            if (refusal != null) return refusal;
+            bool generated = Flag(a, "generated");
+
+            // PAGED, not cut: the old answer stopped at 100 with "truncated":true and no way to ask
+            // for the rest. Compiler-generated types (closures "<>c", iterators "<X>d__12") are hidden
+            // unless generated:true - nobody names one, and on a game type they outnumber real hits.
             List<string> hits = new List<string>();
-            bool more = false;
+            int hidden = 0;
             foreach (Assembly asm in Assemblies())
             {
                 string an = asm.GetName().Name;
@@ -1348,12 +1363,86 @@ namespace Morgott.PPBridge
                 foreach (Type t in all)
                 {
                     if (t.FullName == null || t.FullName.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                    if (hits.Count >= MaxTypeResults) { more = true; break; }
+                    if (!generated && t.FullName.IndexOf('<') >= 0) { hidden++; continue; }
                     hits.Add(t.FullName + " [" + an + "]");
                 }
-                if (more) break;
             }
-            return new { ok = true, count = hits.Count, truncated = more, types = hits.ToArray() };
+            hits.Sort(StringComparer.Ordinal);
+            List<string> shown = Slice(hits, page, size);
+            Dictionary<string, object> dto = new Dictionary<string, object>
+            {
+                { "ok", true }, { "total", hits.Count }, { "page", page }, { "pageSize", size },
+                { "hasMore", (long)page * size + shown.Count < hits.Count }
+            };
+            if (hidden > 0) dto["hidden"] = hidden;
+            dto["types"] = shown.ToArray();
+            return dto;
+        }
+
+        /// <summary>page (0-based) + pageSize, or a refusal. An out-of-range size is REFUSED, never
+        /// clamped: a clamped page is a smaller answer the caller did not ask for and cannot see.</summary>
+        private static object PageArgs(JObject a, int defaultSize, int maxSize, out int page, out int size)
+        {
+            page = 0;
+            size = defaultSize;
+            try
+            {
+                if (a != null && a["page"] != null && a["page"].Type != JTokenType.Null) page = (int)a["page"];
+                if (a != null && a["pageSize"] != null && a["pageSize"].Type != JTokenType.Null) size = (int)a["pageSize"];
+            }
+            catch (Exception) { return Bad("args", "page and pageSize must be integers"); }
+            if (page < 0) return Bad("args", "page must be >= 0");
+            if (size < 1 || size > maxSize) return Bad("args", "pageSize must be 1.." + maxSize);
+            return null;
+        }
+
+        private static List<T> Slice<T>(List<T> all, int page, int size)
+        {
+            // long: page * pageSize is the one arithmetic here a caller can overflow.
+            long skip = (long)page * size;
+            List<T> shown = new List<T>();
+            for (long i = skip; i < all.Count && shown.Count < size; i++) shown.Add(all[(int)i]);
+            return shown;
+        }
+
+        /// <summary>A strictly boolean opt-in. "true" as a string is not true: a typo must not widen an answer.</summary>
+        private static bool Flag(JObject a, string name)
+        {
+            JToken t = a == null ? null : a[name];
+            return t != null && t.Type == JTokenType.Boolean && (bool)t;
+        }
+
+        /// <summary>
+        /// A type name a human reads: "List&lt;GeoFaction&gt;" rather than
+        /// "System.Collections.Generic.List`1[[PhoenixPoint.Geoscape.Entities.GeoFaction, Assembly-CSharp,
+        /// Version=0.0.0.0, Culture=neutral, PublicKeyToken=null]]" - the assembly-qualified form cost a
+        /// value dump ~200 bytes per non-scalar field and said nothing a caller acts on.
+        /// </summary>
+        internal static string ShortName(Type t)
+        {
+            if (t == null) return null;
+            if (t.IsArray) return ShortName(t.GetElementType()) + "[" + new string(',', t.GetArrayRank() - 1) + "]";
+            if (!t.IsGenericType) return t.Name;
+            string n = t.Name;
+            int tick = n.IndexOf('`');
+            if (tick > 0) n = n.Substring(0, tick);
+            return n + "<" + string.Join(",", t.GetGenericArguments().Select(ShortName).ToArray()) + ">";
+        }
+
+        /// <summary>Declared by the runtime or the engine, not by the game or a mod: System.* and
+        /// UnityEngine.*. Their inherited members are the same ~100 lines on every MonoBehaviour.</summary>
+        private static bool IsFramework(Type t)
+        {
+            string ns = t.Namespace ?? "";
+            return ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal) ||
+                   ns == "UnityEngine" || ns.StartsWith("UnityEngine.", StringComparison.Ordinal);
+        }
+
+        /// <summary>A compiler-generated member name: a closure, an iterator, a lambda body, an
+        /// anonymous backing store. Nobody types one.</summary>
+        private static bool IsGeneratedName(string name)
+        {
+            return name.IndexOf('<') >= 0;
         }
 
         private static object Members(JObject a)
@@ -1428,7 +1517,7 @@ namespace Morgott.PPBridge
         /// count and def guid - all field reads - and no handle; `get` that member by name when you
         /// want the object itself.
         /// </summary>
-        private static object ValuesOf(Type type, object instance, string filter)
+        private static object ValuesOf(Type type, object instance, string filter, bool inherited, bool generated, ref int hidden)
         {
             SortedDictionary<string, object> values = new SortedDictionary<string, object>(StringComparer.Ordinal);
             foreach (FieldInfo f in Hierarchy(type, t => t.GetFields(AnyDeclared)))
@@ -1441,6 +1530,14 @@ namespace Morgott.PPBridge
                 int close = name.IndexOf(">k__BackingField", StringComparison.Ordinal);
                 if (name.Length > 0 && name[0] == '<' && close > 0) name = name.Substring(1, close - 1);
                 if (values.ContainsKey(name)) continue;   // a derived field shadows its base
+                // HIDDEN IS COUNTED, never silent: the reply's `hidden` says how many fields the two
+                // opt-ins would add, so "not observed" still cannot pass for "unchanged".
+                if ((!inherited && f.DeclaringType != type && IsFramework(f.DeclaringType)) ||
+                    (!generated && IsGeneratedName(name)))
+                {
+                    if (MemberMatches(name, filter)) hidden++;
+                    continue;
+                }
                 if (!MemberMatches(name, filter)) continue;
                 object raw;
                 try { raw = f.GetValue(instance); }
@@ -1462,7 +1559,7 @@ namespace Morgott.PPBridge
         /// </summary>
         private static object Omitted(object v)
         {
-            Dictionary<string, object> d = new Dictionary<string, object> { { "$omitted", v.GetType().FullName } };
+            Dictionary<string, object> d = new Dictionary<string, object> { { "$omitted", ShortName(v.GetType()) } };
             int? count = CountOf(v);
             if (count != null) d["count"] = count.Value;
             FieldInfo guid = v.GetType().GetField("Guid");
@@ -1476,40 +1573,48 @@ namespace Morgott.PPBridge
         private static object MembersOf(Type type, JObject a, object self, object instance)
         {
             string filter = a == null ? null : (string)a["filter"];
-            int page = a == null || a["page"] == null ? 0 : (int)a["page"];
-            int size = a == null || a["pageSize"] == null ? MaxMemberResults : (int)a["pageSize"];
-            JToken valuesTok = a == null ? null : a["values"];
-            bool wantValues = valuesTok != null && valuesTok.Type == JTokenType.Boolean && (bool)valuesTok;
-            if (page < 0) return Bad("args", "page must be >= 0");
-            if (size < 1 || size > MaxMemberResults) return Bad("args", "pageSize must be 1.." + MaxMemberResults);
+            int page, size;
+            object refusal = PageArgs(a, DefaultMemberPage, MaxMemberResults, out page, out size);
+            if (refusal != null) return refusal;
+            bool wantValues = Flag(a, "values");
+            // Two opt-ins, both hidden by default because neither is what an agent asks about: members
+            // a System.*/UnityEngine.* BASE declares (ToString, GetComponent, transform - the same ~100
+            // lines on every MonoBehaviour), and compiler-generated names ("<>c", backing fields that
+            // are already listed as their property, lambda bodies). `hidden` counts what they would add.
+            bool inherited = Flag(a, "inherited");
+            bool generated = Flag(a, "generated");
             if (wantValues && instance == null)
                 return Bad("args", "values:true needs a live object - ask `inspect`, not `members`");
 
             List<string> lines = new List<string>();
-            Action<string> add = s => { if (MemberMatches(s, filter)) lines.Add(s); };
+            int hidden = 0;
+            Action<MemberInfo, string> add = (mi, s) =>
+            {
+                if (!MemberMatches(s, filter)) return;
+                if ((!inherited && mi.DeclaringType != type && IsFramework(mi.DeclaringType)) ||
+                    (!generated && IsGeneratedName(mi.Name))) { hidden++; return; }
+                lines.Add(s);
+            };
 
             foreach (ConstructorInfo c in type.GetConstructors(AnyDeclared))
-                add("C " + Sig(c));
+                add(c, "C " + Sig(c));
             foreach (PropertyInfo p in Hierarchy(type, t => t.GetProperties(AnyDeclared)))
-                add("P " + p.PropertyType.Name + " " + p.Name +
+                add(p, "P " + p.PropertyType.Name + " " + p.Name +
                     " {" + (p.GetGetMethod(true) != null ? "get;" : "") + (p.GetSetMethod(true) != null ? "set;" : "") + "}" +
                     (p.DeclaringType == type ? "" : " <" + p.DeclaringType.Name + ">"));
             foreach (FieldInfo f in Hierarchy(type, t => t.GetFields(AnyDeclared)))
-                add("F " + (f.IsStatic ? "static " : "") + f.FieldType.Name + " " + f.Name +
+                add(f, "F " + (f.IsStatic ? "static " : "") + f.FieldType.Name + " " + f.Name +
                     (f.DeclaringType == type ? "" : " <" + f.DeclaringType.Name + ">"));
             foreach (MethodInfo m in Hierarchy(type, t => t.GetMethods(AnyDeclared)))
             {
                 if (m.IsSpecialName) continue;   // property/event accessors are already listed above
-                add("M " + Sig(m) + (m.DeclaringType == type ? "" : " <" + m.DeclaringType.Name + ">"));
+                add(m, "M " + Sig(m) + (m.DeclaringType == type ? "" : " <" + m.DeclaringType.Name + ">"));
             }
 
             // PAGED, not silently cut. The old cap dropped everything past 400 with a bare
             // "truncated":true and no way to ask for the rest.
-            long skip = (long)page * size;
-            if (skip > lines.Count) skip = lines.Count;
-            List<string> shown = new List<string>();
-            for (int i = (int)skip; i < lines.Count && shown.Count < size; i++) shown.Add(lines[i]);
-            bool more = skip + shown.Count < lines.Count;
+            List<string> shown = Slice(lines, page, size);
+            bool more = (long)page * size + shown.Count < lines.Count;
 
             Dictionary<string, object> dto = new Dictionary<string, object>
             {
@@ -1517,14 +1622,16 @@ namespace Morgott.PPBridge
                 { "type", type.FullName },
                 { "assembly", type.Assembly.GetName().Name },
                 { "baseType", type.BaseType == null ? null : type.BaseType.FullName },
-                { "self", self },
-                { "count", shown.Count },
-                { "total", lines.Count },
-                { "page", page },
-                { "pageSize", size },
-                { "truncated", more },
-                { "hasMore", more }
+                { "self", self }
             };
+            if (!wantValues)
+            {
+                dto["count"] = shown.Count;
+                dto["total"] = lines.Count;
+                dto["page"] = page;
+                dto["pageSize"] = size;
+                dto["hasMore"] = more;
+            }
             // The member LIST is the shape and the value dump is the data; asking for both is how a
             // def dump hits the 64 KB cap and comes back as a refusal instead of a table.
             if (wantValues)
@@ -1535,9 +1642,16 @@ namespace Morgott.PPBridge
                 // and they do not move.
                 Dictionary<string, object> id = self as Dictionary<string, object>;
                 if (id != null) { id.Remove("h"); id.Remove("instanceId"); }
-                dto["values"] = ValuesOf(type, instance, filter);
+                hidden = 0;
+                object values = ValuesOf(type, instance, filter, inherited, generated, ref hidden);
+                if (hidden > 0) dto["hidden"] = hidden;
+                dto["values"] = values;
             }
-            else dto["members"] = shown.ToArray();
+            else
+            {
+                if (hidden > 0) dto["hidden"] = hidden;
+                dto["members"] = shown.ToArray();
+            }
             return dto;
         }
 
@@ -1671,8 +1785,14 @@ namespace Morgott.PPBridge
 
             if (all) return FindAll(a, want, query);
 
-            List<object> hits = new List<object>();
-            bool more = false;
+            int page, size;
+            object refusal = PageArgs(a, DefaultFindPage, MaxFindResults, out page, out size);
+            if (refusal != null) return refusal;
+            bool guids = Flag(a, "guids");
+
+            // Repository order, NOT sorted: plans read defs[0], and which def is first must not move
+            // under them. Paged instead of cut at 100 - `total` says how many matched.
+            List<object[]> hits = new List<object[]>();
             foreach (object def in Protocol.AllDefs())
             {
                 if (def == null) continue;
@@ -1682,10 +1802,28 @@ namespace Morgott.PPBridge
                 string name, guid;
                 if (!DefIdentity(def, dt, out name, out guid)) continue;
                 if (!DefMatches(name, guid, query)) continue;
-                if (hits.Count >= MaxFindResults) { more = true; break; }
-                hits.Add(new { name, guid, type = dt.Name });
+                hits.Add(new object[] { name, guid, dt.Name });
             }
-            return new { ok = true, count = hits.Count, truncated = more, defs = hits.ToArray() };
+            List<object[]> shown = Slice(hits, page, size);
+            return new Dictionary<string, object>
+            {
+                { "ok", true }, { "count", shown.Count }, { "total", hits.Count }, { "page", page }, { "pageSize", size },
+                { "hasMore", (long)page * size + shown.Count < hits.Count },
+                { "defs", shown.Select(r => DefRow((string)r[0], (string)r[1], (string)r[2], guids)).ToArray() }
+            };
+        }
+
+        /// <summary>
+        /// One def row. The guid is OPT-IN (guids:true): 36 bytes that are about a third of every row
+        /// and that an agent needs only to hand to GetDef - a `$def` envelope and `@def:` both take the
+        /// exact NAME, so most callers never need it.
+        /// </summary>
+        private static object DefRow(string name, string guid, string type, bool guids)
+        {
+            Dictionary<string, object> d = new Dictionary<string, object> { { "name", name } };
+            if (guids) d["guid"] = guid;
+            d["type"] = type;
+            return d;
         }
 
         /// <summary>
@@ -1702,10 +1840,10 @@ namespace Morgott.PPBridge
         /// </summary>
         private static object FindAll(JObject a, Type want, string query)
         {
-            int page = a["page"] == null ? 0 : (int)a["page"];
-            int size = a["pageSize"] == null ? MaxPageSize : (int)a["pageSize"];
-            if (page < 0) return Bad("args", "page must be >= 0");
-            if (size < 1 || size > MaxPageSize) return Bad("args", "pageSize must be 1.." + MaxPageSize);
+            int page, size;
+            object refusal = PageArgs(a, DefaultFindAllPage, MaxPageSize, out page, out size);
+            if (refusal != null) return refusal;
+            bool guids = Flag(a, "guids");
 
             List<string[]> rows = new List<string[]>();
             foreach (object def in Protocol.AllDefs())
@@ -1733,7 +1871,7 @@ namespace Morgott.PPBridge
             if (skip > rows.Count) skip = rows.Count;
             List<object> defs = new List<object>();
             for (int i = (int)skip; i < rows.Count && defs.Count < size; i++)
-                defs.Add(new { name = rows[i][0], guid = rows[i][1], type = rows[i][2] });
+                defs.Add(DefRow(rows[i][0], rows[i][1], rows[i][2], guids));
 
             return new
             {

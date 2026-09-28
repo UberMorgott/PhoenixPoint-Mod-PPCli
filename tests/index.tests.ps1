@@ -26,6 +26,8 @@ $script:pages = @()
 $script:at = 0
 function Invoke-Verb([string] $verb, $verbArgs, $ep) {
     if ($verb -ne 'find') { throw "the fake endpoint only serves 'find', not '$verb'" }
+    # The guid is opt-in since 0.3.0; an index that forgets to ask gets rows with no guid at all.
+    if (-not $verbArgs.guids) { throw 'index must page find with guids:true' }
     $p = $script:pages[$script:at]
     $script:at++
     return $p

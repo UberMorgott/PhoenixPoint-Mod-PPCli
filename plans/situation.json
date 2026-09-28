@@ -45,9 +45,9 @@
       "args": { "op": "new", "type": "UnityEngine.Vector3", "args": [ "${centerX}", "${centerY}", "${centerZ}" ] } },
 
     { "id": "find-def", "verb": "find", "save": "DEF",
-      "args": { "query": "${defName}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
+      "args": { "guids": true, "query": "${defName}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
     { "id": "find-item", "verb": "find", "save": "ITEM", "if": "${equip}",
-      "args": { "query": "${itemName}", "type": "PhoenixPoint.Common.Entities.Items.ItemDef" } },
+      "args": { "guids": true, "query": "${itemName}", "type": "PhoenixPoint.Common.Entities.Items.ItemDef" } },
 
     { "//PRELOAD": "MANDATORY, and the reason a squad used to spawn INVISIBLE. `spawn` runs its whole spawn inside the loading callback (TacticalDeployZone.cs:424 -> :409-423) and `give_item` preloads its item def the same way (TacConsoleGameplay.cs:770). Assets are per-DEF - skipping this only looked safe when the def was already on the map.",
       "id": "assets-loader", "verb": "call", "save": "AL",

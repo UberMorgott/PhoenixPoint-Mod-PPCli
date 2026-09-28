@@ -191,9 +191,9 @@ try {
 # ---------------------------------------------------------------- 3. the spider
 
 # The def by name out of the live repository - never a typed guid.
-$spiderDef = (PP 'find' @{ query = 'customcreature_CharacterTemplateDef'
+$spiderDef = (PP 'find' @{ query = 'customcreature_CharacterTemplateDef'; guids = $true
                            type  = 'PhoenixPoint.Tactical.Entities.TacActorDef' }).defs[0]
-$victimDef = (PP 'find' @{ query = 'Swarmer_TacCharacterDef'
+$victimDef = (PP 'find' @{ query = 'Swarmer_TacCharacterDef'; guids = $true
                            type  = 'PhoenixPoint.Tactical.Entities.TacActorDef' }).defs |
              Where-Object name -eq 'Swarmer_TacCharacterDef'
 Say "spider $($spiderDef.name) $($spiderDef.guid)"

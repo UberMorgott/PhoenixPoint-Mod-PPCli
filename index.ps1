@@ -10,6 +10,8 @@
 #>
 
 # Pages `find {all:true}` until it says it is done. Returns @{ defs; pages }, or throws.
+# guids:true because the guid is opt-in since 0.3.0 and this is the one caller that needs every one
+# (research rows resolve through GetDef(guid), and (name,guid,type) is the repeat key below).
 # $pageSize 200 is `find`'s own page ceiling and projects to roughly 30 KB - well inside the 64 KB
 # reflection cap and the 256 KB frame limit, both of which refuse rather than truncate.
 function Get-AllDefs($ep, [int] $pageSize = 200) {
@@ -18,7 +20,7 @@ function Get-AllDefs($ep, [int] $pageSize = 200) {
     $page  = 0
     $total = $null
     while ($true) {
-        $reply = Invoke-Verb 'find' ([ordered]@{ all = $true; page = $page; pageSize = $pageSize }) $ep
+        $reply = Invoke-Verb 'find' ([ordered]@{ all = $true; guids = $true; page = $page; pageSize = $pageSize }) $ep
         if ($reply.status -ne 'done' -or -not $reply.result.ok) {
             throw "find all failed on page ${page}: " + ($reply | ConvertTo-Json -Depth 8 -Compress)
         }

@@ -16,7 +16,7 @@
 
   "steps": [
     { "id": "find-item", "verb": "find", "save": "ITEM",
-      "args": { "query": "${itemName}", "type": "PhoenixPoint.Common.Entities.Items.ItemDef" } },
+      "args": { "guids": true, "query": "${itemName}", "type": "PhoenixPoint.Common.Entities.Items.ItemDef" } },
 
     { "id": "container", "verb": "call", "save": "BOX",
       "args": { "op": "get", "target": "${actor}", "member": "${container}" } },

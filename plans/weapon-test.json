@@ -79,7 +79,7 @@
 
     { "//WEAPON": "Typed at WeaponDef, not ItemDef. equip-actor.json searches broad ItemDef and takes defs[0], which is why \"PX_AssaultRifle\" resolves to the ammo CLIP there.",
       "id": "find-weapon", "verb": "find", "save": "WDEF",
-      "args": { "query": "${weaponDef}", "type": "PhoenixPoint.Tactical.Entities.Weapons.WeaponDef" } },
+      "args": { "guids": true, "query": "${weaponDef}", "type": "PhoenixPoint.Tactical.Entities.Weapons.WeaponDef" } },
     { "//": "EXACTLY one, asserted from both sides. An ambiguous weapon name must be a named failure, never a silently different weapon than the one being measured.",
       "id": "assert-one-weapon", "verb": "wait",
       "args": { "timeoutMs": 1, "everyFrames": 1,
@@ -91,7 +91,7 @@
                           "args": [ "${WDEF.count}", 0, 0.01 ] } } },
 
     { "id": "find-enemy", "verb": "find", "save": "EDEF",
-      "args": { "query": "${enemyDef}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
+      "args": { "guids": true, "query": "${enemyDef}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
     { "id": "assert-any-enemy", "verb": "wait",
       "args": { "timeoutMs": 1, "everyFrames": 1,
                 "call": { "op": "invoke", "type": "Base.Utils.Maths.Utl", "member": "GreaterThan",

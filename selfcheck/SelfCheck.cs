@@ -480,16 +480,35 @@ namespace Morgott.PPBridge
             Check("types-finds-a-type", R("types", "{'pattern':'Morgott.PPBridge.Ov'}").Contains(OvType),
                   R("types", "{'pattern':'Morgott.PPBridge.Ov'}"));
             Check("types-needs-a-pattern", R("types", "{}").Contains("\"code\":\"args\""), "an empty pattern was accepted");
+            string ovTypes = R("types", "{'pattern':'Morgott.PPBridge.Ov'}");
+            Check("types-hides-compiler-generated", !ovTypes.Contains("<Lazy>") && ovTypes.Contains("\"hidden\":"), ovTypes);
+            Check("types-generated-on-request", R("types", "{'pattern':'Morgott.PPBridge.Ov','generated':true}").Contains("<Lazy>"),
+                  R("types", "{'pattern':'Morgott.PPBridge.Ov','generated':true}"));
+            string tp0 = R("types", "{'pattern':'Morgott.PPBridge.','pageSize':1}");
+            string tp1 = R("types", "{'pattern':'Morgott.PPBridge.','page':1,'pageSize':1}");
+            Check("types-pages", tp0.Contains("\"hasMore\":true") && tp0 != tp1 && !tp0.Contains("\"truncated\""), tp0);
+            Check("types-page-size-refused-not-clamped", R("types", "{'pattern':'Ov','pageSize':101}").Contains("\"code\":\"args\""),
+                  R("types", "{'pattern':'Ov','pageSize':101}"));
             string members = R("members", "{'type':'" + OvType + "'}");
             Check("members-lists-methods", members.Contains("M static String TakeV3(V3 v)"), members.Substring(0, Math.Min(400, members.Length)));
-            Check("members-lists-inherited", members.Contains("<Object>"), "no inherited member reported");
+            Check("members-hides-framework-inherited-by-default", !members.Contains("<Object>") && members.Contains("\"hidden\":"), members);
+            string membersAll = R("members", "{'type':'" + OvType + "','inherited':true,'pageSize':400}");
+            Check("members-lists-inherited-on-request", membersAll.Contains("<Object>"), "no inherited member reported");
+            Check("members-default-page-is-small", R("members", "{'type':'" + OvType + "','inherited':true}").Contains("\"pageSize\":50"), "default page is not 50");
+            Check("members-no-truncated-twin", !members.Contains("\"truncated\""), members);
             Check("members-filter", R("members", "{'type':'" + OvType + "','filter':'TakeV3'}").Contains("\"count\":1"),
                   R("members", "{'type':'" + OvType + "','filter':'TakeV3'}"));
             string inspect = R("inspect", "{'h':'" + ov + "'}");
             Check("inspect-describes-the-handle", inspect.Contains("\"type\":\"" + OvType + "\"") && inspect.Contains("\"self\":"), inspect.Substring(0, Math.Min(300, inspect.Length)));
 
             Protocol.AllDefs = () => new List<object> { new FakeDef { Guid = "g1", name = "hello_def" }, new FakeDef { Guid = "g2", name = "other" } };
-            Check("find-by-name", R("find", "{'query':'hello'}").Contains("\"guid\":\"g1\""), R("find", "{'query':'hello'}"));
+            Check("find-by-name", R("find", "{'query':'hello'}").Contains("\"name\":\"hello_def\""), R("find", "{'query':'hello'}"));
+            Check("find-guid-is-opt-in", !R("find", "{'query':'hello'}").Contains("\"guid\"") &&
+                  R("find", "{'query':'hello','guids':true}").Contains("\"guid\":\"g1\""), R("find", "{'query':'hello','guids':true}"));
+            Check("find-query-pages", R("find", "{'query':'e','pageSize':1}").Contains("\"hasMore\":true") &&
+                  R("find", "{'query':'e','page':1,'pageSize':1}").Contains("\"name\":\"other\""), R("find", "{'query':'e','page':1,'pageSize':1}"));
+            Check("find-query-page-size-refused-not-clamped", R("find", "{'query':'e','pageSize':101}").Contains("\"code\":\"args\""),
+                  R("find", "{'query':'e','pageSize':101}"));
             Check("find-by-guid", R("find", "{'query':'g2'}").Contains("\"name\":\"other\""), R("find", "{'query':'g2'}"));
             Check("find-type-filter", R("find", "{'query':'hello','type':'Morgott.PPBridge.FakeDef'}").Contains("\"count\":1"),
                   R("find", "{'query':'hello','type':'Morgott.PPBridge.FakeDef'}"));
@@ -511,7 +530,7 @@ namespace Morgott.PPBridge
             Check("inspect-values-dumps-fields", dump.Contains("\"Guid\":\"g1\"") && dump.Contains("\"name\":\"hello_def\""), dump);
             Check("inspect-values-says-null-out-loud", dump.Contains("\"Missing\":null"), dump);
             Check("inspect-values-marks-a-non-scalar-field",
-                  dump.Contains("\"$omitted\":\"System.Collections.Generic.List") && dump.Contains("\"count\":2"), dump);
+                  dump.Contains("\"$omitted\":\"List<Int32>\"") && dump.Contains("\"count\":2"), dump);
             Check("inspect-values-is-byte-identical-on-a-second-read",
                   dump == R("inspect", "{'h':'@def:hello_def','values':true}"), dump);
             Check("inspect-values-drops-the-member-list", !dump.Contains("\"members\""), dump);
@@ -567,6 +586,8 @@ namespace Morgott.PPBridge
                   R("find", "{'all':true,'page':99,'pageSize':2}"));
             Check("find-all-filters-by-query", R("find", "{'all':true,'query':'bb'}").Contains("\"total\":1"),
                   R("find", "{'all':true,'query':'bb'}"));
+            Check("find-all-guids-on-request", !allPage0.Contains("\"guid\"") &&
+                  R("find", "{'all':true,'guids':true}").Contains("\"guid\":\"g1\""), R("find", "{'all':true,'guids':true}"));
 
             // --- roots: late-bound every call, and usable as a target with @.
             int probeCalls = 0;

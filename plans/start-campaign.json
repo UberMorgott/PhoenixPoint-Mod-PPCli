@@ -45,7 +45,7 @@
                 "call": { "op": "get", "target": "@level", "member": "IsPlaying" } } },
 
     { "id": "find-mode", "verb": "find", "save": "MODE",
-      "args": { "query": "${geoModeDefName}", "type": "PhoenixPoint.Common.Levels.GeoscapeGameModeDef" } },
+      "args": { "guids": true, "query": "${geoModeDefName}", "type": "PhoenixPoint.Common.Levels.GeoscapeGameModeDef" } },
     { "id": "mode-def", "verb": "call", "save": "MDEF",
       "args": { "op": "invoke", "target": "@defs", "member": "GetDef", "args": [ "${MODE.defs[0].guid}" ] } },
     { "//": "GameModeDef.LevelSceneBinding is a COMPUTED property (GeoscapeGameModeDef.cs:31) - every read builds a fresh binding off the def. One read, reused for both the params and the final CloneAndAddLevelParams.",

@@ -25,7 +25,7 @@
 
     { "//": "The actor definition, out of the live def repository. defs[0] is a hard reference: no hit means a failed step, never a silent null.",
       "id": "find-def", "verb": "find", "save": "DEF",
-      "args": { "query": "${defName}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
+      "args": { "guids": true, "query": "${defName}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
 
     { "//PRELOAD": "MANDATORY. `spawn` runs its ENTIRE spawn inside the asset-loading callback (TacticalDeployZone.cs:424 -> the callback at :409-423). Skip it and a def whose addressable assets are cold spawns a live, in-play, correctly-positioned actor with NO MODEL. Assets are per-DEF: this looked unnecessary once only because that run's def was already deployed on that map.",
       "id": "assets-loader", "verb": "call", "save": "AL",

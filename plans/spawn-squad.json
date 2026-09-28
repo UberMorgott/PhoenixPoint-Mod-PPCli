@@ -35,7 +35,7 @@
       "args": { "op": "new", "type": "UnityEngine.Vector3", "args": [ "${centerX}", "${centerY}", "${centerZ}" ] } },
 
     { "id": "find-def", "verb": "find", "save": "DEF",
-      "args": { "query": "${defName}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
+      "args": { "guids": true, "query": "${defName}", "type": "PhoenixPoint.Tactical.Entities.TacActorDef" } },
 
     { "//PRELOAD": "MANDATORY, and the reason a squad used to spawn INVISIBLE. The `spawn` console command does the whole spawn INSIDE the loading callback (TacticalDeployZone.cs:424 -> onLoadingCompleted at :409-423): a def whose addressable assets are not resident yet produces a live, in-play, correctly-positioned actor with no model. Assets are per-DEF, so this only looked unnecessary when the def was already on the map.",
       "id": "assets-loader", "verb": "call", "save": "AL",
