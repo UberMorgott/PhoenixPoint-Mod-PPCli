@@ -1437,10 +1437,16 @@ bounded (oldest overwritten; a reader that fell behind gets `dropped:N`).
 | `since:N` | rows with seq > N, oldest first; a full page stops at its last row (`hasMore:true`, `next` = that row) |
 | `since` > newest | `code:"cursor"` — the game restarted or the ring was cleared; re-read with `since:0` |
 | `pageSize` | 1..200, default 25; `pageBytes` 1024..196608, default 8192 (a page always carries ≥ 1 row) |
-| `match` | .NET regex (50 ms timeout per row = non-match); bad pattern → `code:"args"` |
+| `match` | .NET regex; bad pattern → `code:"args"`. ONE 100 ms budget per request (`TapPage.RegexBudgetMs`); spending it, or one row hitting the 50 ms row timeout, → `code:"regex"` (never a silently partial scan) |
 
 Reply: `{ok, rows?, next, hasMore?, dropped?}` — `rows` absent when empty, so an idle poll is
-`{"ok":true,"next":1234}`.
+`{"ok":true,"next":1234}`. A page is always ≥ 1 row; ONE row alone over `pageBytes` is cut to fit
+and flagged (`log`: stack dropped, `m` cut, `clipped:true`; `events`: `a` dropped, `clipped:<bytes>`).
+
+`wait {log}` / `wait {event}` fail AT ONCE instead of timing out when polling can no longer be
+truthful: `code:"dropped"` (the ring overwrote rows after the wait's `since` before a poll scanned
+them), `code:"cursor"` (`since` ahead of the ring — refused at start like a read, or the ring
+restarted mid-wait), `code:"regex"` (budget). Bad `level` → `code:"args"`.
 
 ### `log`
 
@@ -1451,7 +1457,8 @@ Reply: `{ok, rows?, next, hasMore?, dropped?}` — `rows` absent when empty, so 
 - Row: `{"s":seq, "l":"L|W|E|A|X", "m":"…"}` (log / warning / error / assert / exception). `m` is
   clipped to `clip` chars (default 300, 40..1000) with `...(+N)` = chars cut. `st` (stack) only with
   `stack:true`.
-- `level`: MINIMUM severity — `log` (all), `warning` (W,E,A,X), `error` (E,A,X).
+- `level`: MINIMUM severity — `log` (all), `warning` (W,E,A,X), `error` (E,A,X); anything else
+  (reads AND waits) → `code:"args"`.
 - `log {"status":true}` → `{ok, hooked, next, stored, capacity}`; `hooked:false` = the bridge is not
   armed, so an empty ring is not a quiet game.
 
@@ -1477,11 +1484,20 @@ Reply: `{ok, rows?, next, hasMore?, dropped?}` — `rows` absent when empty, so 
   FIELDS (no getter runs) one level down (a nested plain object keeps ≤ 4 scalar fields), null/false
   dropped. `DeathReport` → `{"type":"DeathReport","Actor":{type,name,id},"Killer":{…},"FromFire":true,
   "ImpactForce":{x,y,z}}`. `handles:true` on subscribe = full `Project` with live handles (heavy).
-- Caps: 16 live subs (`code:"cap"`), 1000-row ring.
+- Per record: ≤ 8 args (`EventTap.MaxArgs`; rest → `{"$moreArgs":N}`); one arg over 1 KiB of JSON
+  → `{"$clipped":"<Type>","bytes":N}`.
+- Threads: projection runs ONLY on Unity's main thread (id captured at mod enable). A firing on any
+  other thread records scalars (string/number/bool/enum) and names objects `{"$offMain":"<Type>"}`
+  — no Unity read, no handle minted. `fired` is counted with Interlocked.
+- Caps: 16 live subs (`code:"cap"`), 1000-row ring. A wait-owned sub is released on EVERY exit: the
+  wait ending, its plan cancelled or past its deadline, or the Runner refusing to park it.
+- Unsubscribe detaches FIRST: a remove accessor that throws → `{ok:false, code:"threw", removed,
+  failed[{sub,error}]}`; the handler is still attached, so the sub STAYS listed (`removeError`) and
+  can be unsubscribed again.
 - A sub ENDS on `{"unsubscribe":id|"all"}`, when its target is destroyed (checked on every `events`
   request), or when the scene holding its target unloads (a non-Unity target: any scene unload; a
   static event: never). A read with `sub` then carries `ended:"unsubscribed|destroyed|scene"`.
-- `{"list":true}` → `{ok, subs[{sub, event, on, fired}], next}`.
+- `{"list":true}` → `{ok, subs[{sub, event, on, fired, removeError?}], next}`.
 
 Events verified to exist as C# `event`s in the decompile (`TacticalLevelController.cs`):
 `ActorDeathEvent` (`ActorDeathHandler(DeathReport)`, :277, fired :795), `NewTurnEvent`
