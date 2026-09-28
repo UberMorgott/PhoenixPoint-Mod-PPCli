@@ -114,11 +114,20 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
 - Expected: `connect click '{"x":..,"y":..}'` (synthesized Event for OnGUI) or IMGUI button-by-label press.
 - Severity: medium (blocks screenshot-driven UI testing without source knowledge). Banner half of this entry fixed in v0.2.3 (`-Quiet` / `PPCLI_QUIET=1`).
 
+## 2026-09-28 — `imgui` press on a button that changes the panel's layout closes the ContentTool bench
+
+- **Attempted:** v0.3.0 live, `D:\PP-Instance2` geoscape, ContentTool bench open, "Fit a weapon" tab, soldier list filtered to "Phoenix Assault": `connect imgui '{"press":{"label":"Phoenix Assault 1"}}'` (the press itself replied `fired:true`, `ev:"Repaint"`).
+- **Happened:** the button's body swaps the list for the chosen-soldier row in the SAME Repaint pass, GUILayout then throws `ArgumentException: Getting control 8's position in a group with only 8 controls when doing repaint`, and the bench's own guard closes the whole panel (`ct_bench: the panel threw and closed itself`, Player.log frame 40527). TFTV then showed its "An error has occurred" popup on the geoscape. Earlier presses (Replace a model, file browser rows, Build & test) went through; the Model Doctor overlay logged the same exception once (frame 25306).
+- **Expected:** a press lands the way a real click does (MouseDown/MouseUp event, then Layout + Repaint rebuild), so a button that changes later controls can't break the Repaint pass. AGENTS trap 14 names one `ArgumentException`, but here it is fatal to the panel under test.
+- **Workaround:** select via the mod's own console path (`ct_bench unit <TacCharacterDef>`) or `call set` of the field, then press only buttons whose click doesn't restructure the list.
+- **Severity:** medium (a press that closes the panel under test).
+
 <!-- Append new entries above this line. Keep them evidence-backed. -->
 
-## 2026-09-28 — plans on a `start-mission.json` (loadmap) mission: `kill-actor` NREs, `weapon-test` refuses
+## 2026-09-28 — `end-mission.json` on a `start-mission.json` (loadmap) mission: level reloaded into tactical
 
-- **Attempted:** v0.3.0 live check on `D:\PP-Instance2` (PPBridge 0.3.0, TFTV on). `start-campaign.json` then `start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}'`, then `kill-actor.json '{"actorName":"Crabman_10"}'`, `weapon-test.json` (`PX_AssaultRifle_WeaponDef` and `PX_Pistol_WeaponDef`), and `end-mission.json '{"outcome":"win"}'`.
-- **Happened:** (1) kill-actor failed at step `apply-damage` with `NullReferenceException`, `at PhoenixGame.GetCurrentGameTime` ← `PhoenixStatisticsManager.OnActorKilled`. The cause is `TacticalGameParams.GlobalTime == null` on a loadmap mission (PhoenixGame.cs:718-723 dereferences it). The workaround worked: `call set h(TacticalGameParams) GlobalTime {"$new":{"type":"Base.Utils.UnityDateTime"}}`, then kill-actor `Crabman_7` → `isDead:true`. (2) weapon-test failed at `assert-enabled`: `NoSuitableEquipment` for `@selected` with both weapons, and the finally trace carried `release-log: ${LOG.value.h} is not set`. (3) end-mission hit a client DEAD RUN on a TFTV NRE (`SecondaryObjectivesTactical+UIHider+<FadeInGraphic>d__3.MoveNext`), and the level then reloaded into tactical.
-- **Expected:** `start-mission.json` gives a mission that the shipped tactical plans can use. It should set `GlobalTime`, or `kill-actor` should guard against it being null. `weapon-test` should run on it, and its cleanup should skip releasing a handle that was never saved.
-- **Severity:** medium. The tactical plans don't compose from a cold start. The v0.3.0 verbs are not affected.
+- **Attempted:** v0.3.0 live check on `D:\PP-Instance2` (TFTV on): `start-campaign.json` → `start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}'` → `end-mission.json '{"outcome":"win"}'`.
+- **Happened:** a TFTV NRE (`SecondaryObjectivesTactical+UIHider+<FadeInGraphic>d__3.MoveNext`) fired the client's DEAD RUN, and the level then reloaded into tactical.
+- **Partly fixed (0.3.1, offline-tested):** connect mode now pings the main thread on a mod fault and keeps waiting when it answers (`logFaults` in the reply). Still OPEN: why the level went back to tactical. A loadmap mission has no geoscape to return to - after `GoToGeoscape` TacticalGameCrt runs the outcome level, then MenuCrt loops (PhoenixGame.cs:564-592) - and `end-mission`'s `left` step waits for `phase:geoscape`, which never comes there. Needs a live run to see what `state` reads after `leave`.
+- The other two parts of this entry (kill-actor NRE on null `GlobalTime`; weapon-test `NoSuitableEquipment` on a selected vehicle + `release-log` noise) were fixed in 0.3.1 (commits 7648c5b, 3aa2c0b, 6884e9e) - offline-tested, awaiting a live re-run.
+- **Severity:** low-medium.
