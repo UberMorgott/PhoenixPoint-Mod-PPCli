@@ -75,6 +75,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 . (Join-Path $here 'coop-lite.ps1')
+. (Join-Path $here 'coop-util.ps1')
 $cli = Join-Path (Split-Path $here -Parent) 'ppcli.ps1'
 $pidFile = Join-Path $here 'coop-pids.txt'
 # The peer table: index 0 is the host, the rest are client1..clientN. Every verb reads it, so a third
@@ -288,33 +289,16 @@ function MpLogFor([string]$root) {
 }
 # Both surfaces of that one peer: its Player.log and the mod log the peer names itself.
 function LogFiles([string]$root) { @((LogLines $root), (MpLogFor $root).path) | Where-Object { $_ } }
-# Line count of each log file NOW. Taken BEFORE an action, it makes WaitLog believe only lines written
-# after it: a long-lived host log otherwise answers with the same line from an earlier press.
-function LogMark([string]$root) {
-    $m = @{}
-    foreach ($f in LogFiles $root) { $m[$f] = @(Get-Content -LiteralPath $f -ErrorAction SilentlyContinue).Count }
-    $m
-}
+# Where each log file's complete lines end NOW (coop-util.ps1 LogMarkFiles). Taken BEFORE an action,
+# it makes WaitLog believe only lines written after it: the mod log is shared across runs and a
+# long-lived host log otherwise answers with the same line from an earlier press or an earlier run.
+# EVERY wait for the effect of an action takes one first.
+function LogMark([string]$root) { LogMarkFiles @(LogFiles $root) }
+# The files are re-resolved every poll (a mod log only nameable once the peer answers still counts).
 # $failRx: a line that means the awaited one will never come (a refused join) ends the wait at once,
-# quoted with the 3 lines after it (the refusal's reasons), instead of running into the timeout.
+# quoted with up to 3 lines after it (the refusal's reasons, given ~1 s to land).
 function WaitLog([string]$root, [string]$rx, [int]$sec, [hashtable]$mark = @{}, [string]$failRx = '') {
-    $dl = (Get-Date).AddSeconds($sec)
-    $files = LogFiles $root
-    while ((Get-Date) -lt $dl) {
-        foreach ($f in $files) {
-            $from = [int]$mark[$f]
-            if ($failRx) {
-                $bad = Select-String -Path $f -Pattern $failRx -Context 0, 3 -ErrorAction SilentlyContinue |
-                    Where-Object LineNumber -gt $from | Select-Object -First 1
-                if ($bad) { throw "REFUSED on ${root} (waiting for /$rx/): " + ((@($bad.Line) + @($bad.Context.PostContext)) -join ' | ') }
-            }
-            $hit = Select-String -Path $f -Pattern $rx -ErrorAction SilentlyContinue |
-                Where-Object LineNumber -gt $from | Select-Object -Last 1
-            if ($hit) { return $hit.Line }
-        }
-        Start-Sleep 2
-    }
-    throw "log timeout on ${root}: /$rx/ (looked in: $($files -join ', '))"
+    WaitLogCore { LogFiles $root } $rx $sec $mark $failRx $root
 }
 # The mod's refusal of a join, e.g. a game-build parity mismatch:
 # "[MP][parity] join REFUSED by host: 1 difference(s)" + "Phoenix Point build differs: host … != client …".
@@ -335,8 +319,9 @@ function WaitPhase([string]$root, [string]$phase, [int]$sec) {
 # (MultiplayerUI.OnLobbyChooseNewGame, MultiplayerUI.cs:1410) has to be pressed BEFORE any READY.
 function Do-Lobby([bool]$chooseNewGame = $false) {
     Note "host: CREATE SESSION on $HostRoot"
+    $hm = LogMark $HostRoot
     Invoke-Ui $HostRoot 'OnGateCreate' | Out-Null
-    WaitLog $HostRoot '\[MP\]\[general\] transport initialized' 30 | Out-Null
+    WaitLog $HostRoot '\[MP\]\[general\] transport initialized' 30 $hm | Out-Null
     # Clients join one after another: with 3+ peers the host has to relay an already-joined client's
     # state to the next one, which is the whole point of a third peer.
     foreach ($c in $clientRoots) {
@@ -353,9 +338,12 @@ function Do-Lobby([bool]$chooseNewGame = $false) {
     if ($chooseNewGame) {
         # Before the readies: the choice RESETS every ready when it changes (MultiplayerUI.cs:1420-1426).
         Note 'host: NEW GAME (the lobby campaign choice)'
+        $hm = LogMark $HostRoot
         Invoke-Ui $HostRoot 'OnLobbyChooseNewGame' | Out-Null
-        WaitLog $HostRoot '\[MP\]\[lobby\] campaign choice: NEW GAME' 30 | Out-Null
+        WaitLog $HostRoot '\[MP\]\[lobby\] campaign choice: NEW GAME' 30 $hm | Out-Null
     }
+    # Before the first READY: `campaign` waits for "everyone is READY" written after THIS mark.
+    $script:readyMark = LogMark $HostRoot
     foreach ($c in $clientRoots) {
         Note "$(SideName $c): READY"
         Invoke-Ui $c 'OnLobbyToggleReady' '[true]' | Out-Null
@@ -402,7 +390,7 @@ switch ($Action) {
         # (MultiplayerUI.cs:1457-1467). Pressing NEW CAMPAIGN from here would race that auto-open.
         Do-Lobby $true
         Note 'host: waiting for the mod to open the native new-game settings (everyone READY)'
-        WaitLog $HostRoot '\[MP\]\[lobby\] NEW GAME: everyone is READY' 60 | Out-Null
+        WaitLog $HostRoot '\[MP\]\[lobby\] NEW GAME: everyone is READY' 60 $script:readyMark | Out-Null
         Start-Sleep 3
         # The native settings state (top of HomeScreenView._statesStack): confirm it. The mod's prefix
         # HOLDS that confirm and arms its 5 s countdown, whose fire re-issues it
@@ -412,13 +400,17 @@ switch ($Action) {
         $stk = Result (Call $HostRoot ('{"op":"get","target":"' + $hsv.value.h + '","member":"_statesStack"}'))
         $cur = Result (Call $HostRoot ('{"op":"get","target":"' + $stk.value.h + '","member":"CurrentState"}'))
         if ($cur.value.type -notlike '*UIStateNewGeoscapeGameSettings') { throw "host top state is '$($cur.value.type)', not the new-game settings screen" }
+        # Marks before the confirm: ARMED and each client's [MP] traffic must come from THIS campaign.
+        $armMark = LogMark $HostRoot
+        $clientMarks = @{}
+        foreach ($c in $clientRoots) { $clientMarks[$c] = LogMark $c }
         $conf = Result (Call $HostRoot ('{"op":"invoke","target":"' + $cur.value.h + '","member":"GameSettings_OnConfirm","args":[]}'))
         if (-not $conf.ok) { throw "confirm failed: $($conf | ConvertTo-Json -Compress)" }
-        WaitLog $HostRoot 'New-campaign co-op bootstrap ARMED' 30 | Out-Null
+        WaitLog $HostRoot 'New-campaign co-op bootstrap ARMED' 30 $armMark | Out-Null
         $scenes = [ordered]@{ host = (WaitPhase $HostRoot 'geoscape' $TimeoutSeconds).scene }
         foreach ($c in $clientRoots) {
             $scenes[(SideName $c)] = (WaitPhase $c 'geoscape' $TimeoutSeconds).scene
-            WaitLog $c '\[MP\]' 5 | Out-Null
+            WaitLog $c '\[MP\]' 5 $clientMarks[$c] | Out-Null
         }
         [pscustomobject]@{ ok = $true; peers = $scenes } | ConvertTo-Json -Compress
     }
@@ -476,13 +468,14 @@ switch ($Action) {
         Note "client: $via"
         # Before the press: hostResume must quote THIS rejoin, not an older resume line in the host log.
         $hostMark = LogMark $HostRoot
+        # Same for the client's own lines: a previous reconnect's "rejoined" must not pass this one.
+        $mark = LogMark $ClientRoot
         if ($via -eq 'ReconnectFlow.Start') {
             $r = Result (Call $ClientRoot '{"op":"invoke","type":"Multiplayer.UI.ReconnectFlow","assembly":"Multiplayer","member":"Start","args":[]}')
             if (-not $r.ok) { throw "ReconnectFlow.Start on ${ClientRoot}: $($r | ConvertTo-Json -Compress)" }
-            $pressed = WaitLog $ClientRoot '\[MP\]\[reconnect\] RECONNECT pressed' 30
-            $joined = WaitLog $ClientRoot '\[MP\]\[reconnect\] rejoined the session' 120
+            $pressed = WaitLog $ClientRoot '\[MP\]\[reconnect\] RECONNECT pressed' 30 $mark
+            $joined = WaitLog $ClientRoot '\[MP\]\[reconnect\] rejoined the session' 120 $mark
         } else {
-            $mark = LogMark $ClientRoot
             Invoke-Ui $ClientRoot 'OnGateJoin' ('["127.0.0.1:' + $Port + '"]') | Out-Null
             $pressed = $null
             $joined = WaitLog $ClientRoot 'host ACCEPTED the join' 60 $mark $joinRefusedRx
