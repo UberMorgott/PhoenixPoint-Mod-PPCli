@@ -148,6 +148,11 @@ $xml = ConvertTo-JUnitXml $sum 'mods'
 Assert-Value 'junit counts + escaped failure' ([bool]($xml -match 'tests="1" failures="1"' -and $xml -match '<failure message="plan: failed at step &apos;a&apos;')) 'True'
 [xml]$parsed = $xml
 Assert-Value 'junit is well-formed' $parsed.testsuites.testsuite.name 'mods'
+$prevCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+[Threading.Thread]::CurrentThread.CurrentCulture = 'ru-RU'
+try { $ruXml = ConvertTo-JUnitXml ([ordered]@{ ms = 1500; failed = 0; cases = @([pscustomobject]@{ name = 'x'; ok = $true; ms = 1500 }) }) 's' }
+finally { [Threading.Thread]::CurrentThread.CurrentCulture = $prevCulture }
+Assert-Value 'junit time is invariant (1.5 under ru-RU)' ([bool]($ruXml -match 'time="1\.5"')) 'True'
 
 }
 finally { Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue }

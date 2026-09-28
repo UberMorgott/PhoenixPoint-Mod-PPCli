@@ -427,11 +427,12 @@ function ConvertTo-JUnitXml($Summary, [string] $SuiteName = 'ppcli') {
     $esc = { param($s) [Security.SecurityElement]::Escape([string]$s) }
     $sb = New-Object Text.StringBuilder
     [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
-    $t = '{0:0.###}' -f ($Summary.ms / 1000.0)
+    $inv = [Globalization.CultureInfo]::InvariantCulture      # JUnit wants '1.5', never a locale's '1,5'
+    $t = ($Summary.ms / 1000.0).ToString('0.###', $inv)
     [void]$sb.AppendLine("<testsuites tests=`"$($Summary.cases.Count)`" failures=`"$($Summary.failed)`" time=`"$t`">")
     [void]$sb.AppendLine("  <testsuite name=`"$(& $esc $SuiteName)`" tests=`"$($Summary.cases.Count)`" failures=`"$($Summary.failed)`" time=`"$t`">")
     foreach ($c in $Summary.cases) {
-        $ct = '{0:0.###}' -f ($c.ms / 1000.0)
+        $ct = ($c.ms / 1000.0).ToString('0.###', $inv)
         if ($c.ok) { [void]$sb.AppendLine("    <testcase name=`"$(& $esc $c.name)`" classname=`"$(& $esc $SuiteName)`" time=`"$ct`"/>"); continue }
         $msg = @($c.fail) -join "`n"
         [void]$sb.AppendLine("    <testcase name=`"$(& $esc $c.name)`" classname=`"$(& $esc $SuiteName)`" time=`"$ct`">")
