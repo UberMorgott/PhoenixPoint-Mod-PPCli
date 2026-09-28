@@ -1,70 +1,56 @@
 # PPCLI
 
-Phoenix Point normally tells you what is happening only through the game itself. PPCLI is a terminal control channel into a running copy of the game: a small developer-only mod called `PPBridge` plus a PowerShell 7 client, `ppcli.ps1`. It exists so a developer or an AI agent can ask the live game what is actually true, and make it do things, without clicking through the UI. Decompiled source can show intent; PPCLI shows what the process really did.
+Terminal control channel into a running **Phoenix Point**: the `PPBridge` developer mod (`com.morgott.PPBridge`, version in [`meta.json`](meta.json)) plus the PowerShell 7 client `ppcli.ps1`.
 
-## What it can do
+**Why:** decompiled code shows intent; PPCLI shows what the game actually did. Developers and AI agents use it to read live state, confirm a mod patch took effect, and drive the game (reflection, console, UI, tactical actions) without playing by hand.
 
-PPCLI can:
+**Development tool only. Never published on the Steam Workshop.** It can change a save through reflection - point it at an automation copy of the game, not the install you play.
 
-- read the current scene, phase, level, objects, UI roots, and other live game state;
-- run any of the game's roughly 344 registered native console commands and capture their output;
-- read and write the game's separate console-variable surface;
-- construct objects, read or write fields and properties, and invoke public or private methods by reflection;
-- search or page the loaded definition repository, inspect types and members, and enumerate collections of live objects and assets;
-- capture the rendered framebuffer as a PNG;
-- execute declarative multi-step plans with waits, assertions, variables, repetition, output projection, and cleanup—for example starting a mission or campaign, spawning units, or firing a geoscape event; and
-- build and deploy `PPBridge` into a Phoenix Point installation.
+## Install
 
-Every client invocation writes exactly one compact JSON object to stdout and sends diagnostics to stderr. This is deliberate: a PowerShell caller can always use `| ConvertFrom-Json` without first stripping banners or progress text.
-
-## What it is not
-
-PPCLI is not a player mod and is not distributed through the Steam Workshop. `PPBridge` is a development tool, has never been published as a Workshop mod, and exposes reflection-equivalent control inside the game process. Install it only in a development setup you control.
-
-The endpoint is opt-in. The mod stays inert unless a file named `ppcli-enabled` sits beside `PPBridge.dll`; deployment never creates that file for you. Delete the marker when you are finished. A separate Phoenix Point copy is strongly recommended for automation.
-
-## Getting started
-
-You need Windows, PowerShell 7, a .NET SDK, and a Phoenix Point installation containing the game's `ModSDK` and managed assemblies. From the repository root, let the client find the Steam installation and deploy the bridge:
+Needs Windows, PowerShell 7, a .NET SDK, and a Phoenix Point install with `ModSDK\`.
 
 ```powershell
-. .\paths.ps1
-$PPRoot = Find-PPInstall
-.\ppcli.ps1 deploy -PPRoot $PPRoot
+$PPRoot = 'D:\path\to\PhoenixPoint'
+.\ppcli.ps1 deploy -PPRoot $PPRoot        # build + copy into $PPRoot\Mods\PPBridge
+New-Item -ItemType File (Join-Path $PPRoot 'Mods\PPBridge\ppcli-enabled')   # arm the endpoint
 ```
 
-`deploy` performs the Release build and copies `PPBridge.dll` and `meta.json` to `$PPRoot\Mods\PPBridge`. It refuses to deploy while that exact installation is running, because a live process cannot replace the DLL it already loaded.
+1. Launch the game with `-mods`, enable **PPBridge** in the mod manager once, restart with `-mods`.
+2. First request, and wait for its answer before anything else:
+   `.\ppcli.ps1 connect state -PPRoot $PPRoot | ConvertFrom-Json`
+3. Done: delete `ppcli-enabled` (disarms; `deploy` never creates it).
 
-Arm the endpoint explicitly:
+Install selection: `-PPRoot`, else line 1 of `ppcli-install.txt` (optional line 2 = SteamID64 profile), else Steam discovery.
 
-```powershell
-New-Item -ItemType File -Force (Join-Path $PPRoot 'Mods\PPBridge\ppcli-enabled')
-```
+## For agents
 
-On the first launch, start Phoenix Point with mod loading enabled, select **PPBridge** (`com.morgott.PPBridge`) in the in-game mod manager, then quit:
+Compressed contract. Rules: [`AGENTS.md`](AGENTS.md) · intent -> command: [`PLAYBOOK.md`](PLAYBOOK.md) · full envelopes/limits: [`docs/REFERENCE.md`](docs/REFERENCE.md) · bug inbox: [`ISSUES.md`](ISSUES.md).
 
-```powershell
-Start-Process (Join-Path $PPRoot 'PhoenixPointWin64.exe') -ArgumentList '-mods'
-```
+- **Gate:** one driver per install. Send nothing until `connect state` answers; `index` only after. Handles `h:<epoch>:<id>` die on scene change/restart (TTL 900 s).
+- **Wire:** stdout = ONE compact JSON object; notes -> stderr, off by default (`-Verbose`/`PPCLI_VERBOSE=1` on, `-Quiet`/`PPCLI_QUIET=1` off). Live reply `{status:"done",result:{ok:true,...}}`; `status:"timeout"` keeps `jobId`. Refusal `ok:false` + `error` (+`code`), no payload key, exit 1 - check `$LASTEXITCODE` at once. Bad paging args -> `code:"args"`, never clamped.
+- **Modes:** `connect <verb> '<json>'` (live, 17-60 ms) · `plan <file> '<vars>'` (bounded cross-frame steps + `finally`; prefer over client loops) · `connect multi '<array>'|@file.json|-` (sequential, not transactional) · `run <verb> '<json>'` / `batch <file>` (cold launch ~17 s, restores options, kills only own PID) -> check outer `ok`, `stale`, each `results[].result.ok` · `index` (def catalog -> `catalog\defs.ndjson`) · `deploy`.
+- **Safety:** `act use`/`endTurn` and `ui click` (also inside `multi`/`batch`/`plan`) against a Steam-library install are refused without `-AllowMutate`. `deploy` refuses a running target (`-AllowRunning` = stage for next launch; `-Force` = ignore pinned install). `stale:true` = old DLL, discard results. A dispatched click is not proof of effect.
+- **Options:** `-PPRoot` `-ProfileId` `-TimeoutSeconds`(300) `-PipeTimeoutSeconds`(30) `-FaultPattern` `-IgnoreLogFaults` `-Window` `-AllowMutate` `-AllowRunning` `-Force` `-Quiet`/`-Verbose`.
 
-Launch it again with `-mods`, leave it running, and make `state` the first request. Do not send other runtime requests until this gate answers:
+| Verb | Purpose | Key args |
+|---|---|---|
+| `ping` `state` `roots` | Build/protocol, scene/phase, live root handles | Gate on `state`; re-resolve roots after scene change |
+| `call` | Reflection new/get/set/invoke | `op`, `type`\|`target`, `member`, `args?`, `sig?`; `@tac`, `@geo`, `@def:<name>`... |
+| `types` `members` `inspect` | Discover types/members, read values | `pattern` / `type`\|`h`; `page?` `pageSize?`; `values:true` |
+| `find` `items` `release` | Find defs, page a collection, free a handle | `query`\|`all:true`; `h` |
+| `console` | Run native command once, page output | `command`, `args?`, `pageLines?`, `pageBytes?`; `cursor` (120 s) |
+| `var` | Get/set console variable | `name`, `value?` (string) |
+| `log` `events` | Page Unity log; C# event subscriptions | `since` -> `next`, `match?`; `subscribe:{target\|type,event}` |
+| `wait` | Cross-frame predicate | `ready` `phase` `call` `forMs` `log` `event`; `not?` `timeoutMs?` |
+| `plan` `status` `cancel` | Run / inspect / cancel a job | `plan:{steps,finally?,vars?}`; `jobId` |
+| `observe` | Record live observations | `action`: start, read, mark, status, stop |
+| `screenshot` | PNG of the frame | `path?` (absolute), `mode?` `backbuffer`\|`capture`; client `-Window` = window grab |
+| `act` | Tactical squad, abilities, use, end turn | `squad` `list` `use:{ability,target?}` `endTurn` |
+| `ui` | Native uGUI tree / click | `tree:{match?}`, `from?`; `click:{label\|path}` |
+| `imgui` | Mod OnGUI controls | `list:true`; `press:{label,owner?,index?}`; read `alive`/`errors` |
+| `snapshot` `restore` | Named game state | `name`; `restore` only issues - follow with `wait` |
 
-```powershell
-Start-Process (Join-Path $PPRoot 'PhoenixPointWin64.exe') -ArgumentList '-mods'
-$reply = .\ppcli.ps1 connect state -PPRoot $PPRoot | ConvertFrom-Json
-$reply.result
-```
+## License
 
-Once the gate is healthy, these are representative requests:
-
-```powershell
-.\ppcli.ps1 connect console '{"command":"info","args":[]}'
-.\ppcli.ps1 connect var '{"name":"ai_enabled","value":"false"}'
-.\ppcli.ps1 connect call '{"op":"get","target":"@selected","member":"Pos"}'
-.\ppcli.ps1 connect screenshot
-.\ppcli.ps1 plan .\plans\start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}'
-```
-
-If you keep an automation copy outside Steam, put its absolute path in `ppcli-install.txt` beside `ppcli.ps1`; the file is gitignored. Otherwise pass `-PPRoot` explicitly and read the selected-install diagnostic before deploying or changing live state.
-
-For agent operating rules and the exact verb shapes, read [`AGENTS.md`](AGENTS.md). For intent-to-command recipes, use [`PLAYBOOK.md`](PLAYBOOK.md). The complete protocol, reflection, plan, security, and failure reference is in [`docs/REFERENCE.md`](docs/REFERENCE.md).
+[CC BY-NC 4.0](LICENSE). Copyright (c) 2026 Morgott.
