@@ -23,17 +23,24 @@ namespace Morgott.PPBridge
 
         internal static string Arm(bool on)
         {
+            if (!on)
+            {
+                if (harmony == null) return null;
+                Application.logMessageReceived -= OnLog;
+                ImGuiTap.PassEnded();
+                try { harmony.UnpatchAll(Id); }
+                catch (Exception ex)
+                {
+                    // harmony is KEPT: the next Arm(false) retries, Arm(true) does not stack a second set.
+                    string msg = "imgui: could not remove the IMGUI tap patches - " + ex.GetType().Name + ": " + ex.Message;
+                    try { UnityEngine.Debug.LogWarning("[PPBridge] " + msg); } catch (Exception) { }
+                    return msg;
+                }
+                harmony = null;
+                return null;
+            }
             try
             {
-                if (!on)
-                {
-                    if (harmony == null) return null;
-                    Application.logMessageReceived -= OnLog;
-                    ImGuiTap.PassEnded();
-                    harmony.UnpatchAll(Id);
-                    harmony = null;
-                    return null;
-                }
                 if (harmony != null) return null;
                 MethodInfo target = AccessTools.Method(typeof(GUI), "DoControl",
                     new[] { typeof(Rect), typeof(int), typeof(bool), typeof(bool), typeof(GUIContent), typeof(GUIStyle) });
@@ -47,8 +54,9 @@ namespace Morgott.PPBridge
                     // The layout-tolerant rest of a forced pass (ImGui.cs InPass): pad GetNext/PeekNext
                     // overruns, swap a mismatched BeginLayoutGroup entry; EndGUI ends the pass.
                     h.Patch(mGetNext, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PreNext)));
-                    h.Patch(mPeekNext, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PreNext)));
+                    h.Patch(mPeekNext, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PrePeek)));
                     h.Patch(mBeginGroup, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PreBeginGroup)));
+                    h.Patch(mBeginArea, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PreBeginArea)));
                     h.Patch(mEndGUI, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PassOver)));
                     h.Patch(mEndGUIEx, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(PassOver)));
                 }
@@ -72,73 +80,119 @@ namespace Morgott.PPBridge
         // GUILayoutUtility.BeginLayoutGroup throws ExitGUIException("Mismatched LayoutGroup") when the
         // next entry is not a group; EndGUI / EndGUIFromException close every OnGUI call (native).
 
-        private static MethodInfo mGetNext, mPeekNext, mBeginGroup, mEndGUI, mEndGUIEx, mCreateGroup;
-        private static FieldInfo fEntries, fCursor, fNone;
-        private static Type tGroup;
+        private static MethodInfo mGetNext, mPeekNext, mBeginGroup, mBeginArea, mEndGUI, mEndGUIEx, mCreateGroup;
+        private static FieldInfo fEntries, fCursor, fNone, fCurrent, fTopLevel, fWindows, fRect;
+        private static PropertyInfo pStyle;
+        private static Type tGroup, tEntry;
 
         private static string Layout()
         {
             if (mGetNext != null) return null;
             Type g = AccessTools.TypeByName("UnityEngine.GUILayoutGroup");
-            if (g == null) return "UnityEngine.GUILayoutGroup not found - Unity changed under the tap";
+            Type en = AccessTools.TypeByName("UnityEngine.GUILayoutEntry");
+            Type lc = AccessTools.Inner(typeof(GUILayoutUtility), "LayoutCache");
+            if (g == null || en == null || lc == null) return "UnityEngine.GUILayoutGroup/GUILayoutEntry/GUILayoutUtility.LayoutCache not found - Unity changed under the tap";
             MethodInfo next = AccessTools.Method(g, "GetNext", Type.EmptyTypes);
             MethodInfo peek = AccessTools.Method(g, "PeekNext", Type.EmptyTypes);
             FieldInfo entries = AccessTools.Field(g, "entries"), cursor = AccessTools.Field(g, "m_Cursor"), none = AccessTools.Field(g, "none");
+            FieldInfo current = AccessTools.Field(typeof(GUILayoutUtility), "current");
+            FieldInfo top = AccessTools.Field(lc, "topLevel"), windows = AccessTools.Field(lc, "windows");
+            FieldInfo rect = AccessTools.Field(en, "rect");
+            PropertyInfo style = AccessTools.Property(en, "style");
             MethodInfo begin = AccessTools.Method(typeof(GUILayoutUtility), "BeginLayoutGroup", new[] { typeof(GUIStyle), typeof(GUILayoutOption[]), typeof(Type) });
+            MethodInfo area = AccessTools.Method(typeof(GUILayoutUtility), "BeginLayoutArea", new[] { typeof(GUIStyle), typeof(Type) });
             MethodInfo create = AccessTools.Method(typeof(GUILayoutUtility), "CreateGUILayoutGroupInstanceOfType", new[] { typeof(Type) });
             MethodInfo end = AccessTools.Method(typeof(GUIUtility), "EndGUI", new[] { typeof(int) });
             MethodInfo endEx = AccessTools.Method(typeof(GUIUtility), "EndGUIFromException", new[] { typeof(Exception) });
-            if (next == null || peek == null || entries == null || cursor == null || none == null || begin == null || create == null || end == null || endEx == null)
-                return "GUILayout internals (GetNext/PeekNext/entries/m_Cursor/none/BeginLayoutGroup/EndGUI) not found - Unity changed under the tap";
-            tGroup = g; fEntries = entries; fCursor = cursor; fNone = none;
-            mPeekNext = peek; mBeginGroup = begin; mCreateGroup = create; mEndGUI = end; mEndGUIEx = endEx;
+            if (next == null || peek == null || entries == null || cursor == null || none == null || current == null || top == null || windows == null
+                || rect == null || style == null || begin == null || area == null || create == null || end == null || endEx == null)
+                return "GUILayout internals (GetNext/PeekNext/entries/m_Cursor/none/current/topLevel/windows/rect/style/BeginLayoutGroup/BeginLayoutArea/EndGUI) not found - Unity changed under the tap";
+            tGroup = g; tEntry = en; fEntries = entries; fCursor = cursor; fNone = none; fCurrent = current; fTopLevel = top; fWindows = windows;
+            fRect = rect; pStyle = style;
+            mPeekNext = peek; mBeginGroup = begin; mBeginArea = area; mCreateGroup = create; mEndGUI = end; mEndGUIEx = endEx;
             mGetNext = next;
+            ImGuiTap.PassKey = CurrentCache;
             return null;
+        }
+
+        /// <summary>GUILayoutUtility.current = the layout cache Unity selected for THIS OnGUI call (or
+        /// GUI.Window) - SelectIDList swaps it per MonoBehaviour and per window. The pass guard is bound
+        /// to the cache of the press, so another group/window in the same pass is never padded.</summary>
+        private static object CurrentCache()
+        {
+            try { return fCurrent == null ? null : fCurrent.GetValue(null); } catch (Exception) { return null; }
         }
 
         private static bool InForcedPass()
         {
             if (!ImGuiTap.GuardArmed) return false;
             Event e = Event.current;
-            return e != null && ImGuiTap.InPass(Time.frameCount, EvName(e.rawType));
+            return e != null && ImGuiTap.InPass(Time.frameCount, EvName(e.rawType), CurrentCache());
         }
 
-        /// <summary>GetNext/PeekNext past the group's end in the forced pass: append a dummy entry
-        /// first, so the original returns it instead of throwing (what non-Repaint passes return).</summary>
-        private static void PreNext(object __instance)
+        private static void PreNext(object __instance) { Pad(__instance, "next"); }
+        private static void PrePeek(object __instance) { Pad(__instance, "peek"); }
+
+        /// <summary>GetNext/PeekNext past the group's end in the forced pass: append GetNext's own
+        /// `none` entry first (what non-Repaint passes already return: rect 0,0,0,0), so the original
+        /// returns it instead of throwing. Capped per pass (ImGuiTap.MaxRepairs).</summary>
+        private static void Pad(object group, string kind)
         {
             try
             {
                 if (!InForcedPass()) return;
-                IList entries = (IList)fEntries.GetValue(__instance);
-                if ((int)fCursor.GetValue(__instance) < entries.Count) return;
+                IList entries = (IList)fEntries.GetValue(group);
+                if ((int)fCursor.GetValue(group) < entries.Count) return;
+                if (!ImGuiTap.TryRepair(kind)) return;
                 entries.Add(fNone.GetValue(null));
-                ImGuiTap.Repaired();
             }
-            catch (Exception) { }
+            catch (Exception) { ImGuiTap.Unrepaired(kind); }
         }
 
-        /// <summary>BeginLayoutGroup in the forced pass whose next entry is missing or not a group:
-        /// put an empty group of the asked type there, so the original takes it instead of throwing.</summary>
+        /// <summary>BeginLayoutGroup (topLevel) in the forced pass whose next entry is missing or not
+        /// of the REQUESTED type (BeginScrollView asks GUIScrollGroup and casts - a plain group there
+        /// is an InvalidCastException): put a fresh group of that exact type there.</summary>
         private static void PreBeginGroup(Type layoutType)
         {
+            Swap(fTopLevel, layoutType, "group:");
+        }
+
+        /// <summary>GUILayout.BeginArea path: BeginLayoutArea reads current.windows, not topLevel.</summary>
+        private static void PreBeginArea(Type layoutType)
+        {
+            Swap(fWindows, layoutType, "area:");
+        }
+
+        private static void Swap(FieldInfo parentField, Type layoutType, string prefix)
+        {
+            string kind = prefix + (layoutType == null ? "?" : layoutType.Name);
             try
             {
                 if (!InForcedPass()) return;
                 EventType t = Event.current.type;
                 if (t == EventType.Layout || t == EventType.Used) return;
-                object top = TopLevel == null ? null : TopLevel();
-                if (top == null) return;
-                IList entries = (IList)fEntries.GetValue(top);
-                int cur = (int)fCursor.GetValue(top);
-                if (cur < entries.Count && tGroup.IsInstanceOfType(entries[cur])) return;
-                object fresh = mCreateGroup.Invoke(null, new object[] { layoutType });
-                if (cur < entries.Count) entries[cur] = fresh; else entries.Add(fresh);
-                ImGuiTap.Repaired();
+                object cache = CurrentCache();
+                object parent = cache == null ? null : parentField.GetValue(cache);
+                if (parent == null) { ImGuiTap.Unrepaired(kind); return; }
+                Type want = layoutType ?? tGroup;
+                IList entries = (IList)fEntries.GetValue(parent);
+                int cur = (int)fCursor.GetValue(parent);
+                object old = cur < entries.Count ? entries[cur] : null;
+                if (old != null && want.IsInstanceOfType(old)) return;
+                if (!ImGuiTap.TryRepair(kind)) return;
+                object fresh = mCreateGroup.Invoke(null, new object[] { want });
+                // Geometry: Unity sizes groups only in Layout. Keep the replaced entry's rect + style so
+                // the rest of this Repaint draws/clips where the old control was; a group APPENDED past
+                // the end has none to copy and stays rect 0,0,0,0 (its children draw clipped away).
+                if (old != null && tEntry.IsInstanceOfType(old))
+                {
+                    fRect.SetValue(fresh, fRect.GetValue(old));
+                    pStyle.SetValue(fresh, pStyle.GetValue(old, null), null);
+                }
+                if (old != null) entries[cur] = fresh; else entries.Add(fresh);
             }
-            catch (Exception) { }
+            catch (Exception) { ImGuiTap.Unrepaired(kind); }
         }
-
         private static void PassOver() { if (ImGuiTap.GuardArmed) ImGuiTap.PassEnded(); }
 
         private static void OnLog(string msg, string stack, LogType type)

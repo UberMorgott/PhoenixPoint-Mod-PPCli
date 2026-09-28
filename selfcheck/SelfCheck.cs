@@ -912,6 +912,9 @@ namespace Morgott.PPBridge
         private static void ImGuardChecks(string[] ui)
         {
             ImGuiTap.Logged(true, "before the press");                       // not settling -> dropped
+            object ownerCache = new object(), otherCache = new object();
+            ImGuiTap.PassKey = () => ownerCache;                             // GUILayoutUtility.current at fire
+            bool otherKey = true, kindsOk = false;
             IPending p = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop'}}") });
             bool inPass = false, otherEv = true, afterEnd = true, staleOff = false;
             int fireFrame = -1;
@@ -926,16 +929,20 @@ namespace Morgott.PPBridge
                 {
                     if (!ImGuiTap.Observe(imFrame, true, "Repaint", ui[i], 0, 0, 10, 10, true, false, false, () => owner, true)) continue;
                     fireFrame = imFrame;
-                    inPass = ImGuiTap.InPass(imFrame, "Repaint");            // the body's GUILayout calls
-                    ImGuiTap.Repaired(); ImGuiTap.Repaired();
+                    inPass = ImGuiTap.InPass(imFrame, "Repaint", ownerCache); // the body's GUILayout calls
+                    otherKey = ImGuiTap.InPass(imFrame, "Repaint", otherCache); // another OnGUI / GUI.Window
+                    kindsOk = ImGuiTap.TryRepair("next") && ImGuiTap.TryRepair("group:GUIScrollGroup");
+                    ImGuiTap.Unrepaired("area:GUILayoutGroup");
                     ImGuiTap.Logged(true, "ArgumentException: Getting control 8's position\n  at GetNext");
                     ImGuiTap.Logged(false, "plain info line");
-                    otherEv = ImGuiTap.InPass(imFrame, "Layout");
+                    otherEv = ImGuiTap.InPass(imFrame, "Layout", ownerCache);
                 }
-                if (fireFrame == imFrame) { ImGuiTap.PassEnded(); afterEnd = ImGuiTap.InPass(imFrame, "Repaint"); }
+                if (fireFrame == imFrame) { ImGuiTap.PassEnded(); afterEnd = ImGuiTap.InPass(imFrame, "Repaint", ownerCache); }
             }
             JObject j = r == null ? new JObject() : JObject.Parse(r);
-            Check("imgui-guard-in-pass", inPass && !otherEv && !afterEnd, "inPass=" + inPass + " otherEv=" + otherEv + " afterEnd=" + afterEnd);
+            Check("imgui-guard-in-pass", inPass && !otherEv && !afterEnd && !otherKey, "inPass=" + inPass + " otherEv=" + otherEv + " afterEnd=" + afterEnd + " otherKey=" + otherKey);
+            Check("imgui-guard-repair-kinds", kindsOk && (int?)j["repairs"]?["next"] == 1 && (int?)j["repairs"]?["group:GUIScrollGroup"] == 1 &&
+                  (int?)j["repairs"]?["!area:GUILayoutGroup"] == 1 && (int?)j["unrepaired"] == 1 && j["capped"] == null, r);
             Check("imgui-guard-settle-reply", (bool?)j["fired"] == true && (int?)j["repaired"] == 2 && j["errors"] is JArray ea && ea.Count == 1 &&
                   (string)ea[0] == "ArgumentException: Getting control 8's position" && (bool?)j["alive"] == true && !ImGuiTap.Active && !ImGuiTap.GuardArmed, r);
 
@@ -946,7 +953,7 @@ namespace Morgott.PPBridge
             for (int f = 0; f < 30; f++)
             {
                 imFrame++;
-                if (fireFrame >= 0 && fireFrame == imFrame - 1) staleOff = !ImGuiTap.InPass(imFrame, "Repaint") && !ImGuiTap.GuardArmed;
+                if (fireFrame >= 0 && fireFrame == imFrame - 1) staleOff = !ImGuiTap.InPass(imFrame, "Repaint", ownerCache) && !ImGuiTap.GuardArmed;
                 object done = p.Tick(false);
                 if (done != null) { r = Protocol.Compact(done); break; }
                 string owner = fireFrame >= 0 ? "Mods.Other.Gone" : "Mods.Bench.BenchUI";
@@ -955,7 +962,28 @@ namespace Morgott.PPBridge
             }
             j = r == null ? new JObject() : JObject.Parse(r);
             Check("imgui-guard-stale-frame", staleOff, "guard survived into the next frame");
-            Check("imgui-guard-not-alive", (bool?)j["fired"] == true && (bool?)j["alive"] == false && (int?)j["repaired"] == 0 && j["errors"] == null && !ImGuiTap.Active, r);
+            Check("imgui-guard-not-alive", (bool?)j["fired"] == true && (bool?)j["alive"] == false && (int?)j["repaired"] == 0 && j["errors"] == null && j["repairs"] == null && !ImGuiTap.Active, r);
+
+            // Cap: past MaxRepairs padding stops and the reply flags capped. Unpatch failure -> warn on
+            // the SAME reply (Reset surfaces Arm(false)'s error, never swallows it).
+            Func<bool, string> arm0 = ImGuiTap.Arm;
+            ImGuiTap.Arm = on => on ? arm0(true) : (arm0(false) ?? "UnpatchAll failed: test");
+            p = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop'}}") });
+            int granted = 0; r = null;
+            for (int f = 0; f < 30; f++)
+            {
+                imFrame++;
+                object done = p.Tick(false);
+                if (done != null) { r = Protocol.Compact(done); break; }
+                for (int i = 0; i < ui.Length; i++)
+                    if (ImGuiTap.Observe(imFrame, true, "Repaint", ui[i], 0, 0, 10, 10, true, false, false, () => "Mods.Bench.BenchUI", true))
+                        for (int k = 0; k < ImGuiTap.MaxRepairs + 40; k++) if (ImGuiTap.TryRepair("next")) granted++;
+            }
+            ImGuiTap.Arm = arm0;
+            j = r == null ? new JObject() : JObject.Parse(r);
+            Check("imgui-guard-cap", granted == ImGuiTap.MaxRepairs && (int?)j["repaired"] == ImGuiTap.MaxRepairs && (bool?)j["capped"] == true, granted + " " + r);
+            Check("imgui-unpatch-failure-warns", r != null && ((string)j["warn"] ?? "").Contains("UnpatchAll failed") && ImGuiTap.TakeWarn() == null, r);
+            ImGuiTap.PassKey = null;
         }
 
         /// <summary>Runs a cross-frame imgui request: Update (Tick) then OnGUI, frame by frame.</summary>

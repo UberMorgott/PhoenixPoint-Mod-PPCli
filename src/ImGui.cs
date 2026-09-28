@@ -156,31 +156,66 @@ namespace Morgott.PPBridge
         internal const int SettleFrames = 2;
         internal const int MaxErrors = 3;
 
+        /// <summary>Padded entries per fired pass; past it padding STOPS (reply capped:true) - a runaway
+        /// loop after the press must not grow the live layout cache without bound.</summary>
+        internal const int MaxRepairs = 512;
+        internal const int MaxRepairKinds = 8;
+
         /// <summary>Game half's one-branch early out for the layout prefixes.</summary>
         internal static volatile bool GuardArmed;
+        /// <summary>Game half: identity of the layout cache the current OnGUI call draws into
+        /// (GUILayoutUtility.current); captured at fire, the guard pads only that cache.</summary>
+        internal static Func<object> PassKey;
+        private static object gKey;
         private static int gFrame = int.MinValue;
         private static string gEv;
-        private static int repaired;
+        private static int repaired, unrepaired;
+        private static bool capped;
+        private static readonly Dictionary<string, int> repairKinds = new Dictionary<string, int>();
+        private static string warn;
         private static bool settling, alive;
         private static string settleOwner;
         private static readonly List<string> errs = new List<string>();
 
         /// <summary>
         /// True = the caller (a GUILayout prefix) runs in the SAME pass a force press fired in (frame +
-        /// raw event type; the owner's EndGUI/EndGUIFromException ends it earlier via
-        /// <see cref="PassEnded"/>), so a layout mismatch there is the press's doing and is padded. A
-        /// later frame disarms. Not bound to the topLevel group: GUILayout swaps topLevel on every
-        /// Begin/End group, and padding a mismatch that would otherwise throw is harmless in any pass.
+        /// raw event type + the owner's layout cache <paramref name="key"/>; the owner's
+        /// EndGUI/EndGUIFromException ends it earlier via <see cref="PassEnded"/>), so a layout mismatch
+        /// there is the press's doing and is padded. A later frame disarms. Another MonoBehaviour's OnGUI
+        /// or a GUI.Window (own cache) in the same pass is never padded - its own defects stay visible.
         /// </summary>
-        internal static bool InPass(int frame, string ev)
+        internal static bool InPass(int frame, string ev, object key)
         {
             if (!GuardArmed) return false;
             if (frame != gFrame) { PassEnded(); return false; }
-            return string.Equals(ev, gEv, StringComparison.Ordinal);
+            return string.Equals(ev, gEv, StringComparison.Ordinal) && (gKey == null || ReferenceEquals(key, gKey));
         }
 
-        /// <summary>A layout prefix padded one mismatch.</summary>
-        internal static void Repaired() { repaired++; }
+        /// <summary>A layout prefix is about to pad one mismatch of <paramref name="kind"/> ("next",
+        /// "peek", "group:&lt;Type&gt;", "area:&lt;Type&gt;"). False = cap reached, do not pad.</summary>
+        internal static bool TryRepair(string kind)
+        {
+            if (repaired >= MaxRepairs) { capped = true; return false; }
+            repaired++;
+            Count(kind);
+            return true;
+        }
+
+        /// <summary>A mismatch the prefix could not pad (reflection failed, no parent group).</summary>
+        internal static void Unrepaired(string kind) { unrepaired++; Count("!" + kind); }
+
+        private static void Count(string kind)
+        {
+            kind = kind ?? "?";
+            int n;
+            if (repairKinds.TryGetValue(kind, out n)) repairKinds[kind] = n + 1;
+            else if (repairKinds.Count < MaxRepairKinds) repairKinds[kind] = 1;
+        }
+
+        /// <summary>A failed unpatch (Arm(false) error): surfaced as warn on the reply, never swallowed.</summary>
+        internal static void Warn(string w) { if (w != null) warn = w; }
+
+        internal static string TakeWarn() { string w = warn; warn = null; return w; }
 
         /// <summary>Game half: GUIUtility.EndGUI / EndGUIFromException - the fired pass is over.</summary>
         internal static void PassEnded() { GuardArmed = false; }
@@ -198,7 +233,7 @@ namespace Morgott.PPBridge
 
         private static void ClearSettle()
         {
-            GuardArmed = false; gFrame = int.MinValue; gEv = null; repaired = 0;
+            GuardArmed = false; gFrame = int.MinValue; gEv = null; gKey = null; repaired = unrepaired = 0; capped = false; repairKinds.Clear();
             settling = alive = false; settleOwner = null; errs.Clear();
         }
 
@@ -281,8 +316,10 @@ namespace Morgott.PPBridge
                 target = null;
                 fired = true; firedEv = ev; firedFrame = frame;
                 // The body runs right after this returns: arm the layout-tolerant rest of THIS pass.
-                errs.Clear(); repaired = 0; alive = false;
+                errs.Clear(); repaired = unrepaired = 0; capped = false; repairKinds.Clear(); alive = false;
                 settling = true; settleOwner = t.Owner;
+                gKey = null;
+                try { gKey = PassKey == null ? null : PassKey(); } catch (Exception) { }
                 gFrame = frame; gEv = ev; GuardArmed = true;
                 RefreshActive();
                 return true;
@@ -438,7 +475,9 @@ namespace Morgott.PPBridge
             ClearPost();
             ClearSettle();
             RefreshActive();
-            try { if (Arm != null) Arm(false); } catch (Exception) { }
+            string ue;
+            try { ue = Arm == null ? null : Arm(false); } catch (Exception ex) { ue = ex.GetType().Name + ": " + ex.Message; }
+            Warn(ue);
         }
 
         /// <summary>Runner destroyed: drop any request state and remove the patch, keep the delegates.</summary>
@@ -452,6 +491,7 @@ namespace Morgott.PPBridge
             FrameNow = null;
             Window = null;
             PostMsg = null;
+            PassKey = null;
         }
 
         /// <summary>
@@ -535,7 +575,16 @@ namespace Morgott.PPBridge
                 return d;
             }
 
-            private object End(object result) { Release(); return result; }
+            /// <summary>Releases (unpatch) FIRST, so an unpatch failure lands as warn on this very reply.</summary>
+            private object End(object result)
+            {
+                Release();
+                string w = TakeWarn();
+                if (w == null || result == null) return result;
+                JObject j = result as JObject ?? JObject.FromObject(result);
+                j["warn"] = Protocol.Clip(w);
+                return j;
+            }
 
             public object Tick(bool cancelled)
             {
@@ -669,6 +718,14 @@ namespace Morgott.PPBridge
                     // Settle: let the next Layout + Repaint run on the new state before answering.
                     if (now <= firedFrame + SettleFrames) return null;
                     JObject r = new JObject { ["ok"] = true, ["fired"] = true, ["mode"] = "force", ["ev"] = firedEv, ["frames"] = Math.Max(0, firedFrame - armedAt), ["repaired"] = repaired };
+                    if (repairKinds.Count > 0)
+                    {
+                        JObject k = new JObject();
+                        foreach (KeyValuePair<string, int> kv in repairKinds) k[kv.Key] = kv.Value;
+                        r["repairs"] = k;
+                    }
+                    if (unrepaired > 0) r["unrepaired"] = unrepaired;
+                    if (capped) r["capped"] = true;
                     if (settleOwner != null) r["alive"] = alive;
                     if (errs.Count > 0) r["errors"] = new JArray(errs.ToArray());
                     return End(r);

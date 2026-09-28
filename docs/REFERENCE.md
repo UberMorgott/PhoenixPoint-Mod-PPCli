@@ -1584,21 +1584,35 @@ queue - no SendInput, the user's focus and real cursor are never touched - but i
   mid-Repaint. Up to 0.3.1 a body that ADDED GUILayout controls later in the same OnGUI threw
   `ArgumentException: Getting control N's position in a group with only N controls` - live
   2026-09-28 that CLOSED the ContentTool bench. Now, from the fire until the owner's
-  `GUIUtility.EndGUI`/`EndGUIFromException` (or the next frame), bound to frame + raw event type,
-  Harmony prefixes (installed/removed with the DoControl patch) absorb the mismatch the way a real
-  click's MouseUp pass does: `GUILayoutGroup.GetNext`/`PeekNext` past the group's end → a dummy entry
-  is appended first (GetNext's own `none`, what non-Repaint passes already return);
-  `GUILayoutUtility.BeginLayoutGroup` whose next entry is missing / not a group → an empty group of
-  the asked type is put there (instead of Unity's `ExitGUIException("Mismatched LayoutGroup")`).
-  Nothing visible is drawn at those rects for that one frame; the next Layout rebuilds from the new
-  state. Verified on the game's IMGUIModule.dll: GetNext throws on overrun only when
+  `GUIUtility.EndGUI`/`EndGUIFromException` (or the next frame), bound to frame + raw event type +
+  the press's layout cache (`GUILayoutUtility.current` at fire - SelectIDList swaps it per
+  MonoBehaviour and per `GUI.Window`, so another OnGUI/window in the same pass is never padded and
+  its own defects stay visible), Harmony prefixes (installed/removed with the DoControl patch) absorb
+  the mismatch the way a real click's MouseUp pass does:
+  - `GUILayoutGroup.GetNext`/`PeekNext` past the group's end → GetNext's own `none` entry is
+    appended first (what non-Repaint passes already return; rect 0,0,0,0).
+  - `GUILayoutUtility.BeginLayoutGroup` (topLevel) and `BeginLayoutArea` (`current.windows`, the
+    `GUILayout.BeginArea` path) whose next entry is missing or NOT of the requested `layoutType`
+    (e.g. `BeginScrollView` asks `GUIScrollGroup` and casts - a plain group there would be an
+    `InvalidCastException`) → a fresh group of exactly that type (`CreateGUILayoutGroupInstanceOfType`)
+    is put there, instead of Unity's `ExitGUIException("Mismatched LayoutGroup")`.
+  - Geometry: Unity sizes groups only in Layout. A REPLACED entry hands its `rect` + `style` to the
+    fresh group (the rest of the Repaint draws/clips where the old control was); an APPENDED group has
+    nothing to copy and stays rect 0,0,0,0 (children clipped away). Input in that one pass may hit
+    stale rects; the next Layout rebuilds from the new state.
+  - Cap: `MaxRepairs` = 512 padded entries per pass; past it padding STOPS (`capped:true`, Unity's
+    own exception then surfaces). Verified on the game's IMGUIModule.dll: GetNext throws on overrun only when
   `Event.current.type == Repaint`. **Not `GUIUtility.ExitGUI`** (the first reviewed design):
   FitBench wraps its OnGUI in `catch (Exception)` → Close() (`ContentTool\src\Dev\FitBench.cs:2634`),
   so an `ExitGUIException` closes the bench exactly like the ArgumentException did.
   Residual risk: a body that itself calls more GUI in odd ways (BeginArea/Window mismatch) is not padded.
 - **Settle (0.3.2):** after the fire the request waits `SettleFrames` = 2 more frames (next Layout +
-  Repaint) and answers `{ok:true,fired:true,mode:"force",ev,frames,repaired:N,alive?:bool,errors?:[..]}`:
-  `repaired` = mismatches padded in the fired pass; `alive` = the resolved owner drew a control again
+  Repaint) and answers `{ok:true,fired:true,mode:"force",ev,frames,repaired:N,repairs?:{kind:n},unrepaired?,capped?,alive?:bool,errors?:[..],warn?}`:
+  `repaired` = mismatches padded in the fired pass; `repairs` = per kind (`next`, `peek`,
+  `group:<Type>`, `area:<Type>`; `!kind` = could not pad; ≤ 8 kinds); `unrepaired` = mismatches the
+  prefix failed to pad (reflection/no parent); `capped` = the 512 cap hit; `warn` = removing the
+  Harmony patches failed (also `Debug.LogWarning`; the handle is kept so the next request retries,
+  never silently swallowed); `alive` = the resolved owner drew a control again
   on a later Repaint (false → the panel closed/vanished); `errors` = ≤ 3 Unity log lines of type
   Error/Exception/Assert (or containing "Exception") logged from the fire to the reply, first line
   clipped to 160. Still confirm the effect (state/log) - a press is only as good as the body it ran.
@@ -1607,15 +1621,21 @@ queue - no SendInput, the user's focus and real cursor are never touched - but i
   stayed open, unit list collapsed to `> unit (789)` + weapon list shown (121 controls); plain
   `RESET VIEW` → `fired:true,repaired:0,alive:true`; weapon row `AC_Mattock_WeaponDef` →
   `fired:true,alive:true`, panel switched to the fit controls. Player.log: 0 `ArgumentException` /
-  `Getting control` / `threw and closed`.
+  `Getting control` / `threw and closed`. Re-verified after the review fixes (cache-bound guard,
+  typed groups, cap): unit row `repairs:{next:98}`, `RESET VIEW` / weapon row `repaired:0`,
+  `> unit (789)` / `> weapon (100)` re-expand `repairs:{next:1}`, all `alive:true`; a second unit row
+  reported the game's own `errors:["[ERROR] ... Could not attach addon Item ..."]`. Player.log: 0
+  `ArgumentException|Getting control|threw and closed|InvalidCast|Mismatched`. No bench button
+  reached the group/area swap live - that path is offline-tested only.
 - **Evidence:** SelfCheck `imgui-*` (arg strictness, one Repaint pass, i, owner/match filters,
   ambiguous/notfound/disabled/notfired, fires once on first non-Layout event, patch removed on every
   exit incl. cancel, 25-row budget ≤ 3600 B) and `imgui-post-*` (MAKELPARAM, client conversion +
   scaling, MOVE+DOWN then UP on a later frame, click only in the real MouseUp pass, never forced,
   noevent/missed/nohwnd/offscreen, up posted on timeout/cancel/scene, diag opt-in) against a fake
   player modelled on the decompiled `DoControl`; `imgui-guard-*` (in-pass only for the fired
-  frame + event, off after EndGUI and on the next frame, repaired/alive/errors in the settle reply,
-  errors before the fire dropped). Force mode ran live (0.3.0, 0.3.1, layout-safe 0.3.2); post mode failed live (`noevent`, above).
+  frame + event + layout cache, off after EndGUI and on the next frame, repaired/repairs/unrepaired/
+  alive/errors in the settle reply, errors before the fire dropped, 512 cap → `capped`, unpatch
+  failure → `warn`). Force mode ran live (0.3.0, 0.3.1, layout-safe 0.3.2); post mode failed live (`noevent`, above).
   Post mode is KEPT opt-in (documented dead-end, zero cost unless asked) rather than removed.
 
 ```powershell
