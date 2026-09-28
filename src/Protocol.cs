@@ -194,6 +194,7 @@ namespace Morgott.PPBridge
                                ?? LogTap.Dispatch(job.Verb, job.Args)
                                ?? EventTap.Dispatch(job.Verb, job.Args)
                                ?? ImGuiTap.Dispatch(job.Verb, job.Args)
+                               ?? ActTap.Dispatch(job.Verb, job.Args)
                                ?? Reflect.Dispatch(job.Verb, job.Args)
                                ?? Fail("unknown verb '" + job.Verb + "'");
                 }

@@ -96,6 +96,8 @@ namespace Morgott.PPBridge
             // imgui: same shape - the delegate only; the patch lives while a request runs.
             ImGuiTap.Arm = ImGuiPatch.Arm;
             ImGuiTap.FrameNow = () => Time.frameCount;
+            // act: the game half's four delegates. Nothing is subscribed until a `use` is issued.
+            ActGame.Install();
             // Every handle taken in the old scene is a destroyed object once it unloads. Bumping the
             // epoch turns each of them into a named refusal instead of a crash inside a later call.
             SceneManager.sceneUnloaded += OnSceneUnloaded;
@@ -136,6 +138,7 @@ namespace Morgott.PPBridge
             // at a method in an assembly this DLL is about to stop owning.
             Shots.Shutdown();
             ImGuiTap.Shutdown();
+            ActTap.Shutdown();           // a settling `use` lets go of its AbilityExecutedEvent handler
             SceneManager.sceneUnloaded -= OnSceneUnloaded;
             if (LogTap.Hooked) Application.logMessageReceivedThreaded -= OnLog;
             LogTap.Shutdown();

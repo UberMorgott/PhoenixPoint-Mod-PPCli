@@ -920,6 +920,118 @@ namespace Morgott.PPBridge
             return "never finished";
         }
 
+        // ------------------------------------------------------------------ act (pure half)
+
+        private sealed class FakeProbe : IActProbe
+        {
+            internal int Polls, SettleAt = 3, Releases;
+            internal bool Throw;
+            public JObject Poll()
+            {
+                Polls++;
+                if (Throw) throw new InvalidOperationException("boom");
+                return Polls >= SettleAt ? new JObject { ["ok"] = true, ["ability"] = "Move_AbilityDef", ["exec"] = "event" } : null;
+            }
+            public JObject Flags() { return new JObject { ["view"] = true, ["event"] = false }; }
+            public void Release() { Releases++; }
+        }
+
+        private static void ActChecks()
+        {
+            Func<string, int> B = s => Encoding.UTF8.GetByteCount(s);
+            ActTap.Shutdown();
+            Check("act-offline-refuses", V("act", "{'squad':true}").Contains("\"code\":\"act\""), V("act", "{'squad':true}"));
+            foreach (string bad in new[] { "{}", "{'list':{},'use':{'ability':'move'}}", "{'squad':'x'}", "{'endTurn':false}", "{'list':3}",
+                                           "{'use':{}}", "{'use':{'ability':1.5}}", "{'use':{'ability':-1}}", "{'use':{'ability':''}}",
+                                           "{'use':{'ability':'move','target':{'pos':[1,2]}}}", "{'use':{'ability':'move','target':{'pos':[1,'2',3]}}}",
+                                           "{'use':{'ability':'shoot','target':{'actor':'a','pos':[1,2,3]}}}", "{'use':{'ability':'shoot','target':'Crabman_1'}}",
+                                           "{'use':{'ability':'move','actor':3}}", "{'list':{},'pageSize':'5'}", "{'list':{},'pageSize':101}",
+                                           "{'use':{'ability':'move'},'waitMs':0}", "{'use':{'ability':'move'},'waitMs':120001}", "{'list':{'targets':'yes'}}" })
+                Check("act-args " + bad, V("act", bad).Contains("\"code\":\"args\""), V("act", bad));
+            Check("act-targets-need-one-ability", V("act", "{'list':{'targets':true}}").Contains("\"code\":\"cap\""), V("act", "{'list':{'targets':true}}"));
+
+            ActList seen = null;
+            ActTap.ListRun = r =>
+            {
+                seen = r;
+                JObject reply = new JObject { ["ok"] = true, ["actor"] = ActTap.ActorRow("Sophia_Kowalski_Assault_7", "px", 4, 4, 18, 22, ActTap.Pos(11.4999f, 0.0001f, -4.5f)),
+                                              ["turn"] = new JObject { ["n"] = 3, ["f"] = "px", ["mine"] = true } };
+                List<JObject> rows = new List<JObject>();
+                for (int i = 0; i < 60; i++)
+                    rows.Add(ActTap.AbilityRow(i, "PX_AssaultRifle_Extended_Special_Burst_ShootAbilityDef_" + new string('x', 80), "ShootAbility",
+                                               "PX_AssaultRifle_WeaponDef", i % 2 == 0 ? "NotDisabled" : "NotEnoughActionPoints", "actor|pos", 0.25f));
+                ActTap.PageInto(reply, "abilities", rows, r.Page, r.PageSize);
+                return reply;
+            };
+            string list = V("act", "{'list':{'actor':'Sophia_Kowalski_Assault_7','ability':2,'src':'PX_AssaultRifle_WeaponDef'}}");
+            Check("act-list-parsed", seen != null && seen.Actor == "Sophia_Kowalski_Assault_7" && seen.AbilityIndex == 2 && seen.Ability == null &&
+                  seen.Src == "PX_AssaultRifle_WeaponDef" && seen.PageSize == ActTap.DefaultPageSize, "" + list);
+            JObject lj = JObject.Parse(list);
+            JArray rowsJ = (JArray)lj["abilities"];
+            Check("act-list-default-page", rowsJ.Count == 25 && (bool)lj["hasMore"] && (int)lj["total"] == 60, list.Substring(0, Math.Min(300, list.Length)));
+            Check("act-list-row-frugal", rowsJ[0]["dis"] == null && (string)rowsJ[1]["dis"] == "NotEnoughActionPoints" && ((string)rowsJ[0]["def"]).EndsWith("~") &&
+                  ((string)rowsJ[0]["def"]).Length == ActTap.NameClip + 1 && (double)lj["actor"]["pos"][0] == 11.5, rowsJ[0].ToString(Newtonsoft.Json.Formatting.None));
+            Check("budget-act-list-default", B(list) <= 4500, "bytes=" + B(list));
+            string list100 = V("act", "{'list':{},'pageSize':100}");
+            Check("budget-act-list-max-page", B(list100) <= 12000, "bytes=" + B(list100));
+
+            ActTap.EndTurnRun = () => new { ok = true, requested = true };
+            FakeProbe probe = new FakeProbe();
+            ActUse used = null;
+            ActTap.UseStart = u => { used = u; return u.Ability == "nope" ? (object)new { ok = false, code = "noability" } : probe; };
+            long now = 0;
+            Func<long> realNow = ActTap.NowMs;
+            ActTap.NowMs = () => now;
+
+            Check("act-use-refusal-passes-through", V("act", "{'use':{'ability':'nope'}}").Contains("\"code\":\"noability\""), "refusal lost");
+            object started = Start("act", "{'use':{'actor':'@selected','ability':'move','target':{'pos':[1,0,2.5]}}}");
+            Check("act-use-parsed", used != null && used.Actor == "@selected" && used.Ability == "move" && used.TargetPos != null && used.TargetPos[2] == 2.5f && used.TargetActor == null,
+                  "" + (used == null ? "null" : used.Ability));
+            Check("act-use-is-cross-frame", started is IPending, Protocol.Compact(started));
+            Check("act-use-single-flight", V("act", "{'use':{'ability':'shoot','target':{'actor':'Crabman_1'}}}").Contains("\"code\":\"busy\""), "second use accepted");
+            Check("act-endturn-waits-for-settle", V("act", "{'endTurn':true}").Contains("\"code\":\"busy\""), "endTurn while settling accepted");
+            now = 1234;
+            string done = Drive(started, 20, -1, 0);
+            Check("act-use-settles", done.Contains("\"ok\":true") && done.Contains("\"ms\":1234") && probe.Releases == 1, done + " releases=" + probe.Releases);
+            Check("budget-act-use-reply", B(done) <= 300, "bytes=" + B(done));
+            Check("act-gate-opens", V("act", "{'endTurn':true}").Contains("\"requested\":true"), V("act", "{'endTurn':true}"));
+
+            probe = new FakeProbe { SettleAt = int.MaxValue };
+            now = 0;
+            started = Start("act", "{'use':{'ability':'shoot','target':{'actor':'Crabman_1'}},'waitMs':500}");
+            Check("act-use-actor-target", used.TargetActor == "Crabman_1" && used.TargetPos == null, "" + used.TargetActor);
+            Check("act-still-running", ((IPending)started).Tick(false) == null, "finished early");
+            now = 501;
+            string to = Protocol.Compact(((IPending)started).Tick(false));
+            Check("act-timeout", to.Contains("\"code\":\"timeout\"") && to.Contains("\"issued\":true") && to.Contains("\"settle\":{\"view\":true") && probe.Releases == 1, to);
+            Check("act-timeout-opens-gate", !(V("act", "{'endTurn':true}").Contains("busy")), "gate stuck after timeout");
+
+            probe = new FakeProbe { SettleAt = int.MaxValue };
+            string cancelled = Run("act", "{'use':{'ability':'overwatch','target':{'pos':[1,2,3]}}}", 10, 2);
+            Check("act-cancel-names-issued", cancelled.Contains("\"code\":\"cancelled\"") && cancelled.Contains("\"issued\":true") && probe.Releases == 1, cancelled);
+
+            probe = new FakeProbe { Throw = true };
+            string threw = Run("act", "{'use':{'ability':'move','target':{'pos':[1,2,3]}}}");
+            Check("act-poll-throw-is-a-refusal", threw.Contains("\"code\":\"threw\"") && probe.Releases == 1, threw);
+
+            probe = new FakeProbe { SettleAt = int.MaxValue };
+            IPending dropped = (IPending)Start("act", "{'use':{'ability':'move','target':{'pos':[1,2,3]}}}");
+            Plan.Drop(dropped);
+            Check("act-drop-releases", probe.Releases == 1 && !V("act", "{'endTurn':true}").Contains("busy"), "releases=" + probe.Releases);
+
+            ActTap.UseStart = u => { throw new InvalidOperationException("kaboom"); };
+            Check("act-start-throw", V("act", "{'use':{'ability':'move'}}").Contains("\"code\":\"threw\""), V("act", "{'use':{'ability':'move'}}"));
+
+            ActTap.Shutdown();
+            ActTap.NowMs = realNow;
+
+            // ISSUES 2026-09-28 (weapon-test): cleanup releasing a handle the main block never saved.
+            string unset = Run("plan", "{'plan':{'steps':[{'id':'a','verb':'nope'}],'finally':[{'id':'r','verb':'release','args':{'h':'${LOG.value.h}'}}," +
+                                        "{'id':'v','verb':'var','args':{'name':'${GONE.value}'}}]}}");
+            Check("plan-cleanup-release-unset-is-a-skip", unset.Contains("\"cleanupSteps\":2") && !unset.Contains("LOG.value.h"), unset);
+            Check("plan-cleanup-other-unset-still-red", unset.Contains("GONE.value} is not set"), unset);
+        }
+
         private static void ImGuiChecks()
         {
             int arms = 0, disarms = 0;
@@ -2125,6 +2237,7 @@ namespace Morgott.PPBridge
             LogChecks();
             EventChecks();
             ImGuiChecks();
+            ActChecks();
             BudgetChecks();
             PipeChecks();
 

@@ -1,0 +1,41 @@
+{
+  "//": "ONE soldier's turn through `act`: look, move, shoot, end the turn. Every action is the game's own (ability.Activate, the UI's lever) and each step returns only once the game has SETTLED, so the next step never races the last one.",
+  "//run": ".\\ppcli.ps1 plan .\\plans\\play-turn.json '{\"actor\":\"@selected\",\"movePos\":[11.5,0,-4.5],\"target\":\"Crabman_10\",\"endTurn\":true}'",
+  "//needs": "a tactical mission on the PLAYER's turn. Positions: `act {list:{ability:\"move\",targets:true}}` lists reachable tiles; targets: `act {list:{ability:\"shoot\",targets:true}}` (ambiguous with two weapons -> pass `src` or the row's `i`).",
+  "//mutates": "this plays the turn for real. The client refuses it against the Steam install you play unless -AllowMutate.",
+  "//empty": "movePos [] skips the move, target \"\" skips the shot, endTurn false keeps the turn.",
+
+  "timeoutMs": 120000,
+
+  "vars": {
+    "actor": "@selected",
+    "movePos": [],
+    "target": "",
+    "shoot": "shoot",
+    "endTurn": false
+  },
+
+  "steps": [
+    { "id": "board", "verb": "act", "save": "SQUAD", "args": { "squad": "all" } },
+    { "id": "abilities", "verb": "act", "save": "BEFORE", "args": { "list": { "actor": "${actor}" } } },
+    { "id": "move", "verb": "act", "save": "MOVED", "if": "${movePos}",
+      "args": { "use": { "actor": "${actor}", "ability": "move", "target": { "pos": "${movePos}" } } } },
+    { "id": "shoot", "verb": "act", "save": "SHOT", "if": "${target}",
+      "args": { "use": { "actor": "${actor}", "ability": "${shoot}", "target": { "actor": "${target}" } } } },
+    { "id": "after", "verb": "act", "save": "AFTER", "args": { "squad": true } },
+    { "id": "end-turn", "verb": "act", "if": "${endTurn}", "args": { "endTurn": true } }
+  ],
+
+  "finally": [
+    { "//": "Nothing to put back - `act` holds no handle and a played action is not undone. The final board is read even when a step failed.",
+      "id": "where", "verb": "act", "save": "WHERE", "args": { "squad": true } }
+  ],
+
+  "output": {
+    "turn": "${SQUAD.turn}",
+    "actor": "${BEFORE.actor}",
+    "moved": "${MOVED}",
+    "shot": "${SHOT}",
+    "squadAfter": "${AFTER.actors}"
+  }
+}
