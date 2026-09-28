@@ -203,12 +203,23 @@ Assert-Value 'a plan of reads is not a mutation' `
     ([string](Test-ActMutates ('{"steps":[{"verb":"act","args":{"list":{}}},{"verb":"call","args":{"use":1}}]}' | ConvertFrom-Json -NoEnumerate))) 'False'
 Assert-Value 'a multi array with an endTurn is found' `
     ([string](Test-ActMutates ('[{"verb":"state"},{"verb":"act","args":{"endTurn":true}}]' | ConvertFrom-Json -NoEnumerate))) 'True'
+Assert-Value 'ui click mutates' ([string](Test-ActMutates ('{"click":{"label":"Back"}}' | ConvertFrom-Json) 'ui')) 'True'
+Assert-Value 'ui tree is a read' ([string](Test-ActMutates ('{"tree":{"match":"click"}}' | ConvertFrom-Json) 'ui')) 'False'
+Assert-Value 'a ui click nested in a plan is found' `
+    ([string](Test-ActMutates ('{"steps":[{"verb":"ui","args":{"tree":{}}}],"finally":[{"verb":"ui","args":{"click":{"path":"~/A/B"}}}]}' | ConvertFrom-Json -NoEnumerate))) 'True'
+Assert-Value 'a click key under another verb is not a ui click' `
+    ([string](Test-ActMutates ('{"steps":[{"verb":"call","args":{"click":1}}]}' | ConvertFrom-Json -NoEnumerate))) 'False'
 
 $mutOut = & pwsh -NoProfile -File (Join-Path $root 'ppcli.ps1') connect act '{"endTurn":true}' -PPRoot $installA 2>$null
 $mutErr = $null
 try { $mutErr = [string]::Join('', @($mutOut)) | ConvertFrom-Json } catch { }
 Assert-Value 'act endTurn on the played install is refused, naming -AllowMutate' `
     ($(if ($mutErr.error -like '*-AllowMutate*') { 'refused' } else { "wrong:$mutOut" })) 'refused'
+$uiOut = & pwsh -NoProfile -File (Join-Path $root 'ppcli.ps1') connect ui '{"click":{"label":"Back"}}' -PPRoot $installA 2>$null
+$uiErr = $null
+try { $uiErr = [string]::Join('', @($uiOut)) | ConvertFrom-Json } catch { }
+Assert-Value 'ui click on the played install is refused, naming -AllowMutate' `
+    ($(if ($uiErr.error -like '*-AllowMutate*') { 'refused' } else { "wrong:$uiOut" })) 'refused'
 $readOut = & pwsh -NoProfile -File (Join-Path $root 'ppcli.ps1') connect act '{"squad":true}' -PPRoot $installA 2>$null
 $readErr = $null
 try { $readErr = [string]::Join('', @($readOut)) | ConvertFrom-Json } catch { }

@@ -52,6 +52,8 @@
     <Compile Include="..\src\ImGui.cs" Link="ImGui.cs" />
     <!-- act: args, single-flight gate, timeout/cancel and reply budgets. ActGame.cs is the game half. -->
     <Compile Include="..\src\Act.cs" Link="Act.cs" />
+    <!-- ui: matching, paths, paging, refusals and reply budgets. UiGame.cs is the game half. -->
+    <Compile Include="..\src\Ui.cs" Link="Ui.cs" />
     <Compile Include="SelfCheck.cs" />
   </ItemGroup>
 

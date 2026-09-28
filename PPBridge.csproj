@@ -77,6 +77,16 @@
       <HintPath>$(UnityManaged)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- `ui`: Selectable/Button/Text/EventSystem live in UnityEngine.UI, Canvas and
+         RectTransformUtility in UIModule. TextMeshPro is read by reflection (no reference). -->
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(UnityManaged)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(UnityManaged)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- The game already ships Newtonsoft, so the wire format costs no new dependency and no
          hand-written parser. Private=false: it is already in the install. -->
     <Reference Include="Newtonsoft.Json">

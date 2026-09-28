@@ -65,8 +65,8 @@ param(
     # Warnings, refusals and errors always print. -Quiet / PPCLI_QUIET=1 still force quiet, and win
     # over PPCLI_VERBOSE, so a pre-0.3.0 caller that passes them keeps working unchanged.
     [switch] $Quiet,
-    # `act {use}` / `act {endTurn}` (alone, in `multi`, a batch or a plan) against the Steam install
-    # you PLAY is refused unless this is passed: it would play your real turn.
+    # `act {use}` / `act {endTurn}` / `ui {click}` (alone, in `multi`, a batch or a plan) against the
+    # Steam install you PLAY is refused unless this is passed: it would play your real turn.
     [switch] $AllowMutate
 )
 
@@ -101,12 +101,12 @@ function Assert-NoLogFault($mark) {
            "change what counts. Log: $($mark.path)`n" + $fault)
 }
 
-# The user's own game (a Steam library copy) is read-only to `act` unless -AllowMutate: a `use` or an
-# `endTurn` plays the real turn of a real save. Checked BEFORE the endpoint is even looked up.
+# The user's own game (a Steam library copy) is read-only to `act`/`ui` unless -AllowMutate: a `use`, an
+# `endTurn` or a `ui click` acts in a real save. Checked BEFORE the endpoint is even looked up.
 function Assert-MutateAllowed($Node, [string] $Verb = '') {
     if ($AllowMutate -or -not (Test-PPMainInstall $PPRoot)) { return }
     if (-not (Test-ActMutates $Node $Verb)) { return }
-    throw ("REFUSED: this request contains an 'act' use/endTurn and $PPRoot is a Steam install - the game " +
+    throw ("REFUSED: this request contains an 'act' use/endTurn or a 'ui' click and $PPRoot is a Steam install - the game " +
            "you PLAY. It would take a real action in your real save. Point -PPRoot at an automation copy " +
            "(ppcli-install.txt), or pass -AllowMutate if you mean it. Nothing was sent.")
 }

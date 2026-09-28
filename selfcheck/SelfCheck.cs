@@ -1038,6 +1038,117 @@ namespace Morgott.PPBridge
             Check("plan-null-probe-idiom", probeNull.Contains("\"ok\":true") && probeNull.Contains("\"fixed\":true"), probeNull);
         }
 
+        private static UiNode UN(string label, string path, bool inter = true, bool vis = true, string type = "PhoenixGeneralButton")
+        {
+            return new UiNode { Label = label, Path = path, Type = type, Interactable = inter, Visible = vis, X = 10, Y = 20, W = 200, H = 40, Ref = path };
+        }
+
+        private static void UiChecks()
+        {
+            Func<string, int> B = s => Encoding.UTF8.GetByteCount(s);
+            UiTap.Shutdown();
+            Check("ui-offline-refuses", V("ui", "{'tree':{}}").Contains("\"code\":\"ui\""), V("ui", "{'tree':{}}"));
+            foreach (string bad in new[] { "{}", "{'tree':{},'click':{'label':'x'}}", "{'tree':3}", "{'click':'Back'}", "{'click':{}}",
+                                           "{'click':{'label':'a','path':'b'}}", "{'click':{'label':''}}", "{'click':{'label':'a','index':-1}}",
+                                           "{'click':{'label':'a','index':'1'}}", "{'click':{'label':'a','index':1.5}}", "{'tree':{},'pageSize':0}",
+                                           "{'tree':{},'pageSize':201}", "{'tree':{},'page':'1'}", "{'click':{'label':'a'},'waitFrames':601}",
+                                           "{'click':{'label':'a'},'waitFrames':-1}", "{'tree':{'interactable':'yes'}}", "{'tree':{'match':5}}" })
+                Check("ui-args " + bad, V("ui", bad).Contains("\"code\":\"args\""), V("ui", bad));
+
+            List<UiNode> nodes = new List<UiNode>
+            {
+                UN("NEW GAME", "UIRoot/MainMenu/Buttons/NewGameButton"),
+                UN("Options", "UIRoot/MainMenu/Buttons/OptionsButton"),
+                UN("BACK", "UIRoot/OptionsModule/Footer/BackButton"),
+                UN("Back", "UIRoot/HelpModule/Footer/BackButton"),
+                UN("Continue", "UIRoot/MainMenu/Buttons/ContinueButton", inter: false),
+                UN("Load", "UIRoot/MainMenu/Buttons/LoadButton", vis: false),
+                UN("Item", "UIRoot/List/Viewport/Content/Row/Item", type: "Toggle"),
+                UN("Item", "UIRoot/List/Viewport/Content/Row[1]/Item", type: "Toggle"),
+            };
+            for (int i = 0; i < 80; i++) nodes.Add(UN("Research project with a rather long localized title number " + i, "UIRoot/GeoscapeModule/ResearchPanel/ListView/Viewport/Content/ResearchElementWithAVeryLongPrefabName(Clone)[" + i + "]/Button"));
+            List<UiClickResult> script = new List<UiClickResult>();
+            UiNode clicked = null;
+            int frame = 100;
+            UiTap.Scan = () => nodes;
+            UiTap.ClickRun = n => { clicked = n; return n.Label == "Item" && n.Path.Contains("Row[1]") ? new UiClickResult { Error = "none" } : new UiClickResult { Handler = "pointerClick", Warn = n.Label == "Options" ? "blocked: ~/Overlay/Panel/Image is on top at the centre" : null }; };
+            UiTap.FrameNow = () => frame;
+
+            string tree = V("ui", "{'tree':{}}");
+            JObject tj = JObject.Parse(tree);
+            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 87, tree.Substring(0, Math.Min(300, tree.Length)));
+            Check("ui-tree-hidden-dropped", !tree.Contains("LoadButton"), "hidden row listed");
+            Check("ui-tree-row-frugal", tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None) == "{\"l\":\"NEW GAME\",\"p\":\"~/MainMenu/Buttons/NewGameButton\",\"t\":\"PhoenixGeneralButton\",\"r\":[10,20,200,40]}",
+                  tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None));
+            Check("ui-tree-dis-flag", tree.Contains("\"l\":\"Continue\",\"p\":\"~/MainMenu/Buttons/ContinueButton\",\"t\":\"PhoenixGeneralButton\",\"dis\":true"), tree.Substring(0, 600));
+            Check("budget-ui-tree-default", B(tree) <= 5000, "bytes=" + B(tree));
+            string tree200 = V("ui", "{'tree':{'all':true},'pageSize':200}");
+            Check("budget-ui-tree-max-page", B(tree200) <= 30000 && tree200.Contains("\"hid\":true"), "bytes=" + B(tree200));
+            string research = V("ui", "{'tree':{'match':'research'},'pageSize':1}");
+            Check("ui-tree-label-clip", research.Contains("\"l\":\"Research project with a rather long loca~\"") && research.Contains("ResearchElementWithAVeryLongPref~[0]"), research);
+            string clipped = V("ui", "{'click':{'path':'~/Content/ResearchElementWithAVeryLongPref~[7]/Button'},'waitFrames':0}");
+            Check("ui-click-clipped-path-roundtrip", clipped.Contains("\"ok\":true") && clicked != null && clicked.Path.Contains("(Clone)[7]/"), clipped);
+            Check("ui-clipped-seg-needs-its-index", !UiTap.PathMatches("A/LongName[3]/B", "LongN~/B") && UiTap.PathMatches("A/LongName/B", "LongN~/B")
+                  && !UiTap.PathMatches("A/LongName[3]/B", "LongN~[4]/B"), "clipped seg");
+            clicked = null;
+            string backs = V("ui", "{'tree':{'match':'back','root':'OptionsModule'}}");
+            Check("ui-tree-match-root", backs.Contains("\"total\":1") && backs.Contains("OptionsModule"), backs);
+            string inter = V("ui", "{'tree':{'match':'MainMenu','interactable':true}}");
+            Check("ui-tree-interactable-only", inter.Contains("\"total\":2") && !inter.Contains("Continue"), inter);
+
+            string amb = V("ui", "{'click':{'label':'back'}}");
+            JObject aj = JObject.Parse(amb);
+            Check("ui-click-ambiguous", (string)aj["code"] == "ambiguous" && ((JArray)aj["candidates"]).Count == 2 && clicked == null, amb);
+            Check("budget-ui-ambiguous", B(amb) <= 1200, "bytes=" + B(amb));
+            string byIdx = Protocol.Compact(UiDrive(Start("ui", "{'click':{'label':'  BACK ','index':1},'waitFrames':0}")));
+            Check("ui-click-index", byIdx.Contains("\"ok\":true") && clicked != null && clicked.Path.Contains("HelpModule") && byIdx.Contains("\"frames\":0"), byIdx);
+            clicked = null;
+            string byPath = V("ui", "{'click':{'path':'~/OptionsModule/Footer/BackButton'},'waitFrames':0}");
+            Check("ui-click-short-path-roundtrip", byPath.Contains("\"clicked\":\"~/OptionsModule/Footer/BackButton\"") && byPath.Contains("\"handler\":\"pointerClick\"") && clicked.Path.Contains("OptionsModule"), byPath);
+            Check("ui-path-segment-aligned", !UiTap.PathMatches("UIRoot/X/MyBackButton", "BackButton") && UiTap.PathMatches("UIRoot/X/BackButton", "X/BackButton")
+                  && UiTap.PathMatches("A/B", "A/B") && !UiTap.PathMatches("A/B", ""), "suffix match");
+            string rowPath = V("ui", "{'click':{'path':'Row[1]/Item'}}");
+            Check("ui-click-noclick", rowPath.Contains("\"code\":\"noclick\"") && rowPath.Contains("\"row\""), rowPath);
+            string dis = V("ui", "{'click':{'label':'continue'}}");
+            Check("ui-click-disabled", dis.Contains("\"code\":\"disabled\"") && dis.Contains("\"dis\":true"), dis);
+            string hid = V("ui", "{'click':{'label':'Load'}}");
+            Check("ui-click-hidden-is-notfound", hid.Contains("\"code\":\"notfound\""), hid);
+            string nf = V("ui", "{'click':{'label':'Opt'}}");
+            Check("ui-click-notfound-near", nf.Contains("\"code\":\"notfound\"") && nf.Contains("\"near\":[{\"l\":\"Options\""), nf);
+            Check("budget-ui-notfound", B(nf) <= 1500, "bytes=" + B(nf));
+            string nfResearch = V("ui", "{'click':{'label':'Research'}}");
+            Check("budget-ui-notfound-many-near", B(nfResearch) <= 2500 && ((JArray)JObject.Parse(nfResearch)["near"]).Count == UiTap.MaxCandidates, "bytes=" + B(nfResearch));
+            string idxOut = V("ui", "{'click':{'label':'Item','index':5}}");
+            Check("ui-click-index-out-of-range", idxOut.Contains("\"code\":\"notfound\"") && idxOut.Contains("only 2"), idxOut);
+
+            object started = Start("ui", "{'click':{'label':'options'},'waitFrames':3}");
+            IPending p = started as IPending;
+            Check("ui-click-waits-frames", p != null && p.Tick(false) == null, Protocol.Compact(started));
+            frame += 3;
+            string waited = p == null ? "" : Protocol.Compact(p.Tick(false));
+            Check("ui-click-reply", waited.Contains("\"ok\":true") && waited.Contains("\"frames\":3") && waited.Contains("\"warn\":\"blocked:"), waited);
+            Check("budget-ui-click-reply", B(waited) <= 300, "bytes=" + B(waited));
+            p = Start("ui", "{'click':{'label':'NEW GAME'},'waitFrames':5}") as IPending;
+            string canc = p == null ? "" : Protocol.Compact(p.Tick(true));
+            Check("ui-click-cancel-says-done", canc.Contains("\"code\":\"cancelled\"") && canc.Contains("NOT undone"), canc);
+
+            UiTap.Scan = () => { throw new InvalidOperationException("scan boom"); };
+            Check("ui-scan-throw", V("ui", "{'tree':{}}").Contains("\"code\":\"threw\""), V("ui", "{'tree':{}}"));
+            UiTap.Scan = () => nodes;
+            UiTap.ClickRun = n => { throw new InvalidOperationException("click boom"); };
+            Check("ui-click-throw", V("ui", "{'click':{'label':'NEW GAME'}}").Contains("\"code\":\"threw\""), V("ui", "{'click':{'label':'NEW GAME'}}"));
+            Check("ui-clean-text", UiTap.CleanText("  <b>Save</b>\n  <color=#fff>Game</color> ") == "Save Game", UiTap.CleanText("  <b>Save</b>\n  <color=#fff>Game</color> "));
+            UiTap.Shutdown();
+        }
+
+        private static object UiDrive(object started)
+        {
+            IPending p = started as IPending;
+            if (p == null) return started;
+            for (int i = 0; i < 5; i++) { object d = p.Tick(false); if (d != null) return d; }
+            return "never finished";
+        }
+
         private static void ImGuiChecks()
         {
             int arms = 0, disarms = 0;
@@ -2399,6 +2510,7 @@ namespace Morgott.PPBridge
             EventChecks();
             ImGuiChecks();
             ActChecks();
+            UiChecks();
             BudgetChecks();
             PipeChecks();
 
