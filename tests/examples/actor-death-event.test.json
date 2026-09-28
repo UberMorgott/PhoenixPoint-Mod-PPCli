@@ -1,0 +1,13 @@
+{
+  "name": "spawn + kill fires ActorDeathEvent",
+  "//": "Self-contained from ANY phase: setup loads a mission (start-mission closes an open level first) and spawns one Crabman; the BODY is the shipped kill-actor plan; the harness subscribes @tac ActorDeathEvent after setup (the mission exists by then) and counts firings during the body.",
+  "setup": [
+    "@plans/start-mission.json",
+    { "plan": "@plans/spawn-squad.json", "vars": { "count": 1 }, "save": "SPAWN" }
+  ],
+  "plan": { "plan": "@plans/kill-actor.json", "vars": { "actorName": "${SPAWN.lastActorName}" } },
+  "expect": {
+    "results": [ { "output": "wasDead", "eq": false }, { "output": "actor", "match": "^Crabman" } ],
+    "events": [ { "target": "@tac", "event": "ActorDeathEvent", "match": "Crabman", "min": 1, "max": 1 } ]
+  }
+}

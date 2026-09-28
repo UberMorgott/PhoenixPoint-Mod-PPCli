@@ -202,6 +202,7 @@
     "spawned": "${DONE.value}",
     "placed": "${PLACED.items}",
     "lastActor": "${ACTOR.value.h}",
+    "lastActorName": "${ACTOR.value.name}",
     "preloaded": "${DEF.defs[0].name}",
     "selectionReset": "${RESET.ok}"
   }
