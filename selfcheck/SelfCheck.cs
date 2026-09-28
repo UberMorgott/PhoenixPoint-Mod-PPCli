@@ -1119,6 +1119,7 @@ namespace Morgott.PPBridge
                 UN("Load", "UIRoot/MainMenu/Buttons/LoadButton", vis: false),
                 UN("Item", "UIRoot/List/Viewport/Content/Row/Item", type: "Toggle"),
                 UN("Ghost", "UIRoot/Ghost/GhostButton"),
+                UN("Launch the long-range scanner sweep over the whole region", "UIRoot/GeoscapeModule/Actions/ScanButton"),
                 new UiNode { Label = "Volume", Path = "UIRoot/OptionsModule/Audio/VolumeSlider", Type = "Slider", X = 10, Y = 900, W = 200, H = 20, Drag = true, Ref = "slider" },
                 UN("Item", "UIRoot/List/Viewport/Content/Row[1]/Item", type: "Toggle"),
             };
@@ -1142,7 +1143,7 @@ namespace Morgott.PPBridge
 
             string tree = V("ui", "{'tree':{}}");
             JObject tj = JObject.Parse(tree);
-            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 89, tree.Substring(0, Math.Min(300, tree.Length)));
+            Check("ui-tree-default-page", ((JArray)tj["rows"]).Count == 25 && (bool)tj["hasMore"] && (int)tj["total"] == 90, tree.Substring(0, Math.Min(300, tree.Length)));
             Check("ui-tree-hidden-dropped", !tree.Contains("LoadButton"), "hidden row listed");
             Check("ui-tree-row-frugal", tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None) == "{\"l\":\"NEW GAME\",\"p\":\"~/MainMenu/Buttons/NewGameButton\",\"t\":\"PhoenixGeneralButton\",\"r\":[10,20,200,40]}",
                   tj["rows"][0].ToString(Newtonsoft.Json.Formatting.None));
@@ -1196,8 +1197,17 @@ namespace Morgott.PPBridge
             Check("ui-click-noraycast-refused", noray.Contains("\"code\":\"noraycast\"") && !noray.Contains("\"top\"") && clicked == null, noray);
             string forcedGhost = V("ui", "{'click':{'path':'Ghost/GhostButton','force':true},'waitFrames':0}");
             Check("ui-click-force-dispatches", forcedGhost.Contains("\"ok\":true") && forced && clicked != null && forcedGhost.Contains("\"warn\":\"forced:"), forcedGhost);
+            string scanRow = V("ui", "{'tree':{'match':'ScanButton'}}");
+            string shownL = (string)((JArray)JObject.Parse(scanRow)["rows"])[0]["l"];
             clicked = null;
-            string slider = V("ui", "{'click':{'label':'volume','force':true}}");
+            string byShown = V("ui", "{'click':{'label':" + Newtonsoft.Json.JsonConvert.ToString(shownL) + "},'waitFrames':0}");
+            Check("ui-click-clipped-label-roundtrip", shownL.EndsWith("~") && byShown.Contains("\"ok\":true") && clicked != null && clicked.Path.EndsWith("ScanButton"), shownL + " -> " + byShown);
+            string fullRow = V("ui", "{'tree':{'match':'ScanButton','full':true}}");
+            Check("ui-tree-full-opt-in", fullRow.Contains("\"l\":\"Launch the long-range scanner sweep over the whole region\"") && fullRow.Contains("\"p\":\"UIRoot/GeoscapeModule/Actions/ScanButton\""), fullRow);
+            Check("ui-click-prefix-resolves", V("ui", "{'click':{'label':'Item~'}}").Contains("\"code\":\"ambiguous\"") && V("ui", "{'click':{'label':'Opt~'}}").Contains("\"code\":\"blocked\"") && V("ui", "{'click':{'label':'Opt'}}").Contains("\"code\":\"notfound\""), "prefix");
+            Check("ui-ambiguous-full-path", amb.Contains("\"path\":\"UIRoot/OptionsModule/Footer/BackButton\"") && amb.Contains("\"path\":\"UIRoot/HelpModule/Footer/BackButton\""), amb);
+            clicked = null;
+            string slider =V("ui", "{'click':{'label':'volume','force':true}}");
             Check("ui-click-slider-unsupported", slider.Contains("\"code\":\"unsupported\"") && slider.Contains("Slider") && slider.Contains("\"row\"") && clicked == null, slider);
             string viaChild =V("ui", "{'click':{'label':'new game'},'waitFrames':0}");
             Check("ui-click-target-reported", viaChild.Contains("\"clicked\":\"~/MainMenu/Buttons/NewGameButton\"") && viaChild.Contains("\"target\":\"~/Buttons/NewGameButton/BaseButton\""), viaChild);

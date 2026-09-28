@@ -57,18 +57,21 @@ namespace Morgott.PPBridge
     /// budget run offline in the self-check.
     ///
     /// Contract (token-frugal: default 25 rows, absent = default):
-    ///   ui {tree:{match?, root?, interactable?, all?}, page?, pageSize?}
+    ///   ui {tree:{match?, root?, interactable?, all?, full?}, page?, pageSize?}
     ///       -> {ok, total, rows:[{l, p, t, dis?, hid?, r:[x,y,w,h]}], hasMore?}
     ///          match = substring of label OR path (case-insensitive); root = substring a row's FULL
     ///          path must contain; interactable:true drops dis rows; all:true also lists invisible
     ///          rows (hid) AND the elements of switched-off screens (off, via FindObjectsOfTypeAll
     ///          filtered to loaded scenes - slower); neither is clickable.
-    ///          p = the last <see cref="PathSegs"/> path segments ("~/" = more above) - pass it back as `path`.
+    ///          p = the last <see cref="PathSegs"/> path segments ("~/" = more above) - pass it back as `path`;
+    ///          l = label clipped to <see cref="LabelClip"/> chars + "~". full:true = whole l and whole p.
     ///   ui {click:{label|path, index?, force?}, waitFrames?}
     ///       -> {ok, clicked:p, handler:"pointerClick"|"pointerDown", target?, warn?, frames}
     ///          target = p of the object that took the press when it is not the element itself.
-    ///          label = exact (case-insensitive, whitespace-collapsed) text; path = a row's p, or any
-    ///          '/'-aligned suffix of the full path. index picks among several matches (row order).
+    ///          label = exact (case-insensitive, whitespace-collapsed) text, or a row's clipped l as
+    ///          shown ("...~" = prefix, when nothing matches exactly); path = a row's p, or any
+    ///          '/'-aligned suffix of the full path. index picks among several matches (row order);
+    ///          ambiguous candidates carry their full path.
     ///          Only visible rows are clickable. A raycast at the element's centre runs FIRST: another
     ///          element on top -> blocked(+top), nothing raycastable -> noraycast, both before any
     ///          event is sent; force:true dispatches anyway (warn says why it would have refused).
@@ -147,7 +150,7 @@ namespace Morgott.PPBridge
             JObject tree = a["tree"] as JObject;
             JObject click = a["click"] as JObject;
             if ((tree == null) == (click == null) || (a["tree"] != null && tree == null) || (a["click"] != null && click == null))
-                return Bad("args", "ui takes exactly one of {tree:{match?,root?,interactable?,all?}, page?, pageSize?} or {click:{label|path, index?, force?}, waitFrames?}");
+                return Bad("args", "ui takes exactly one of {tree:{match?,root?,interactable?,all?,full?}, page?, pageSize?} or {click:{label|path, index?, force?}, waitFrames?}");
 
             int page = 0, size = DefaultPageSize, wait = DefaultWaitFrames, index = -1;
             bool diag = false;
@@ -162,14 +165,14 @@ namespace Morgott.PPBridge
 
             if (tree != null)
             {
-                string match = null, root = null; bool inter = false, all = false;
-                err = Str(tree, "match", out match) ?? Str(tree, "root", out root) ?? Bool(tree, "interactable", out inter) ?? Bool(tree, "all", out all);
+                string match = null, root = null; bool inter = false, all = false, full = false;
+                err = Str(tree, "match", out match) ?? Str(tree, "root", out root) ?? Bool(tree, "interactable", out inter) ?? Bool(tree, "all", out all) ?? Bool(tree, "full", out full);
                 if (err != null) return Bad("args", err);
                 if (Scan == null) return Bad("ui", "no ui runner installed - this is the offline half, or the mod is shutting down");
                 List<UiNode> nodes;
                 try { nodes = Scanned(all); }
                 catch (Exception ex) { return Bad("threw", ex.GetType().Name + ": " + ex.Message); }
-                JObject tr = Tree(nodes, match, root, inter, all, page, size);
+                JObject tr = Tree(nodes, match, root, inter, all, page, size, full);
                 if (diag) tr["diag"] = Diag();
                 return tr;
             }
@@ -234,7 +237,7 @@ namespace Morgott.PPBridge
 
         // ------------------------------------------------------------------ pure logic
 
-        internal static JObject Tree(List<UiNode> nodes, string match, string root, bool interactableOnly, bool all, int page, int size)
+        internal static JObject Tree(List<UiNode> nodes, string match, string root, bool interactableOnly, bool all, int page, int size, bool full = false)
         {
             List<UiNode> hit = new List<UiNode>();
             foreach (UiNode n in nodes)
@@ -250,7 +253,7 @@ namespace Morgott.PPBridge
             if (page > 0) r["page"] = page;
             JArray rows = new JArray();
             long from = (long)page * size;
-            for (long i = from; i < hit.Count && i < from + size; i++) rows.Add(Row(hit[(int)i]));
+            for (long i = from; i < hit.Count && i < from + size; i++) rows.Add(Row(hit[(int)i], full));
             r["rows"] = rows;
             if (from + size < hit.Count) r["hasMore"] = true;
             return r;
@@ -269,6 +272,13 @@ namespace Morgott.PPBridge
                 if (want != null ? string.Equals(Norm(n.Label), want, StringComparison.OrdinalIgnoreCase)
                                  : PathMatches(n.Path, wantPath))
                     cand.Add(n);
+            }
+            // A label copied from a tree row as shown ("First 40 chars~"): no exact hit -> prefix.
+            if (cand.Count == 0 && want != null && want.EndsWith("~", StringComparison.Ordinal) && want.Length > 1)
+            {
+                string prefix = Norm(want.Substring(0, want.Length - 1));
+                foreach (UiNode n in nodes)
+                    if (n.Visible && prefix.Length > 0 && Norm(n.Label).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) cand.Add(n);
             }
             string what = label != null ? "label '" + Echo(label) + "'" : "path '" + Echo(path) + "'";
             if (cand.Count == 0)
@@ -291,7 +301,12 @@ namespace Morgott.PPBridge
             else if (cand.Count > 1)
             {
                 JArray rows = new JArray();
-                for (int i = 0; i < cand.Count && i < MaxCandidates; i++) rows.Add(Row(cand[i]));
+                for (int i = 0; i < cand.Count && i < MaxCandidates; i++)
+                {
+                    JObject row = Row(cand[i]);
+                    row["path"] = cand[i].Path;       // p may not tell them apart; the full path does
+                    rows.Add(row);
+                }
                 return new JObject { ["ok"] = false, ["code"] = "ambiguous", ["error"] = cand.Count + " elements match " + what + " - pass index (candidate order) or a longer path", ["candidates"] = rows };
             }
             else pick = cand[0];
@@ -395,10 +410,11 @@ namespace Morgott.PPBridge
 
         private static string Norm(string s) { return CleanText(s) ?? ""; }
 
-        internal static JObject Row(UiNode n)
+        /// <summary>full = the whole label and the whole path (tree full:true), else clipped l and short p.</summary>
+        internal static JObject Row(UiNode n, bool full = false)
         {
             string l = n.Label ?? "";
-            JObject o = new JObject { ["l"] = l.Length > LabelClip ? l.Substring(0, LabelClip) + "~" : l, ["p"] = ShortPath(n.Path), ["t"] = n.Type };
+            JObject o = new JObject { ["l"] = full || l.Length <= LabelClip ? l : l.Substring(0, LabelClip) + "~", ["p"] = full ? (n.Path ?? "") : ShortPath(n.Path), ["t"] = n.Type };
             if (!n.Interactable) o["dis"] = true;
             if (!n.Visible) o["hid"] = true;
             if (n.Inactive) o["off"] = true;
