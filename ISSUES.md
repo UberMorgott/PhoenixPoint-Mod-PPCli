@@ -22,7 +22,10 @@ null projected as `unresolved: … is not set`) was fixed and verified on `D:\PP
 day. The three open on 2026-09-05 (no way to box a primitive for an `Object` parameter, `screenshot`
 wedging the process on D3D12 at `timeScale 0`, and `screenshot` losing the scene while an upscaler
 renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Instance3` under
-`-force-d3d12`, build `0b0c12fc`._
+`-force-d3d12`, build `0b0c12fc`. The four open on 2026-09-07/26 (`screenshot` showing the curtain
+under a mod camera, `coop.ps1 dismiss` stopping at a cutscene, `reconnect` pressing into an
+unsettled menu, no relay join) were fixed in 0.3.3 on `D:\PP-Instance3` (screenshot, dismiss and
+menu readiness live; relay offline)._
 
 
 
@@ -46,24 +49,6 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
   `connect call` cannot chain on a handle at all from the shell.
 - **2026-09-28 retest (not reproduced):** live `D:\PP-Instance2`, build `ab0755a4`, pwsh 7 in-process: `$h` from `(connect call '{"op":"get","target":"@geo","member":"Factions"}' | ConvertFrom-Json).result.value.h`, then `connect inspect ('{"h":"' + $h + '","filter":"Count"}')` and `connect call ('{"op":"get","target":"' + $h + '","member":"Count"}')`, with and without `-PPRoot`, and via `$q` → all `ok:true`, exit 0. The client only ever `ConvertFrom-Json`s `$Arg2`; no path cmdlet sees it. A caller-side quoting layer (e.g. `pwsh -Command "..."` from bash) is the remaining suspect - need the exact command line that failed.
 
-## 2026-09-07 — `connect screenshot` shows the level-curtain art instead of the presented frame once a mod camera draws objects over its own blit
-
-- **Attempted:** `connect screenshot '{"path":...}'` on the geoscape with Renderforge 1.5.x live (DLSS
-  Quality) after the mod started drawing the site markers with its `DlssPresent` camera (outRT blit at
-  `BeforeForwardOpaque`, then the marker layer; earlier a separate `RenderforgeMarkerCam` at depth +2).
-- **Happened:** the main PNG carried the loading-screen curtain art (or a stale frame) with the markers
-  and the HUD composited on top; `scenePath` carried the pre-upscale scene at 1707x960. The real
-  backbuffer, read by the mod itself at `WaitForEndOfFrame` (`Texture2D.ReadPixels`, `RenderTexture.active
-  = null`), showed the correct globe + markers at the same moment.
-- **Expected:** the main PNG = what is on screen (the note in the reply says the scene is "blank" because
-  Camera.main targets a RenderTexture, but the presented frame is not blank — a second camera blits it).
-- **Evidence:** live `D:\PP-Instance2`, build `69a823ae`, PIDs 24772/34008, 2026-09-07; files
-  `v0-shot.png` / `v1-shot.png` vs the mod's `DumpScreen` dumps in the Renderforge session scratchpad;
-  write-up `Renderforge\docs\research\geoscape-dlss-2026-09-07\marker-cam\results.md` ("Dead ends" 3).
-- **Severity:** medium for graphics-mod work: the visual acceptance test silently shows a frame nobody
-  ever saw. A plain end-of-frame ReadPixels of the screen (no per-camera re-render) reproduces the
-  presented frame in every configuration tried.
-
 ## 2026-09-10 — `connect console` cuts a command's output at 200 lines, so a long listing cannot be read back whole
 
 - **Attempted:** `connect console '{"command":"ct_list","args":["audio"]}'` (and `["audio","taunt"]`,
@@ -84,28 +69,6 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
 - **Severity:** medium. Any ct_ command whose whole point is a long listing (asset/audio catalogs) is
   unreadable through the bridge; the workaround is the mod's own spill file on disk, which means
   leaving the JSON path entirely.
-
-## 2026-09-26 — `coop.ps1 dismiss` stops at the geoscape intro cutscene
-
-- Attempted: `coop.ps1 dismiss -Side client1|client2` right after `campaign` (3 peers).
-- Happened: returns `screens:["...UIStateGeoCutscene"]`, nothing dismissed; the intro video runs ~minutes.
-- Expected: dismiss skips a cutscene too. Worked around with `connect call '{"op":"invoke","target":"@viewstate","member":"OnCancel","args":[]}'` (`UIStateGeoCutscene.OnCancel` = native skip, decompile `UIStateGeoCutscene.cs:89-93`), then `dismiss` again.
-- Severity: low.
-
-## 2026-09-26 — `coop.ps1 reconnect` presses RECONNECT ~0.2 s after the relaunched menu's UI init
-
-- Attempted: `kill -Side client2` → `relaunch -Side client2 -AllowSteamInstall` → `reconnect -Side client2`, host on geoscape.
-- Happened: RECONNECT pressed 02:52:08.03, 0.2 s after `[MP][general] UI initialized`; the on-demand join ran `EnterLevel → FinishLevel` and the client stayed on HomeScreen with the roster strip at `Loading 0%` (mod-side race, logged in the Multiplayer2 field results). Same sequence with a 25 s wait between `relaunch` and `reconnect` rejoined the geoscape fine.
-- Expected: `reconnect` waits for the main menu to settle (or a mod readiness probe) before pressing, so the automation does not manufacture the race; the mod should also survive it (separate Multiplayer2 bug).
-- Evidence: Multiplayer2 `docs\field\2026-09-26\T5-F9-after-reconnect-client2.jpg`, client2 mod log L24-L66 of that run.
-- Severity: medium.
-
-## 2026-09-26 — `coop.ps1` cannot join clients through a relay (Multiplayer2 field run 2, three peers over VPS relay)
-
-- `lobby`/`campaign` (Do-Lobby) and the `reconnect` fallback join every client at `127.0.0.1:<Port>`; `tools\vps-relay.ps1`
-  hands out one port per client (`34242`, `34243`). Attempted a WAN run → had to replicate Do-Lobby by hand (`OnGateJoin`
-  per client with its own address, NEW GAME, READY, confirm). Expected: `-JoinAddress` per client (list) or `-Relay` switch
-  reading the relay's `clientJoin`. Severity: medium.
+- **2026-09-28 note (not re-verified):** `console` now runs once and pages the capture by opaque `cursor` (`3be9b6f`, `5d9fb6c`), which is the paged reply asked for. Live check on `D:\PP-Instance3` found no command with >200 output lines on that install (its ContentTool `ct_list audio`/`bundles` print 62), so the whole-listing read-back is still unproven - rerun the original `ct_list audio` on an install whose ContentTool prints the full listing, then delete this entry.
 
 <!-- Append new entries above this line. Keep them evidence-backed. -->
-
