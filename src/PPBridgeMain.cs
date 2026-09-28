@@ -317,8 +317,31 @@ namespace Morgott.PPBridge
                 { "modules", tac != null ? (tac.View == null ? null : (object)tac.View.TacticalModules)
                                          : (geo == null || geo.View == null ? null : (object)geo.View.GeoscapeModules) },
                 { "faction", geo != null ? geo.ViewerFaction : (tac == null || tac.View == null ? null : (object)tac.View.ViewerFaction) },
-                { "selected", tac == null || tac.View == null ? null : tac.View.SelectedActor }
+                { "selected", tac == null || tac.View == null ? null : tac.View.SelectedActor },
+                { "soldier", Soldier(tac) }
             };
+        }
+
+        /// <summary>
+        /// A SOLDIER of the player's faction: the selected actor when it is one, else the first alive,
+        /// in-play non-vehicle. `start-mission` leaves a VEHICLE selected (NJ_Armadillo on a real
+        /// roster), and weapon-test on that @selected died at assert-enabled with NoSuitableEquipment
+        /// (ISSUES 2026-09-28). Vehicle = Vehicle_TagDef (ActGame.IsVehicle).
+        /// </summary>
+        private static object Soldier(TacticalLevelController tac)
+        {
+            if (tac == null || tac.View == null) return null;
+            try
+            {
+                TacticalFaction viewer = tac.View.ViewerFaction;
+                Func<PhoenixPoint.Tactical.Entities.TacticalActor, bool> ok = a =>
+                    a != null && !a.IsDead && a.InPlay && a.TacticalFaction == viewer && !ActGame.IsVehicle(a);
+                if (ok(tac.View.SelectedActor)) return tac.View.SelectedActor;
+                foreach (PhoenixPoint.Tactical.Entities.TacticalActor a in tac.Map.GetActors<PhoenixPoint.Tactical.Entities.TacticalActor>())
+                    if (ok(a)) return a;
+            }
+            catch (Exception) { }
+            return null;
         }
 
         /// <summary>The open screen, from whichever view this phase owns. Tactical's CurrentState
