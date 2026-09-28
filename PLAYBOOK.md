@@ -477,6 +477,15 @@ mod's dead features were proved dead in one line each this way. `inspect`/`membe
 question in bulk (`{"filter":"*Coefficient*"}`); `AccessTools` answers it about a **named** member,
 including a private one, and says which kind it is.
 
+**Handles as ARGUMENTS need the `{"$h":"h:N:M"}` envelope.** A bare `"h:4:17"` in `args` is a
+plain string and never resolves back to the object (`a string cannot bind to PrototypeRecord`). As
+`target` (and in `inspect`/`items` `h`) the bare string is fine:
+
+```powershell
+.\ppcli.ps1 connect call '{"op":"invoke","type":"Some.Type","member":"Show","args":[{"$h":"h:4:17"},{"$h":"h:4:28"}]}'
+.\ppcli.ps1 connect call '{"op":"invoke","target":"h:4:49","member":"PickTarget","args":[{"$h":"h:4:34"}]}'
+```
+
 ## When it goes wrong
 
 - **`REFUSED: '<path>' has Phoenix Point running (PID <n>)`** — `deploy` detected a game process

@@ -825,7 +825,8 @@ namespace Morgott.PPBridge
                 }
                 // Deliberately NOT parsed into a number: "12" reaching an int parameter is far more
                 // often a mistake than an intention, and silence there is how the wrong call happens.
-                error = "a string cannot bind to " + target.Name;
+                error = "a string cannot bind to " + target.Name +
+                        (s.StartsWith("h:") ? " (pass a handle as {\"$h\":\"" + s + "\"})" : "");
                 return false;
             }
 
