@@ -1,7 +1,7 @@
 <#
   Offline check for coop-util.ps1: action-scoped log waits (a mark before the action, a partial last
   line, a log that appears mid-wait, a refusal quoted with its reasons) and the pid file `stop`
-  trusts. No game.
+  trusts (pid + start time + exe path, legacy pid-only entries never verify). No game.
 
       pwsh -NoProfile -File .\tests\coop-util.tests.ps1            # must exit 0
       pwsh -NoProfile -File .\tests\coop-util.tests.ps1 -Falsify   # must ALSO exit 0
@@ -76,6 +76,20 @@ $m3 = LogMarkFiles @($rot)
 Set-Content $rot -Value "fresh`n" -NoNewline
 Assert-Value 'a file replaced by a shorter one is read from its start' (Outcome { WaitLogCore { $rot } 'fresh' 0 $m3 '' 'h' 0 10 }) 'fresh'
 
+# ---------------------------------------------------------------- the pid file
+$parsed = PidEntryParse @('4242,4343', "77`t638000000000000000`tD:\PP-Instance2\PhoenixPointWin64.exe", '')
+Assert-Value 'a legacy comma line parses as legacy entries' (($parsed | Where-Object legacy | ForEach-Object pid) -join ',') '4242,4343'
+Assert-Value 'a full entry keeps its path' ($parsed | Where-Object { -not $_.legacy }).path 'D:\PP-Instance2\PhoenixPointWin64.exe'
+Assert-Value 'a legacy entry round-trips as a bare pid' (PidEntryLine $parsed[0]) '4242'
+$child = Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 60' -PassThru -WindowStyle Hidden
+Start-Sleep -Milliseconds 300
+$e = PidEntryOf $child.Id
+$back = (PidEntryParse @(PidEntryLine $e))[0]
+Assert-Value 'the recorded entry verifies against its own process' ([bool](PidEntryProcess $back 'pwsh')) 'True'
+Assert-Value 'the same pid with another start time is NOT ours' ([bool](PidEntryProcess ([pscustomobject]@{ pid = $e.pid; start = $e.start - 1; path = $e.path; legacy = $false }) 'pwsh')) 'False'
+Assert-Value 'the same pid with another exe is NOT ours' ([bool](PidEntryProcess ([pscustomobject]@{ pid = $e.pid; start = $e.start; path = 'D:\Steam\steamapps\common\Phoenix Point\PhoenixPointWin64.exe'; legacy = $false }) 'pwsh')) 'False'
+Assert-Value 'a legacy pid-only entry never verifies, even for a live pid' ([bool](PidEntryProcess ([pscustomobject]@{ pid = $e.pid; start = 0; path = $null; legacy = $true }) '')) 'False'
+Assert-Value 'the game-name filter rejects a pwsh' ([bool](PidEntryProcess $back)) 'False'
 }
 finally {
     if ($child) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }

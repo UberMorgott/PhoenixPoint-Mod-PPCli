@@ -159,10 +159,19 @@ function CommitGate([double]$needGB) {
     Note "free commit $($c.freeGB) GB of $($c.limitGB) GB limit (needed $needGB)"
     $c
 }
-function CoopPids {
-    if (-not (Test-Path $pidFile)) { return @() }
-    @((Get-Content $pidFile) -split ',' | Where-Object { $_ } | ForEach-Object { [int]$_ })
+# The pid file: one `pid TAB start-ticks TAB exe` line per started peer (coop-util.ps1). A bare pid
+# (pre-0.2.3 file) is a LEGACY entry: never verified, never killed.
+function CoopEntries {
+    if (-not (Test-Path $pidFile)) { return }
+    PidEntryParse @(Get-Content $pidFile)
 }
+function CoopEntriesWrite($entries) {
+    if (@($entries).Count) { @($entries | ForEach-Object { PidEntryLine $_ }) | Set-Content $pidFile }
+    else { Remove-Item $pidFile -ErrorAction SilentlyContinue }
+}
+# Pids of games coop.ps1 started that still run AS RECORDED (pid + start time + exe path) - a recycled
+# pid is not one of them, whatever process now holds it.
+function CoopPids { @(CoopEntries | Where-Object { PidEntryProcess $_ } | ForEach-Object pid) }
 # Lifecycle gate (launch/relaunch/kill). The Steam install is the game the OWNER plays: refused by
 # default, and even with -AllowSteamInstall refused while a PP process from it runs that coop.ps1 did
 # not start - killing or cold-launching over a live session of his is not recoverable. Reads (state,
@@ -220,15 +229,20 @@ function LiteRestoreIdle([string[]]$roots) {
         if (SideProcs $r) { Note "lite: $r still running - its options stay lite until it exits (then: restore)"; continue }
         if (LiteRestore $r) { $done += $(if ($r -in $peerRoots) { SideName $r } else { $r }) }
     }
-    $alive = @((CoopPids) | Where-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName -eq 'PhoenixPointWin64' })
-    if (-not (LiteBackedRoots) -and -not $alive -and (LiteRegRestore)) { $done += 'registry' }
+    if (-not (LiteBackedRoots) -and -not (CoopPids) -and (LiteRegRestore)) { $done += 'registry' }
     $done
 }
-# Keep the pid file a superset of what is still ours: dead pids drop, the new one joins, so `stop`
-# after a `relaunch` still kills both sides.
+# Keep the pid file a superset of what is still ours: dead or recycled pids drop, the new one joins
+# with its start time + exe (so `stop` after a `relaunch` still kills both sides, and only them).
+# Legacy entries stay until `stop` reports them. Call right after each start.
 function PidsRecord([int[]]$new) {
-    $live = @((CoopPids) | Where-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName -eq 'PhoenixPointWin64' })
-    (@($live + $new) | Select-Object -Unique) -join ',' | Set-Content $pidFile
+    $keep = @(CoopEntries | Where-Object { $_.legacy -or (PidEntryProcess $_) })
+    foreach ($id in $new) {
+        $e = PidEntryOf $id
+        if (-not $e) { Note "pid $id is already gone - not recorded"; continue }
+        $keep = @($keep | Where-Object { $_.pid -ne $id }) + $e
+    }
+    CoopEntriesWrite $keep
 }
 # The instance's own -logFile (engine + duplicated [MP] lines). Unity's default LocalLow Player.log is
 # NOT a fallback for it: that one belongs to whichever install ran last without -logFile.
@@ -539,17 +553,27 @@ switch ($Action) {
         if (-not (Test-Path $pidFile)) { throw 'no pid file - nothing launched by coop.ps1' }
         $roots = @(SideRoots $Side)
         $everyPeer = $Side -in 'all', 'both'
-        $stopped = @(); $kept = @()
-        foreach ($p in (CoopPids)) {
-            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
-            if (-not $proc -or $proc.ProcessName -ne 'PhoenixPointWin64') { continue }
-            $path = try { $proc.Path } catch { $null }
-            if ($everyPeer -or @($roots | Where-Object { $path -like "$_\*" })) {
-                Stop-Process -Id $p -Force; Note "stopped $p"; $stopped += $p
-            } else { $kept += $p }
+        # A pid is killed only when it is STILL the process coop started: same pid, same start time,
+        # same exe (PidEntryProcess). Windows recycles pids, and a stale number could otherwise name
+        # anything - the owner's own game included. Unverifiable entries are refused, never guessed.
+        $stopped = @(); $kept = @(); $refused = @()
+        foreach ($e in (CoopEntries)) {
+            if ($e.legacy) {
+                $refused += [pscustomobject]@{ pid = $e.pid; reason = 'pid-only entry from a pre-0.2.3 pid file: no start time or exe to prove it is the game coop started - not killed. Check that pid by hand.' }
+                Note "REFUSED to stop pid $($e.pid): legacy pid-only entry, unverifiable - dropped from the pid file, not killed"
+                continue
+            }
+            $proc = PidEntryProcess $e
+            if (-not $proc) {
+                if (Get-Process -Id $e.pid -ErrorAction SilentlyContinue) { Note "pid $($e.pid) now belongs to another process (not the game started $([datetime]::new($e.start, 'Utc').ToString('s'))Z) - not ours, not killed" }
+                continue
+            }
+            if ($everyPeer -or @($roots | Where-Object { $e.path -like "$_\*" })) {
+                Stop-Process -Id $e.pid -Force; Note "stopped $($e.pid) ($($e.path))"; $stopped += $e.pid
+            } else { $kept += $e }
         }
-        if ($kept) { $kept -join ',' | Set-Content $pidFile } else { Remove-Item $pidFile }
-        $out = [ordered]@{ ok = $true; stopped = $stopped; kept = $kept }
+        CoopEntriesWrite $kept
+        $out = [ordered]@{ ok = ($refused.Count -eq 0); stopped = $stopped; kept = @($kept | ForEach-Object pid); refused = $refused }
         # -Lite undo, only when a -Lite run left backups: the processes must be GONE first, since Unity
         # writes its PlayerPrefs on exit and the game may save its options.
         $backed = @(LiteBackedRoots | Where-Object { $everyPeer -or $_ -in $roots })

@@ -104,3 +104,46 @@ function WaitLogCore([scriptblock]$resolve, [string]$rx, [int]$sec, [hashtable]$
     }
     throw "log timeout on ${what}: /$rx/ (looked in: $($files -join ', '))"
 }
+
+# ---------------------------------------------------------------- the pid file `stop` trusts
+
+# One line per started peer: <pid> TAB <start time, UTC ticks> TAB <exe path>. A pid alone is NOT an
+# identity - Windows recycles pids, so a stale number can name any process, the owner's own game
+# included. Legacy files (bare pids, comma-joined) parse as legacy entries that nothing will kill.
+function PidEntryParse([string[]]$lines) {
+    $out = @()
+    foreach ($l in $lines) {
+        if (-not $l -or -not $l.Trim()) { continue }
+        $p = $l -split "`t"
+        if ($p.Count -eq 3 -and $p[0] -match '^\d+$' -and $p[1] -match '^\d+$') {
+            $out += [pscustomobject]@{ pid = [int]$p[0]; start = [long]$p[1]; path = $p[2]; legacy = $false }
+        } else {
+            foreach ($t in ($l -split ',')) {
+                if ($t.Trim() -match '^\d+$') { $out += [pscustomobject]@{ pid = [int]$t.Trim(); start = 0; path = $null; legacy = $true } }
+            }
+        }
+    }
+    $out
+}
+function PidEntryLine($e) { if ($e.legacy) { "$($e.pid)" } else { "$($e.pid)`t$($e.start)`t$($e.path)" } }
+
+# The entry for a process that is running NOW (captured right after Start-Process), or $null.
+function PidEntryOf([int]$id) {
+    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (-not $p) { return $null }
+    $path = try { $p.Path } catch { $null }
+    $start = try { $p.StartTime.ToUniversalTime().Ticks } catch { $null }
+    if (-not $path -or -not $start) { return $null }
+    [pscustomobject]@{ pid = $id; start = [long]$start; path = [IO.Path]::GetFullPath($path); legacy = $false }
+}
+
+# The live process an entry recorded - same pid AND same start time AND same executable - or $null.
+# A legacy entry never verifies.
+function PidEntryProcess($e, [string]$name = 'PhoenixPointWin64') {
+    if ($e.legacy) { return $null }
+    $p = Get-Process -Id $e.pid -ErrorAction SilentlyContinue
+    if (-not $p -or ($name -and $p.ProcessName -ne $name)) { return $null }
+    $now = PidEntryOf $e.pid
+    if (-not $now -or $now.start -ne $e.start -or $now.path -ine $e.path) { return $null }
+    $p
+}

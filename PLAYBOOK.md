@@ -364,6 +364,13 @@ co-op geoscape in ~2.5 min from cold.
   (`launch`/`relaunch`/`kill`) REFUSES a root containing `steamapps`; `-AllowSteamInstall` is the explicit
   opt-in, and even with it the verb refuses while a PP process from that path runs that `coop.ps1` did not
   start (matched against `tools\coop-pids.txt`). Reads (`state`, `grep`, plain `connect`) are never gated.
+- **`stop` kills a pid only while it is STILL the process coop started**: `tools\coop-pids.txt` holds
+  `pid TAB start-ticks TAB exe` per peer (recorded right after each start), and all three must match the
+  live process. A recycled pid is skipped (`not ours, not killed`); a pid-only line from a pre-0.2.3 file is
+  REFUSED (`ok:false`, `refused:[{pid,reason}]`), dropped from the file, never killed — check it by hand.
+- **Every log wait is action-scoped**: a byte mark (end of the last COMPLETE line of each log) is taken
+  BEFORE the press it waits on, so an older line from the shared mod log or an earlier run never passes;
+  files are re-resolved every poll; a `join REFUSED` gets ~1 s for its reason lines before it is quoted.
   That install has no `Player.log` of its own either (Steam starts it without `-logFile`), so `grep` and
   the log waits cannot see it — use `state` there.
 - Each instance commits ~13.5 GB. Two at once + a big neighbour exhausted the commit limit on
