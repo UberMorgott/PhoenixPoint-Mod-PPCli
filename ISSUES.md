@@ -115,3 +115,10 @@ renders to a camera `targetTexture`) were fixed and verified live on `D:\PP-Inst
 - Severity: medium (blocks screenshot-driven UI testing without source knowledge). Banner half of this entry fixed in v0.2.3 (`-Quiet` / `PPCLI_QUIET=1`).
 
 <!-- Append new entries above this line. Keep them evidence-backed. -->
+
+## 2026-09-28 — plans on a `start-mission.json` (loadmap) mission: `kill-actor` NREs, `weapon-test` refuses
+
+- **Attempted:** v0.3.0 live check on `D:\PP-Instance2` (PPBridge 0.3.0, TFTV on). `start-campaign.json` then `start-mission.json '{"scene":"ALN_PLT_Nest_48x48_A","seed":12345}'`, then `kill-actor.json '{"actorName":"Crabman_10"}'`, `weapon-test.json` (`PX_AssaultRifle_WeaponDef` and `PX_Pistol_WeaponDef`), and `end-mission.json '{"outcome":"win"}'`.
+- **Happened:** (1) kill-actor failed at step `apply-damage` with `NullReferenceException`, `at PhoenixGame.GetCurrentGameTime` ← `PhoenixStatisticsManager.OnActorKilled`. The cause is `TacticalGameParams.GlobalTime == null` on a loadmap mission (PhoenixGame.cs:718-723 dereferences it). The workaround worked: `call set h(TacticalGameParams) GlobalTime {"$new":{"type":"Base.Utils.UnityDateTime"}}`, then kill-actor `Crabman_7` → `isDead:true`. (2) weapon-test failed at `assert-enabled`: `NoSuitableEquipment` for `@selected` with both weapons, and the finally trace carried `release-log: ${LOG.value.h} is not set`. (3) end-mission hit a client DEAD RUN on a TFTV NRE (`SecondaryObjectivesTactical+UIHider+<FadeInGraphic>d__3.MoveNext`), and the level then reloaded into tactical.
+- **Expected:** `start-mission.json` gives a mission that the shipped tactical plans can use. It should set `GlobalTime`, or `kill-actor` should guard against it being null. `weapon-test` should run on it, and its cleanup should skip releasing a handle that was never saved.
+- **Severity:** medium. The tactical plans don't compose from a cold start. The v0.3.0 verbs are not affected.
