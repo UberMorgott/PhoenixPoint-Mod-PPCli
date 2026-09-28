@@ -63,7 +63,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-function Note([string] $m) { [Console]::Error.WriteLine($m) }
+# Diagnostics ride PowerShell's ERROR stream (2). [Console]::Error bypasses stream redirection when
+# the script runs in-process (`& .\ppcli.ps1 ...`), so `2>$null` / `2>&1` could not touch the
+# per-call banner; a child `pwsh -File` still prints stream 2 on process stderr. Local 'Continue':
+# the script runs under 'Stop', which would turn a note into a throw.
+function Note([string] $m) {
+    $ErrorActionPreference = 'Continue'
+    $PSCmdlet.WriteError([Management.Automation.ErrorRecord]::new([Exception]::new($m), 'ppcli', 'NotSpecified', $null))
+}
 . (Join-Path $PSScriptRoot 'names.ps1')
 . (Join-Path $PSScriptRoot 'paths.ps1')
 . (Join-Path $PSScriptRoot 'waits.ps1')

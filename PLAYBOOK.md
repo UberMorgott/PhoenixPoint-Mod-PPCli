@@ -505,7 +505,9 @@ including a private one, and says which kind it is.
   `.\ppcli.ps1 deploy` and start over.
 
 Output contract: **exactly one compact JSON object on stdout**, everything else on stderr, so
-`.\ppcli.ps1 connect state | ConvertFrom-Json` always works. **Exit code 1 for any `ok:false` or
+`.\ppcli.ps1 connect state | ConvertFrom-Json` always works. Diagnostics (install/pipe banner,
+polling notes) are PowerShell error-stream records in-process and process stderr in a child
+`pwsh -File`: `2>$null` silences them either way (don't `2>&1` into `ConvertFrom-Json`). **Exit code 1 for any `ok:false` or
 non-`done` reply** — a refusal is now distinguishable from an empty-but-valid result by both the
 payload shape and `$LASTEXITCODE`. Example: `connect items '{"pageSize":400}'` exits 1 with
 `{"ok":false,"code":"args","error":"pageSize must be 1..200"}` and no `items` key at all;
