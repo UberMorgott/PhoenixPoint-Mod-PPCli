@@ -1079,23 +1079,23 @@ namespace Morgott.PPBridge
             Check("imgui-press-notfound-exact-case", nf.Contains("\"code\":\"notfound\"") && nf.Contains("\"labels\":[\"Run bench\",\"Stop\",\"Export\"]"), nf);
 
             // press by index: fires ONCE, on the matched instance only, first non-Layout event.
-            string ok = ImRun("{'press':{'label':'Run bench','index':1}}", ui, null, null, forced);
+            string ok = ImRun("{'press':{'label':'Run bench','index':1,'mode':'force'}}", ui, null, null, forced);
             Check("imgui-press-fires-once", ok.Contains("\"ok\":true") && ok.Contains("\"fired\":true") && forced.Count == 1 && forced[0] == "Repaint:Run bench#2", ok + " " + string.Join(",", forced));
             Check("imgui-press-unpatches", !ImGuiTap.Active && disarms == arms, "arms=" + arms + " disarms=" + disarms);
             forced.Clear();
-            string ev = ImRun("{'press':{'label':'Stop','owner':'benchui'}}", ui, null, "MouseMove", forced);
+            string ev = ImRun("{'press':{'label':'Stop','owner':'benchui','mode':'force'}}", ui, null, "MouseMove", forced);
             Check("imgui-press-input-event-first", ev.Contains("\"ev\":\"MouseMove\"") && forced.Count == 1 && forced[0] == "MouseMove:Stop#1", ev + " " + string.Join(",", forced));
             // P1 double action: a real MouseDown/MouseUp pass is never forced (the native MouseUp would
             // run the body again); the press waits for Repaint. hotControl held -> never fires.
             forced.Clear();
-            string md = ImRun("{'press':{'label':'Stop'}}", ui, null, "MouseDown", forced);
+            string md = ImRun("{'press':{'label':'Stop','mode':'force'}}", ui, null, "MouseDown", forced);
             Check("imgui-press-skips-mousedown", md.Contains("\"ev\":\"Repaint\"") && forced.Count == 1 && forced[0] == "Repaint:Stop#1", md + " " + string.Join(",", forced));
             forced.Clear();
-            string mu = ImRun("{'press':{'label':'Stop'}}", ui, null, "MouseUp", forced);
+            string mu = ImRun("{'press':{'label':'Stop','mode':'force'}}", ui, null, "MouseUp", forced);
             Check("imgui-press-skips-mouseup", mu.Contains("\"ev\":\"Repaint\"") && forced.Count == 1 && forced[0] == "Repaint:Stop#1", mu + " " + string.Join(",", forced));
             forced.Clear();
             imIdle = false;
-            string hot = ImRun("{'press':{'label':'Stop'},'waitFrames':5}", ui, null, null, forced);
+            string hot = ImRun("{'press':{'label':'Stop','mode':'force'},'waitFrames':5}", ui, null, null, forced);
             imIdle = true;
             Check("imgui-press-not-while-hotcontrol", hot.Contains("\"code\":\"notfired\"") && forced.Count == 0, hot);
             Check("imgui-safe-pass", ImGuiTap.SafePass("Repaint", true) && ImGuiTap.SafePass("MouseMove", true) && !ImGuiTap.SafePass("MouseDown", true) &&
@@ -1104,11 +1104,11 @@ namespace Morgott.PPBridge
             // for the one fire candidate - never for input passes or for other controls while armed.
             imOwnerCalls = 0;
             forced.Clear();
-            string oc = ImRun("{'press':{'label':'Export'}}", ui, null, "MouseMove", forced);
+            string oc = ImRun("{'press':{'label':'Export','mode':'force'}}", ui, null, "MouseMove", forced);
             Check("imgui-owner-walks-bounded", oc.Contains("\"fired\":true") && imOwnerCalls <= ui.Length + 1, imOwnerCalls + " owner walks " + oc);
             // P1 owner bound at resolve: after it, "Stop" i=0 is drawn by ANOTHER type -> no fire.
             forced.Clear();
-            IPending po = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop','owner':'mods.bench.benchui'},'waitFrames':5}") });
+            IPending po = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop','owner':'mods.bench.benchui','mode':'force'},'waitFrames':5}") });
             string pos = null;
             for (int f = 0; f < 30 && pos == null; f++)
             {
@@ -1120,7 +1120,7 @@ namespace Morgott.PPBridge
             Check("imgui-press-bound-to-owner", pos != null && pos.Contains("\"code\":\"notfired\"") && forced.Count == 0, pos + " " + string.Join(",", forced));
             // P1 scene unload drops an armed press.
             forced.Clear();
-            IPending ps = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop'}}") });
+            IPending ps = (IPending)Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Stop','mode':'force'}}") });
             string sc = null;
             for (int f = 0; f < 30 && sc == null; f++)
             {
@@ -1136,7 +1136,7 @@ namespace Morgott.PPBridge
             string dis = ImRun("{'press':{'label':'Export'}}", ui, new[] { true, true, true, false }, null, forced);
             Check("imgui-press-disabled", dis.Contains("\"code\":\"disabled\"") && forced.Count == 0, dis);
             // armed, then the control disappears: notfired after waitFrames, and the patch is gone.
-            object pr = Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Export'},'waitFrames':5}") });
+            object pr = Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse("{'press':{'label':'Export','mode':'force'},'waitFrames':5}") });
             IPending pp = (IPending)pr;
             Check("imgui-busy", V("imgui", "{'list':true}").Contains("\"code\":\"busy\""), V("imgui", "{'list':true}"));
             string nfd = null;
@@ -1176,7 +1176,155 @@ namespace Morgott.PPBridge
             string big = ImRun("{'list':true}", fat, null, null, forced);
             int bytes = Encoding.UTF8.GetByteCount(big);
             Check("imgui-list-budget", bytes <= 3600 && JObject.Parse(big)["rows"].Count() == ImGuiTap.DefaultPageSize && (bool)JObject.Parse(big)["hasMore"], bytes + " B");
+            ImGuiPostChecks();
             ImGuiTap.Shutdown();
+        }
+
+        /// <summary>A fake Unity player for imgui "post" mode: a message posted during Update (Tick) of
+        /// frame F becomes an IMGUI event in OnGUI of frame F+1 (WM_MOUSEMOVE makes none - players never
+        /// send MouseMove). DoControl is modelled on the game's decompile: MouseDown hit -> grab + Use,
+        /// MouseUp with the grab -> release + Use, click only if still inside the rect.</summary>
+        private sealed class ImSim
+        {
+            internal string[] Labels = { "Run bench", "Stop", "Export" };
+            internal float Scale = 1f;          // client px -> Unity px as the fake player maps them
+            internal bool Deliver = true;
+            internal readonly List<int[]> Sent = new List<int[]>();   // {msg, wParam, lParam, frame}
+            private readonly List<int[]> queue = new List<int[]>();
+            internal int Hot, Clicks, Forced;
+            internal string ClickEv;
+            private float mx = -1, my = -1;
+
+            internal string Post(long hwnd, int msg, int wParam, int lParam)
+            {
+                if (hwnd != 0x1234) return "bad hwnd";
+                int[] m = { msg, wParam, lParam, imFrame };
+                Sent.Add(m); queue.Add(m);
+                return null;
+            }
+
+            internal void Frame(int frame)
+            {
+                for (int q = 0; q < queue.Count; q++)
+                {
+                    int[] m = queue[q];
+                    if (m[3] >= frame) continue;
+                    queue.RemoveAt(q--);
+                    if (!Deliver) continue;
+                    mx = (m[2] & 0xFFFF) * Scale; my = (m[2] >> 16) * Scale;
+                    if (m[0] == ImGuiTap.WM_LBUTTONDOWN) Pass(frame, "MouseDown");
+                    else if (m[0] == ImGuiTap.WM_LBUTTONUP) Pass(frame, "MouseUp");
+                }
+                Pass(frame, "Repaint");
+            }
+
+            private void Pass(int frame, string ev)
+            {
+                bool used = false;
+                for (int i = 0; i < Labels.Length; i++)
+                {
+                    int id = i + 1;
+                    float x = 0, y = i * 30, w = 100, h = 20;
+                    bool inside = mx >= x && mx < x + w && my >= y && my < y + h;
+                    string entry = used ? "Used" : ev;
+                    bool res = false;
+                    if (entry == "MouseDown" && inside) { Hot = id; used = true; }
+                    else if (entry == "MouseUp" && Hot == id) { Hot = 0; used = true; if (inside) { res = true; Clicks++; ClickEv = entry; } }
+                    if (ImGuiTap.Observe(frame, ev == "Repaint", entry, Labels[i], x, y, w, h, true, false, false,
+                                         () => "Mods.Bench.BenchUI", Hot == 0, x + w / 2, y + h / 2, mx, my, Hot == id, res, Hot))
+                        Forced++;
+                }
+            }
+        }
+
+        private static string ImPostRun(string json, ImSim sim, int cancelAt = -1, int unloadAt = -1, int frames = 80)
+        {
+            ImGuiTap.PostMsg = sim.Post;
+            object r = Protocol.Dispatch(new Job { Id = "t", Verb = "imgui", Args = JObject.Parse(json) });
+            IPending p = r as IPending;
+            if (p == null) return Protocol.Compact(r);
+            for (int f = 0; f < frames; f++)
+            {
+                imFrame++;
+                if (f == unloadAt) ImGuiTap.SceneUnloaded();
+                object done = p.Tick(f == cancelAt);
+                if (done != null) return Protocol.Compact(done);
+                sim.Frame(imFrame);
+            }
+            return "never ended";
+        }
+
+        private static void ImGuiPostChecks()
+        {
+            Func<int, int, int, int, ImGuiTap.WinInfo> Win = (cw, ch, sw, sh) => new ImGuiTap.WinInfo { Hwnd = 0x1234, ClientW = cw, ClientH = ch, ScreenW = sw, ScreenH = sh };
+            int cx, cy;
+            Check("imgui-post-lparam", ImGuiTap.LParam(50, 40) == ((40 << 16) | 50) && ImGuiTap.LParam(0x1FFFF, 2) == ((2 << 16) | 0xFFFF), "MAKELPARAM");
+            Check("imgui-post-toclient",
+                  ImGuiTap.ToClient(50.7f, 40.2f, 800, 600, 800, 600, out cx, out cy) && cx == 50 && cy == 40 &&
+                  ImGuiTap.ToClient(50, 40, 800, 600, 400, 300, out cx, out cy) && cx == 100 && cy == 80 &&
+                  ImGuiTap.ToClient(10, 10, 800, 600, 0, 0, out cx, out cy) && cx == 10 &&
+                  !ImGuiTap.ToClient(800, 10, 800, 600, 800, 600, out cx, out cy) && !ImGuiTap.ToClient(-1, 10, 800, 600, 800, 600, out cx, out cy) &&
+                  !ImGuiTap.ToClient(float.NaN, 10, 800, 600, 800, 600, out cx, out cy) && !ImGuiTap.ToClient(1, 1, 0, 0, 800, 600, out cx, out cy),
+                  "client conversion");
+            Check("imgui-post-args", V("imgui", "{'press':{'label':'x','mode':'click'}}").Contains("\"code\":\"args\"") &&
+                  V("imgui", "{'press':{'label':'x'},'diag':'yes'}").Contains("\"code\":\"args\""), "bad mode/diag accepted");
+
+            // happy path: MOVE+DOWN on one frame, real MouseDown grabs, UP on a LATER frame, the real
+            // MouseUp clicks; the patch never forces; the body ran in the MouseUp pass, not a Repaint.
+            ImGuiTap.Window = () => Win(800, 600, 800, 600);
+            ImSim s = new ImSim();
+            string ok = ImPostRun("{'press':{'label':'Stop'},'diag':true}", s);
+            JObject okj = ok.StartsWith("{") ? JObject.Parse(ok) : new JObject();
+            Check("imgui-post-fires", (bool?)okj["ok"] == true && (string)okj["mode"] == "post" && (string)okj["ev"] == "MouseUp" &&
+                  s.Clicks == 1 && s.ClickEv == "MouseUp" && s.Forced == 0 && !ImGuiTap.Active, ok);
+            Check("imgui-post-sequence", s.Sent.Count == 3 && s.Sent[0][0] == ImGuiTap.WM_MOUSEMOVE && s.Sent[1][0] == ImGuiTap.WM_LBUTTONDOWN &&
+                  s.Sent[1][1] == ImGuiTap.MK_LBUTTON && s.Sent[2][0] == ImGuiTap.WM_LBUTTONUP && s.Sent[2][1] == 0 &&
+                  s.Sent[1][2] == ImGuiTap.LParam(50, 40) && s.Sent[2][2] == ImGuiTap.LParam(50, 40) && s.Sent[2][3] > s.Sent[1][3] + 1 && s.Hot == 0,
+                  string.Join(" ", s.Sent.Select(m => m[0].ToString("X") + "@" + m[3])));
+            Check("imgui-post-diag", okj["diag"] != null && (string)okj["diag"]["hwnd"] == "0x1234" && okj["diag"]["pt"].ToString(Newtonsoft.Json.Formatting.None) == "[50,40]" &&
+                  (bool)okj["diag"]["down"]["hit"] && (int)okj["diag"]["down"]["hot"] == 2 && (int)okj["diag"]["evs"]["MouseDown"] == 1 && Encoding.UTF8.GetByteCount(ok) < 600, ok);
+            string nodiag = ImPostRun("{'press':{'label':'Stop'}}", new ImSim());
+            Check("imgui-post-diag-optin", nodiag.Contains("\"fired\":true") && !nodiag.Contains("\"diag\""), nodiag);
+
+            // Unity renders smaller than the client area: the point is scaled into client pixels.
+            ImGuiTap.Window = () => Win(800, 600, 400, 300);
+            ImSim sc = new ImSim { Scale = 0.5f };
+            string scaled = ImPostRun("{'press':{'label':'Export'}}", sc);
+            Check("imgui-post-scaled", scaled.Contains("\"fired\":true") && sc.Sent[1][2] == ImGuiTap.LParam(100, 140) && sc.Clicks == 1, scaled);
+
+            // Unity never delivers (unfocused): noevent, and the down still gets its up.
+            ImGuiTap.Window = () => Win(800, 600, 800, 600);
+            ImSim nd = new ImSim { Deliver = false };
+            string ne = ImPostRun("{'press':{'label':'Stop'},'waitFrames':5}", nd);
+            Check("imgui-post-noevent", ne.Contains("\"code\":\"noevent\"") && ne.Contains("\"stage\":\"down\"") && nd.Sent.Count == 3 &&
+                  nd.Sent[2][0] == ImGuiTap.WM_LBUTTONUP && nd.Clicks == 0 && !ImGuiTap.Active, ne);
+
+            // coordinates off (player maps 2x): the MouseDown misses -> missed, up posted, no click.
+            ImSim ms = new ImSim { Scale = 2f };
+            string mi = ImPostRun("{'press':{'label':'Stop'}}", ms);
+            Check("imgui-post-missed", mi.Contains("\"code\":\"missed\"") && ms.Sent.Count == 3 && ms.Sent[2][0] == ImGuiTap.WM_LBUTTONUP &&
+                  ms.Clicks == 0 && ms.Hot == 0 && !ImGuiTap.Active, mi);
+
+            // no window of ours / point off the client area: refused before anything is posted.
+            ImGuiTap.Window = () => new ImGuiTap.WinInfo { Error = "no visible top-level window" };
+            ImSim nh = new ImSim();
+            string noh = ImPostRun("{'press':{'label':'Stop'}}", nh);
+            Check("imgui-post-nohwnd", noh.Contains("\"code\":\"nohwnd\"") && nh.Sent.Count == 0 && !ImGuiTap.Active, noh);
+            ImGuiTap.Window = () => Win(40, 30, 40, 30);
+            ImSim of = new ImSim();
+            string off = ImPostRun("{'press':{'label':'Stop'}}", of);
+            Check("imgui-post-offscreen", off.Contains("\"code\":\"offscreen\"") && of.Sent.Count == 0 && !ImGuiTap.Active, off);
+
+            // cancel / scene unload after the down was posted: the up is posted on release.
+            ImGuiTap.Window = () => Win(800, 600, 800, 600);
+            ImSim cs = new ImSim { Deliver = false };
+            string cn = ImPostRun("{'press':{'label':'Stop'}}", cs, cancelAt: 5);
+            Check("imgui-post-cancel-ups", cn.Contains("\"code\":\"cancelled\"") && cs.Sent.Count == 3 && cs.Sent[2][0] == ImGuiTap.WM_LBUTTONUP && !ImGuiTap.Active, cn);
+            ImSim us = new ImSim { Deliver = false };
+            string un = ImPostRun("{'press':{'label':'Stop'}}", us, unloadAt: 5);
+            Check("imgui-post-scene-ups", un.Contains("\"code\":\"scene\"") && us.Sent.Count == 3 && us.Sent[2][0] == ImGuiTap.WM_LBUTTONUP && !ImGuiTap.Active, un);
+            ImGuiTap.Window = null;
+            ImGuiTap.PostMsg = null;
         }
 
         private static void LogChecks()

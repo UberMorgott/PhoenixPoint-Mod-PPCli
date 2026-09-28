@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
 using HarmonyLib;
 using UnityEngine;
 
@@ -34,7 +36,7 @@ namespace Morgott.PPBridge
                     new[] { typeof(Rect), typeof(int), typeof(bool), typeof(bool), typeof(GUIContent), typeof(GUIStyle) });
                 if (target == null) return "UnityEngine.GUI.DoControl(Rect,int,bool,bool,GUIContent,GUIStyle) was not found - Unity changed under the tap";
                 Harmony h = new Harmony(Id);
-                h.Patch(target, postfix: new HarmonyMethod(typeof(ImGuiPatch), nameof(Post)));
+                h.Patch(target, prefix: new HarmonyMethod(typeof(ImGuiPatch), nameof(Pre)), postfix: new HarmonyMethod(typeof(ImGuiPatch), nameof(Post)));
                 harmony = h;
                 return null;
             }
@@ -45,25 +47,115 @@ namespace Morgott.PPBridge
             }
         }
 
-        private static void Post(Rect position, bool on, GUIContent content, GUIStyle style, ref bool __result)
+        /// <summary>DoControl Use()s the MouseDown/MouseUp it takes, so after it runs Event.current.type
+        /// reads Used: the event type at ENTRY is captured here for the postfix.</summary>
+        private static void Pre(out EventType __state)
+        {
+            __state = EventType.Ignore;
+            if (!ImGuiTap.Active) return;
+            try { Event e = Event.current; if (e != null) __state = e.type; } catch (Exception) { }
+        }
+
+        private static void Post(Rect position, int id, bool on, GUIContent content, GUIStyle style, ref bool __result, EventType __state)
         {
             if (!ImGuiTap.Active) return;
             try
             {
                 Event e = Event.current;
                 if (e == null) return;
-                EventType t = e.type;
-                if (t == EventType.Layout) return;
+                EventType t = __state;
+                if (t == EventType.Layout || t == EventType.Ignore) return;
+                bool repaint = t == EventType.Repaint;
                 bool toggle = style != null && style.name != null && style.name.IndexOf("toggle", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (ImGuiTap.Observe(Time.frameCount, t == EventType.Repaint, EvName(t), Label(content),
+                float sx = float.NaN, sy = float.NaN;
+                if (repaint && ImGuiTap.Recording)
+                {
+                    // GUI space -> GUI-screen space: unclips the group/scroll/window stack (and the
+                    // clip's matrix); Y down from the top of the game view, no flip.
+                    Vector2 sp = GUIUtility.GUIToScreenPoint(position.center);
+                    sx = sp.x; sy = sp.y;
+                }
+                Vector2 mp = e.mousePosition;
+                int hotId = GUIUtility.hotControl;
+                if (ImGuiTap.Observe(Time.frameCount, repaint, EvName(t), Label(content),
                                      position.x, position.y, position.width, position.height,
-                                     GUI.enabled, toggle, on, OwnerFn, GUIUtility.hotControl == 0))
+                                     GUI.enabled, toggle, on, OwnerFn, hotId == 0,
+                                     sx, sy, mp.x, mp.y, hotId == id, __result, hotId))
                 {
                     __result = !on;
                     GUI.changed = true;
                 }
             }
             catch (Exception) { }
+        }
+
+        // ------------------------------------------------------------------ post mode: Win32
+        // PostMessage only: the message goes into THIS process's own window queue. No SendInput, no
+        // SetCursorPos, no SetForegroundWindow - the user's cursor and focus are never touched.
+
+        private delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+        [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+        [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr hwnd, StringBuilder sb, int max);
+        [DllImport("user32.dll")] private static extern bool GetClientRect(IntPtr hwnd, out RECT r);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        private static IntPtr gameHwnd;
+
+        private static bool Ours(IntPtr h)
+        {
+            if (h == IntPtr.Zero || !IsWindow(h)) return false;
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            return pid == (uint)Process.GetCurrentProcess().Id;
+        }
+
+        /// <summary>This process's visible top-level window, class UnityWndClass preferred.</summary>
+        private static IntPtr FindGameWindow()
+        {
+            if (Ours(gameHwnd) && IsWindowVisible(gameHwnd)) return gameHwnd;
+            uint me = (uint)Process.GetCurrentProcess().Id;
+            IntPtr unity = IntPtr.Zero, any = IntPtr.Zero;
+            StringBuilder sb = new StringBuilder(64);
+            EnumProc cb = (h, l) =>
+            {
+                uint pid;
+                GetWindowThreadProcessId(h, out pid);
+                if (pid != me || !IsWindowVisible(h)) return true;
+                sb.Length = 0;
+                GetClassNameW(h, sb, sb.Capacity);
+                if (sb.ToString() == "UnityWndClass") { unity = h; return false; }
+                if (any == IntPtr.Zero) any = h;
+                return true;
+            };
+            EnumWindows(cb, IntPtr.Zero);
+            GC.KeepAlive(cb);
+            gameHwnd = unity != IntPtr.Zero ? unity : any;
+            return gameHwnd;
+        }
+
+        internal static ImGuiTap.WinInfo Window()
+        {
+            ImGuiTap.WinInfo w = new ImGuiTap.WinInfo { ScreenW = Screen.width, ScreenH = Screen.height };
+            IntPtr h = FindGameWindow();
+            if (h == IntPtr.Zero) { w.Error = "no visible top-level window belongs to pid " + Process.GetCurrentProcess().Id; return w; }
+            RECT r;
+            if (!GetClientRect(h, out r)) { w.Error = "GetClientRect failed"; return w; }
+            w.Hwnd = h.ToInt64();
+            w.ClientW = r.Right - r.Left;
+            w.ClientH = r.Bottom - r.Top;
+            return w;
+        }
+
+        internal static string PostMessage(long hwnd, int msg, int wParam, int lParam)
+        {
+            IntPtr h = new IntPtr(hwnd);
+            if (!Ours(h)) return "hwnd 0x" + hwnd.ToString("X") + " is not a window of this process";
+            if (!PostMessageW(h, (uint)msg, new IntPtr(wParam), new IntPtr(lParam))) return "PostMessageW error " + Marshal.GetLastWin32Error();
+            return null;
         }
 
         /// <summary>Canonical event name. NOT t.ToString(): EventType carries obsolete lowercase

@@ -21,7 +21,19 @@ namespace Morgott.PPBridge
     ///   - a control's identity inside a frame = (label, i): i = how many controls with the same label
     ///     came before it in that event pass. Stable frame to frame for the same UI.
     ///   - list/resolve read ONE complete Repaint pass (the frame before the current Update).
-    ///   - press fires ONLY on a SAFE pass (<see cref="SafePass"/>): Repaint or MouseMove, and only while
+    ///   - press mode "post" (DEFAULT, EXPERIMENTAL until live-proven): the Repaint row also carries the
+    ///     control's centre in GUI-screen space (GUIUtility.GUIToScreenPoint, Y down from the window top,
+    ///     no flip). The press converts it to client pixels (<see cref="ToClient"/>), PostMessages
+    ///     WM_MOUSEMOVE + WM_LBUTTONDOWN to the game's own window (never SendInput, never the real
+    ///     cursor, never focus), waits until a REAL MouseDown reached DoControl for that control and
+    ///     grabbed hotControl, posts WM_LBUTTONUP on a LATER frame, and reports fired only when the real
+    ///     MouseUp made DoControl return the click. The patch only observes there - the body runs where a
+    ///     human click runs it, between Layout passes, so a button that restructures the layout is safe.
+    ///     Any down that was posted gets its up, also on timeout/cancel/scene unload.
+    ///   - press mode "force" (opt-in, the 0.3.0 behaviour): forces DoControl's return on a Repaint
+    ///     pass. A button body that adds/removes later GUILayout controls then breaks that Repaint
+    ///     ("Getting control N's position in a group with only N controls") - it can close the panel.
+    ///   - force fires ONLY on a SAFE pass (<see cref="SafePass"/>): Repaint or MouseMove, and only while
     ///     no control holds the mouse (GUIUtility.hotControl == 0). Never on MouseDown/MouseUp/MouseDrag/
     ///     Key*/Used: forcing a real MouseDown true would run the button body, then the native MouseUp
     ///     on the same control would run it AGAIN and hotControl would stay grabbed. Layout is skipped:
@@ -45,6 +57,41 @@ namespace Morgott.PPBridge
         internal static Func<bool, string> Arm;
         /// <summary>Game half: Time.frameCount.</summary>
         internal static Func<int> FrameNow;
+        /// <summary>Game half: this process's own game window (hwnd, client size, Unity Screen size).</summary>
+        internal static Func<WinInfo> Window;
+        /// <summary>Game half: PostMessage(hwnd, msg, wParam, lParam). Null = posted, else the error.</summary>
+        internal static Func<long, int, int, int, string> PostMsg;
+
+        internal const int WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, MK_LBUTTON = 0x0001;
+
+        internal sealed class WinInfo
+        {
+            internal long Hwnd;
+            internal int ClientW, ClientH, ScreenW, ScreenH;
+            internal string Error;
+        }
+
+        /// <summary>MAKELPARAM(x, y): client coordinates, low word x, high word y.</summary>
+        internal static int LParam(int x, int y) { return (y << 16) | (x & 0xFFFF); }
+
+        /// <summary>GUI-screen point (Unity pixels, Y down from the window top) -> client pixel of the
+        /// window. Scales when Unity renders at another size than the client area (fullscreen window at
+        /// a lower resolution). False = unknown point or outside the client area.</summary>
+        internal static bool ToClient(float sx, float sy, int clientW, int clientH, int screenW, int screenH, out int cx, out int cy)
+        {
+            cx = cy = -1;
+            if (float.IsNaN(sx) || float.IsNaN(sy) || float.IsInfinity(sx) || float.IsInfinity(sy)) return false;
+            if (clientW <= 0 || clientH <= 0) return false;
+            double kx = screenW > 0 ? (double)clientW / screenW : 1.0;
+            double ky = screenH > 0 ? (double)clientH / screenH : 1.0;
+            double x = Math.Floor(sx * kx), y = Math.Floor(sy * ky);
+            if (x < 0 || y < 0 || x >= clientW || y >= clientH) return false;
+            cx = (int)x; cy = (int)y;
+            return true;
+        }
+
+        /// <summary>The Repaint patch computes the GUI-screen point only while a list/resolve records.</summary>
+        internal static bool Recording { get { return recording; } }
 
         /// <summary>The postfix's one-branch early out: nothing is listing and nothing is armed.</summary>
         internal static volatile bool Active;
@@ -55,6 +102,8 @@ namespace Morgott.PPBridge
             internal int I;
             internal bool Toggle, On, Enabled;
             internal float X, Y, W, H;
+            /// <summary>Centre in GUI-screen space (NaN = not computed).</summary>
+            internal float SX = float.NaN, SY = float.NaN;
             internal string Owner;
         }
 
@@ -62,6 +111,8 @@ namespace Morgott.PPBridge
         {
             internal string Label;
             internal int I;
+            /// <summary>true = "post" mode: observe real MouseDown/MouseUp, never force.</summary>
+            internal bool Post;
             /// <summary>FULL type name of the OnGUI that drew the resolved control, re-checked at fire
             /// time: if the UI reordered and (label, i) now belongs to another owner, it does not fire.</summary>
             internal string Owner;
@@ -82,14 +133,34 @@ namespace Morgott.PPBridge
         private static bool fired;
         private static Pending busy;
 
+        // "post" mode observations (reset per press). down/up: 0 = not seen, 1 = grabbed / clicked,
+        // -1 = the event reached the control but missed it.
+        private static int pDown, pDownFrame, pDownHot, pUp, pUpFrame;
+        private static float pDownMx = float.NaN, pDownMy = float.NaN, pUpMx = float.NaN, pUpMy = float.NaN;
+        private static readonly Dictionary<string, int> evFrames = new Dictionary<string, int>();
+        private static readonly Dictionary<string, int> evLast = new Dictionary<string, int>();
+
+        private static void ClearPost()
+        {
+            pDown = pDownFrame = pDownHot = pUp = pUpFrame = 0;
+            pDownMx = pDownMy = pUpMx = pUpMy = float.NaN;
+            evFrames.Clear(); evLast.Clear();
+        }
+
         /// <summary>
-        /// One control reached DoControl on a non-Layout event. Returns true = force this control's
-        /// press NOW (the caller sets __result = !on and GUI.changed). <paramref name="owner"/> is
-        /// lazy: a stack walk, paid only for recorded Repaint rows.
+        /// One control reached DoControl on a non-Layout event (<paramref name="ev"/> = the event type
+        /// at DoControl ENTRY). Returns true = force this control's press NOW (force mode only; the
+        /// caller sets __result = !on and GUI.changed). <paramref name="owner"/> is lazy: a stack walk,
+        /// paid only for recorded Repaint rows and fire candidates. <paramref name="sx"/>/<paramref name="sy"/>
+        /// = centre in GUI-screen space (Repaint while recording), <paramref name="mx"/>/<paramref name="my"/>
+        /// = Event.mousePosition, <paramref name="hot"/> = hotControl is this control after DoControl,
+        /// <paramref name="result"/> = DoControl's own return, <paramref name="hotId"/> = hotControl.
         /// </summary>
         internal static bool Observe(int frame, bool repaint, string ev, string label,
                                      float x, float y, float w, float h,
-                                     bool enabled, bool toggle, bool on, Func<string> owner, bool idle = true)
+                                     bool enabled, bool toggle, bool on, Func<string> owner, bool idle = true,
+                                     float sx = float.NaN, float sy = float.NaN, float mx = float.NaN, float my = float.NaN,
+                                     bool hot = false, bool result = false, int hotId = 0)
         {
             if (!Active) return false;
             label = label ?? "";
@@ -111,11 +182,32 @@ namespace Morgott.PPBridge
                 {
                     string o = null;
                     try { o = owner == null ? null : owner(); } catch (Exception) { }
-                    cur.Add(new Ctl { Label = label, I = n, Toggle = toggle || on, On = on, Enabled = enabled, X = x, Y = y, W = w, H = h, Owner = o });
+                    cur.Add(new Ctl { Label = label, I = n, Toggle = toggle || on, On = on, Enabled = enabled, X = x, Y = y, W = w, H = h, SX = sx, SY = sy, Owner = o });
                 }
             }
 
             Target t = target;
+            if (t != null && t.Post)
+            {
+                if (!repaint)
+                {
+                    int lf;
+                    if (!evLast.TryGetValue(ev, out lf) || lf != frame)
+                    {
+                        evLast[ev] = frame;
+                        int c; evFrames.TryGetValue(ev, out c); evFrames[ev] = c + 1;
+                        if (ev == "MouseDown" && pDown == 0) { pDownMx = mx; pDownMy = my; }
+                        if (ev == "MouseUp" && pDown > 0 && pUp == 0) { pUpMx = mx; pUpMy = my; }
+                    }
+                }
+                if ((ev == "MouseDown" || ev == "MouseUp") && n == t.I && string.Equals(label, t.Label, StringComparison.Ordinal)
+                    && (t.Owner == null || string.Equals(t.Owner, SafeOwner(owner), StringComparison.Ordinal)))
+                {
+                    if (ev == "MouseDown" && pDown == 0) { pDown = hot ? 1 : -1; pDownFrame = frame; pDownHot = hotId; pDownMx = mx; pDownMy = my; }
+                    else if (ev == "MouseUp" && pDown > 0 && pUp == 0) { pUp = result != on ? 1 : -1; pUpFrame = frame; pUpMx = mx; pUpMy = my; }
+                }
+                return false;
+            }
             if (t != null && enabled && SafePass(ev, idle) && n == t.I && string.Equals(label, t.Label, StringComparison.Ordinal)
                 && (t.Owner == null || string.Equals(t.Owner, SafeOwner(owner), StringComparison.Ordinal)))
             {
@@ -152,7 +244,7 @@ namespace Morgott.PPBridge
             bool list = a != null && a["list"] != null && a["list"].Type == JTokenType.Boolean && (bool)a["list"];
             JObject press = a == null ? null : a["press"] as JObject;
             if (list == (press != null))
-                return Bad("args", "imgui takes {list:true, owner?, match?, page?, pageSize?} OR {press:{label, owner?, index?}, waitFrames?}");
+                return Bad("args", "imgui takes {list:true, owner?, match?, page?, pageSize?} OR {press:{label, owner?, index?, mode?:\"post\"|\"force\"}, waitFrames?, diag?}");
             int page = 0, size = DefaultPageSize, wait = DefaultWaitFrames, index = -1;
             string err = Protocol.IntArg(a, "page", 0, out page)
                          ?? Protocol.IntArg(a, "pageSize", DefaultPageSize, out size)
@@ -172,6 +264,18 @@ namespace Morgott.PPBridge
                     if (err == null && index < 0) err = "index must be >= 0";
                 }
             }
+            bool post = true, diag = false;
+            if (err == null && press != null && press["mode"] != null && press["mode"].Type != JTokenType.Null)
+            {
+                JToken mt = press["mode"];
+                if (mt.Type != JTokenType.String || ((string)mt != "post" && (string)mt != "force")) err = "press.mode must be \"post\" (default) or \"force\"";
+                else post = (string)mt == "post";
+            }
+            if (err == null && a != null && a["diag"] != null && a["diag"].Type != JTokenType.Null)
+            {
+                if (a["diag"].Type != JTokenType.Boolean) err = "diag must be true/false";
+                else diag = (bool)a["diag"];
+            }
             if (err != null) return Bad("args", err);
             string owner = Str(press != null ? press["owner"] : a["owner"]);
             string match = list ? Str(a["match"]) : null;
@@ -182,7 +286,7 @@ namespace Morgott.PPBridge
             try { armErr = Arm(true); } catch (Exception ex) { armErr = ex.GetType().Name + ": " + ex.Message; }
             if (armErr != null) { Reset(); return Bad("patch", "could not install the IMGUI tap: " + armErr); }
 
-            busy = new Pending(list, owner, match, page, size, label, index, wait, FrameNow());
+            busy = new Pending(list, owner, match, page, size, label, index, wait, FrameNow()) { PostMode = post, Diag = diag };
             recording = true;
             RefreshActive();
             return busy;
@@ -257,6 +361,7 @@ namespace Morgott.PPBridge
             cur = new List<Ctl>(); last = new List<Ctl>();
             curFrame = lastFrame = countFrame = int.MinValue;
             counts.Clear();
+            ClearPost();
             try { if (Arm != null) Arm(false); } catch (Exception) { }
         }
 
@@ -269,6 +374,8 @@ namespace Morgott.PPBridge
             fired = false;
             Arm = null;
             FrameNow = null;
+            Window = null;
+            PostMsg = null;
         }
 
         /// <summary>
@@ -283,6 +390,11 @@ namespace Morgott.PPBridge
             private readonly int epoch = sceneEpoch;
             private int armedAt = -1;
             private bool done;
+            internal bool PostMode, Diag;
+            private WinInfo win;
+            private int cx = -1, cy = -1, upAt;
+            private float sx = float.NaN, sy = float.NaN;
+            private bool downPosted, upPosted;
 
             internal Pending(bool list, string owner, string match, int page, int size, string label, int index, int wait, int start)
             {
@@ -290,7 +402,62 @@ namespace Morgott.PPBridge
                 this.label = label; this.index = index; this.wait = wait; this.start = start;
             }
 
-            public void Release() { if (done) return; done = true; if (busy == this) Reset(); }
+            /// <summary>Any posted down gets its up, whatever ends the request - Unity must never be
+            /// left with the left button held.</summary>
+            public void Release()
+            {
+                if (done) return;
+                done = true;
+                if (downPosted && !upPosted) { upPosted = true; Send(WM_LBUTTONUP, 0); }
+                if (busy == this) Reset();
+            }
+
+            private string Send(int msg, int wParam)
+            {
+                if (PostMsg == null || win == null) return "no PostMessage hook installed";
+                try { return PostMsg(win.Hwnd, msg, wParam, LParam(cx, cy)); }
+                catch (Exception ex) { return ex.GetType().Name + ": " + ex.Message; }
+            }
+
+            private JObject Fail(string code, string error, string stage)
+            {
+                JObject r = new JObject { ["ok"] = false, ["code"] = code, ["error"] = Protocol.Clip(error), ["fired"] = false, ["mode"] = "post" };
+                if (stage != null) r["stage"] = stage;
+                r["evs"] = Evs();
+                if (Diag) r["diag"] = DiagObj();
+                return r;
+            }
+
+            private static JObject Evs()
+            {
+                JObject e = new JObject();
+                foreach (KeyValuePair<string, int> kv in evFrames) e[kv.Key] = kv.Value;
+                return e;
+            }
+
+            private static JToken Pt(float x, float y)
+            {
+                if (float.IsNaN(x) || float.IsNaN(y)) return JValue.CreateNull();
+                return new JArray((int)Math.Round(x), (int)Math.Round(y));
+            }
+
+            private JObject DiagObj()
+            {
+                JObject d = new JObject();
+                if (win != null)
+                {
+                    d["hwnd"] = "0x" + win.Hwnd.ToString("X");
+                    d["client"] = new JArray(win.ClientW, win.ClientH);
+                    d["screen"] = new JArray(win.ScreenW, win.ScreenH);
+                }
+                d["gui"] = Pt(sx, sy);
+                d["pt"] = new JArray(cx, cy);
+                d["evs"] = Evs();
+                if (pDown != 0) d["down"] = new JObject { ["hit"] = pDown > 0, ["mp"] = Pt(pDownMx, pDownMy), ["hot"] = pDownHot, ["f"] = pDownFrame - armedAt };
+                else if (!float.IsNaN(pDownMx)) d["down"] = new JObject { ["hit"] = false, ["mp"] = Pt(pDownMx, pDownMy) };
+                if (pUp != 0 || !float.IsNaN(pUpMx)) d["up"] = new JObject { ["hit"] = pUp > 0, ["mp"] = Pt(pUpMx, pUpMy), ["f"] = pUpFrame - armedAt };
+                return d;
+            }
 
             private object End(object result) { Release(); return result; }
 
@@ -357,17 +524,72 @@ namespace Morgott.PPBridge
                 Ctl pick = cand[0];
                 if (!pick.Enabled) return End(new JObject { ["ok"] = false, ["code"] = "disabled", ["error"] = "the control is drawn disabled (GUI.enabled=false) - a real click would not register either", ["fired"] = false, ["row"] = Row(pick) });
                 fired = false;
+                if (PostMode)
+                {
+                    sx = pick.SX; sy = pick.SY;
+                    string werr = null;
+                    try { win = Window == null ? null : Window(); } catch (Exception ex) { werr = ex.GetType().Name + ": " + ex.Message; }
+                    if (win == null || win.Hwnd == 0)
+                        return End(Fail("nohwnd", "no game window of this process to post the click to: " + (win != null && win.Error != null ? win.Error : werr ?? "no window hook installed"), null));
+                    if (!ToClient(sx, sy, win.ClientW, win.ClientH, win.ScreenW, win.ScreenH, out cx, out cy))
+                    {
+                        JObject off = Fail("offscreen", "the control's centre is not inside the game window's client area", null);
+                        off["row"] = Row(pick);
+                        return End(off);
+                    }
+                    ClearPost();
+                    target = new Target { Label = pick.Label, I = pick.I, Owner = pick.Owner, Post = true };
+                    armedAt = now;
+                    RefreshActive();
+                    string perr = Send(WM_MOUSEMOVE, 0);
+                    if (perr == null) { perr = Send(WM_LBUTTONDOWN, MK_LBUTTON); if (perr == null) downPosted = true; }
+                    if (perr != null) return End(Fail("nohwnd", "PostMessage failed: " + perr, "down"));
+                    return null;
+                }
                 target = new Target { Label = pick.Label, I = pick.I, Owner = pick.Owner };
                 armedAt = now;
                 RefreshActive();
                 return null;
             }
 
+            /// <summary>post mode: down posted at armedAt -> real MouseDown grabbed the control -> up
+            /// posted on a LATER frame -> real MouseUp returned the click.</summary>
+            private object FirePost(int now)
+            {
+                if (pDown == 0)
+                {
+                    if (now - armedAt <= wait) return null;
+                    int md; evFrames.TryGetValue("MouseDown", out md);
+                    return End(md > 0
+                        ? Fail("missed", "a MouseDown reached OnGUI but not this control within " + wait + " frames (another control took it, or the point is off the control)", "down")
+                        : Fail("noevent", "WM_LBUTTONDOWN posted, but Unity delivered no MouseDown within " + wait + " frames (unfocused window?)", "down"));
+                }
+                if (pDown < 0) return End(Fail("missed", "the MouseDown reached this control but missed its rect - coordinates off", "down"));
+                if (!upPosted)
+                {
+                    if (now <= pDownFrame) return null;
+                    upPosted = true; upAt = now;
+                    string perr = Send(WM_LBUTTONUP, 0);
+                    if (perr != null) return End(Fail("nohwnd", "PostMessage failed: " + perr, "up"));
+                    return null;
+                }
+                if (pUp > 0)
+                {
+                    JObject r = new JObject { ["ok"] = true, ["fired"] = true, ["mode"] = "post", ["ev"] = "MouseUp", ["frames"] = Math.Max(0, pUpFrame - armedAt) };
+                    if (Diag) r["diag"] = DiagObj();
+                    return End(r);
+                }
+                if (pUp < 0) return End(Fail("missed", "the MouseUp released this control off its rect - no click", "up"));
+                if (now - upAt > wait) return End(Fail("noevent", "WM_LBUTTONUP posted, but Unity delivered no MouseUp to the control within " + wait + " frames", "up"));
+                return null;
+            }
+
             private object Fire(int now)
             {
+                if (PostMode) return FirePost(now);
                 if (fired)
                 {
-                    JObject r = new JObject { ["ok"] = true, ["fired"] = true, ["ev"] = firedEv, ["frames"] = Math.Max(0, firedFrame - armedAt) };
+                    JObject r = new JObject { ["ok"] = true, ["fired"] = true, ["mode"] = "force", ["ev"] = firedEv, ["frames"] = Math.Max(0, firedFrame - armedAt) };
                     return End(r);
                 }
                 if (now - armedAt > wait)

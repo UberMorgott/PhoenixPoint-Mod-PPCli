@@ -96,6 +96,8 @@ namespace Morgott.PPBridge
             // imgui: same shape - the delegate only; the patch lives while a request runs.
             ImGuiTap.Arm = ImGuiPatch.Arm;
             ImGuiTap.FrameNow = () => Time.frameCount;
+            ImGuiTap.Window = ImGuiPatch.Window;
+            ImGuiTap.PostMsg = ImGuiPatch.PostMessage;
             // act: the game half's four delegates. Nothing is subscribed until a `use` is issued.
             ActGame.Install();
             // Every handle taken in the old scene is a destroyed object once it unloads. Bumping the
