@@ -4,7 +4,7 @@ Terminal control channel into a running **Phoenix Point**: the `PPBridge` develo
 
 **Why:** decompiled code shows intent; PPCLI shows what the game actually did. Developers and AI agents use it to read live state, confirm a mod patch took effect, and drive the game (reflection, console, UI, tactical actions) without playing by hand.
 
-**Development tool only. Never published on the Steam Workshop.** It can change a save through reflection - point it at an automation copy of the game, not the install you play.
+**Development tool only.** The `PPBridge` DLL is also on the Steam Workshop (off until armed); the client is only here. It can change a save through reflection - point it at an automation copy of the game, not the install you play.
 
 ## Install
 

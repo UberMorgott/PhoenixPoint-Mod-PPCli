@@ -9,7 +9,7 @@
     { "Key": "English", "Value": "PPBridge" }
   ],
   "Description": [
-    { "Key": "English", "Value": "Dev-only control channel for the PPCLI tool. Not a player feature: it is a developer tool published on GitHub, never on the Steam Workshop. The endpoint is opt-in and stays off until a file named ppcli-enabled sits beside this DLL." }
+    { "Key": "English", "Value": "Dev-only control channel for the PPCLI tool. Not a player feature: a developer tool. The client is on GitHub; this DLL is also on the Steam Workshop. The endpoint is opt-in and stays off until a file named ppcli-enabled sits beside this DLL." }
   ],
   "Dependencies": []
 }

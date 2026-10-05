@@ -1,0 +1,40 @@
+[h1]PPCLI[/h1]
+
+[b]PPCLI adds nothing to the game.[/b] It is a development tool. It lets AI agents and scripts fully control a running Phoenix Point from the command line, for mod development and testing. It is not meant for normal play.
+
+[b]Problems and suggestions go only to GitHub Issues:[/b] [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues]github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues[/url]
+Steam comments are not used for bug reports or requests.
+
+[h2]What this item contains[/h2]
+[list]
+[*]Only PPBridge, the in-game part. The client (ppcli.ps1, PowerShell 7) is on GitHub.
+[*]Off by default. It does nothing until you create an empty file named [b]ppcli-enabled[/b] in this mod's folder. Delete the file to turn it off.
+[*]The connection is a local Windows named pipe with a random token. No network port is opened.
+[*]It can change a save. On a Steam install, actions that change the game are refused unless the client runs with -AllowMutate.
+[/list]
+
+[h2]What it can do[/h2]
+[list]
+[*]Read game state: scene, phase, live object handles.
+[*]Reflection: create objects, read and set fields and properties, call methods, inspect values.
+[*]Search game definitions and write a full definition catalog.
+[*]Run console commands and get or set console variables.
+[*]Read the Unity log and subscribe to C# events.
+[*]Wait for a condition: game ready, phase, call result, log line, event, trace hit, time.
+[*]Trace any game or mod method at runtime: hits, arguments, return value, call stack.
+[*]Run multi-step plans across frames, with status, cancel and cleanup steps.
+[*]Take screenshots.
+[*]Tactical: list the squad and abilities, use an ability on an actor or position, end the turn.
+[*]UI: read the uGUI tree and click elements; list and press buttons in other mods' OnGUI windows.
+[*]Snapshot and restore; run mod tests from *.test.json files with JUnit output.
+[/list]
+
+[h2]Documentation[/h2]
+[list]
+[*]Overview and install: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/README.md]README.md[/url]
+[*]Task to command: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/PLAYBOOK.md]PLAYBOOK.md[/url]
+[*]Rules for agents: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/AGENTS.md]AGENTS.md[/url]
+[*]Full reference: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/docs/REFERENCE.md]docs/REFERENCE.md[/url]
+[/list]
+
+License: CC BY-NC 4.0. © 2026 Morgott.

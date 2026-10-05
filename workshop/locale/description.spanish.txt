@@ -1,0 +1,40 @@
+[h1]PPCLI[/h1]
+
+[b]PPCLI no añade nada al juego.[/b] Es una herramienta de desarrollo. Permite que agentes de IA y scripts controlen por completo una partida de Phoenix Point en marcha desde la línea de comandos, para desarrollar y probar mods. No está pensado para jugar normalmente.
+
+[b]Problemas y sugerencias solo en GitHub Issues:[/b] [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues]github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues[/url]
+Los comentarios de Steam no se usan para informes de errores ni peticiones.
+
+[h2]Qué contiene este objeto[/h2]
+[list]
+[*]Solo PPBridge, la parte dentro del juego. El cliente (ppcli.ps1, PowerShell 7) está en GitHub.
+[*]Desactivado por defecto. No hace nada hasta que crees un archivo vacío llamado [b]ppcli-enabled[/b] en la carpeta de este mod. Borra el archivo para desactivarlo.
+[*]La conexión usa una named pipe local de Windows con un token aleatorio. No se abre ningún puerto de red.
+[*]Puede modificar una partida guardada. En una instalación de Steam, las acciones que cambian el juego se rechazan salvo que el cliente se ejecute con -AllowMutate.
+[/list]
+
+[h2]Funciones[/h2]
+[list]
+[*]Leer el estado del juego: escena, fase, handles de objetos activos.
+[*]Reflexión: crear objetos, leer y cambiar campos y propiedades, llamar a métodos, inspeccionar valores.
+[*]Buscar definiciones del juego y escribir un catálogo completo de definiciones.
+[*]Ejecutar comandos de consola, leer y cambiar variables de consola.
+[*]Leer el log de Unity y suscribirse a eventos de C#.
+[*]Esperar una condición: juego listo, fase, resultado de una llamada, línea de log, evento, activación de un trace, tiempo.
+[*]Trazar en ejecución cualquier método del juego o de un mod: llamadas, argumentos, valor devuelto, pila de llamadas.
+[*]Ejecutar planes de varios pasos a lo largo de varios frames, con estado, cancelación y pasos de limpieza.
+[*]Hacer capturas de pantalla.
+[*]Táctico: listar el escuadrón y las habilidades, usar una habilidad sobre una unidad o posición, terminar el turno.
+[*]Interfaz: leer el árbol uGUI y hacer clic en elementos; listar y pulsar botones en ventanas OnGUI de otros mods.
+[*]Instantánea y restauración; ejecutar pruebas de mods desde archivos *.test.json con salida JUnit.
+[/list]
+
+[h2]Documentación[/h2]
+[list]
+[*]Resumen e instalación: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/README.md]README.md[/url]
+[*]De tarea a comando: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/PLAYBOOK.md]PLAYBOOK.md[/url]
+[*]Reglas para agentes: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/AGENTS.md]AGENTS.md[/url]
+[*]Referencia completa: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/docs/REFERENCE.md]docs/REFERENCE.md[/url]
+[/list]
+
+Licencia: CC BY-NC 4.0. © 2026 Morgott.

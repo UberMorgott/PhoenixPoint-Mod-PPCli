@@ -1,0 +1,40 @@
+[h1]PPCLI[/h1]
+
+[b]PPCLI niczego nie dodaje do gry.[/b] To narzędzie programistyczne. Pozwala agentom AI i skryptom w pełni sterować uruchomionym Phoenix Point z wiersza poleceń, na potrzeby tworzenia i testowania modów. Nie jest przeznaczone do zwykłej gry.
+
+[b]Problemy i sugestie wyłącznie przez GitHub Issues:[/b] [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues]github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues[/url]
+Komentarze na Steam nie służą do zgłaszania błędów ani próśb.
+
+[h2]Zawartość tego przedmiotu[/h2]
+[list]
+[*]Tylko PPBridge, część działająca w grze. Klient (ppcli.ps1, PowerShell 7) jest na GitHubie.
+[*]Domyślnie wyłączony. Nic nie robi, dopóki nie utworzysz pustego pliku o nazwie [b]ppcli-enabled[/b] w folderze tego moda. Usuń plik, aby go wyłączyć.
+[*]Połączenie idzie przez lokalny potok nazwany Windows z losowym tokenem. Żaden port sieciowy nie jest otwierany.
+[*]Może zmienić zapis gry. Na instalacji ze Steam akcje zmieniające grę są odrzucane, jeśli klient nie działa z -AllowMutate.
+[/list]
+
+[h2]Możliwości[/h2]
+[list]
+[*]Odczyt stanu gry: scena, faza, uchwyty aktywnych obiektów.
+[*]Refleksja: tworzenie obiektów, odczyt i zmiana pól i właściwości, wywoływanie metod, podgląd wartości.
+[*]Wyszukiwanie definicji gry i zapis pełnego katalogu definicji.
+[*]Wykonywanie poleceń konsoli, odczyt i zmiana zmiennych konsoli.
+[*]Odczyt logu Unity i subskrypcja zdarzeń C#.
+[*]Czekanie na warunek: gra gotowa, faza, wynik wywołania, linia logu, zdarzenie, trafienie trace, czas.
+[*]Śledzenie w trakcie działania dowolnej metody gry lub moda: wywołania, argumenty, zwracana wartość, stos wywołań.
+[*]Wykonywanie wieloetapowych planów przez wiele klatek, ze statusem, anulowaniem i krokami sprzątania.
+[*]Zrzuty ekranu.
+[*]Taktyka: lista oddziału i umiejętności, użycie umiejętności na jednostce lub pozycji, koniec tury.
+[*]Interfejs: odczyt drzewa uGUI i klikanie elementów; lista i naciskanie przycisków w oknach OnGUI innych modów.
+[*]Migawka i przywracanie; uruchamianie testów modów z plików *.test.json z wynikiem w formacie JUnit.
+[/list]
+
+[h2]Dokumentacja[/h2]
+[list]
+[*]Przegląd i instalacja: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/README.md]README.md[/url]
+[*]Zadanie na polecenie: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/PLAYBOOK.md]PLAYBOOK.md[/url]
+[*]Zasady dla agentów: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/AGENTS.md]AGENTS.md[/url]
+[*]Pełna dokumentacja: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/docs/REFERENCE.md]docs/REFERENCE.md[/url]
+[/list]
+
+Licencja: CC BY-NC 4.0. © 2026 Morgott.

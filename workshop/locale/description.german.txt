@@ -1,0 +1,40 @@
+[h1]PPCLI[/h1]
+
+[b]PPCLI fügt dem Spiel nichts hinzu.[/b] Es ist ein Entwicklungswerkzeug. Damit können KI-Agenten und Skripte ein laufendes Phoenix Point vollständig über die Kommandozeile steuern, für Mod-Entwicklung und Tests. Für normales Spielen ist es nicht gedacht.
+
+[b]Probleme und Vorschläge nur über GitHub Issues:[/b] [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues]github.com/UberMorgott/PhoenixPoint-Mod-PPCli/issues[/url]
+Steam-Kommentare werden nicht für Fehlerberichte oder Wünsche genutzt.
+
+[h2]Inhalt dieses Items[/h2]
+[list]
+[*]Nur PPBridge, der Teil im Spiel. Der Client (ppcli.ps1, PowerShell 7) liegt auf GitHub.
+[*]Standardmäßig aus. Er tut nichts, bis Sie im Ordner dieses Mods eine leere Datei namens [b]ppcli-enabled[/b] anlegen. Datei löschen, um ihn abzuschalten.
+[*]Die Verbindung läuft über eine lokale Windows Named Pipe mit zufälligem Token. Es wird kein Netzwerkport geöffnet.
+[*]Kann einen Spielstand verändern. Bei einer Steam-Installation werden Aktionen, die das Spiel ändern, abgelehnt, solange der Client nicht mit -AllowMutate läuft.
+[/list]
+
+[h2]Funktionen[/h2]
+[list]
+[*]Spielzustand lesen: Szene, Phase, Handles auf laufende Objekte.
+[*]Reflection: Objekte erzeugen, Felder und Properties lesen und setzen, Methoden aufrufen, Werte inspizieren.
+[*]Spieldefinitionen durchsuchen und einen vollständigen Definitionskatalog schreiben.
+[*]Konsolenbefehle ausführen, Konsolenvariablen lesen und setzen.
+[*]Das Unity-Log lesen und C#-Events abonnieren.
+[*]Auf eine Bedingung warten: Spiel bereit, Phase, Aufrufergebnis, Logzeile, Event, Trace-Treffer, Zeit.
+[*]Jede Methode des Spiels oder eines Mods zur Laufzeit tracen: Treffer, Argumente, Rückgabewert, Aufrufstack.
+[*]Mehrstufige Pläne über mehrere Frames ausführen, mit Status, Abbruch und Aufräumschritten.
+[*]Screenshots aufnehmen.
+[*]Taktik: Trupp und Fähigkeiten auflisten, eine Fähigkeit auf eine Einheit oder Position anwenden, Zug beenden.
+[*]UI: den uGUI-Baum lesen und Elemente anklicken; Buttons in OnGUI-Fenstern anderer Mods auflisten und drücken.
+[*]Snapshot und Wiederherstellung; Mod-Tests aus *.test.json-Dateien mit JUnit-Ausgabe ausführen.
+[/list]
+
+[h2]Dokumentation[/h2]
+[list]
+[*]Überblick und Installation: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/README.md]README.md[/url]
+[*]Aufgabe zu Befehl: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/PLAYBOOK.md]PLAYBOOK.md[/url]
+[*]Regeln für Agenten: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/AGENTS.md]AGENTS.md[/url]
+[*]Vollständige Referenz: [url=https://github.com/UberMorgott/PhoenixPoint-Mod-PPCli/blob/main/docs/REFERENCE.md]docs/REFERENCE.md[/url]
+[/list]
+
+Lizenz: CC BY-NC 4.0. © 2026 Morgott.

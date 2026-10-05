@@ -5,7 +5,7 @@
 > [`README.md`](../README.md) is the overview and the install steps.
 
 Developer mod + PowerShell client for driving Phoenix Point programmatically. A modder's tool, not a
-player feature: it is published here and never on the Steam Workshop. Read **SECURITY** below before
+player feature: it is published here, and the PPBridge DLL also on the Steam Workshop (off until armed). Read **SECURITY** below before
 you arm it — the endpoint is off by default and that is deliberate.
 
 Licensed CC BY-NC 4.0 (`LICENSE`).
